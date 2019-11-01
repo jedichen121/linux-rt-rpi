@@ -317,6 +317,7 @@ struct task_group {
 	struct rt_rq **rt_rq;
 
 	struct rt_bandwidth rt_bandwidth;
+    struct rt_bandwidth tt_time_slice;
 #endif
 
 	struct rcu_head rcu;

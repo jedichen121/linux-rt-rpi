@@ -453,6 +453,20 @@ static inline u64 sched_rt_period(struct rt_rq *rt_rq)
 	return ktime_to_ns(rt_rq->tg->rt_bandwidth.rt_period);
 }
 
+static inline u64 sched_container_runtime(struct rt_rq *rt_rq)
+{
+	if (!rt_rq->tg)
+		return RUNTIME_INF;
+
+	return rt_rq->rt_runtime;
+}
+
+static inline u64 sched_container_period(struct rt_rq *rt_rq)
+{
+	return ktime_to_ns(rt_rq->tg->tt_time_slice.rt_period);
+}
+
+
 typedef struct task_group *rt_rq_iter_t;
 
 static inline struct task_group *next_task_group(struct task_group *tg)
@@ -941,6 +955,27 @@ static int sched_rt_runtime_exceeded(struct rt_rq *rt_rq)
 
 	return 0;
 }
+
+#ifdef CONFIG_RT_GROUP_SCHED
+
+// need to be used with lock
+// can add another variable to indicate if the cgroup has been throttled
+static int check_rt_container_exceeded(struct rt_rq * rt_rq)
+{
+	u64 runtime = sched_container_runtime(rt_rq);
+
+	if (runtime >= sched_container_period(rt_rq))
+		return 0;
+	
+	runtime = sched_container_runtime(rt_rq);
+	if (runtime == RUNTIME_INF)
+		return 0;
+	
+	if (rt_rq->rt_time > runtime) {
+		return 1;
+	}
+}
+#endif /* CONFIG_RT_GROUP_SCHED */
 
 /*
  * Update the current task's runtime statistics. Skip current tasks that
@@ -1466,6 +1501,26 @@ static void check_preempt_equal_prio(struct rq *rq, struct task_struct *p)
  */
 static void check_preempt_curr_rt(struct rq *rq, struct task_struct *p, int flags)
 {
+
+#ifdef CONFIG_RT_GROUP_SCHED
+    
+	// check scheduling class first, then check if belongs to the same group
+	if (rq->curr->policy == SCHED_TT) {
+        // check if the rt group time slice(bandwidth has used up)
+        // TODO:
+
+        
+		if (p->policy != SCHED_TT)
+            return;
+        // ISO C90 forbids mixed declarations and code [-Wdeclaration-after-statement]
+		struct task_group *tg = task_group(p);
+		struct task_group *curr_tg = task_group(rq->curr);
+		// only TT process in the same group is allowed to preempt
+		if (tg != curr_tg)
+		return;
+	}
+#endif /* CONFIG_RT_GROUP_SCHED */
+
 	if (p->prio < rq->curr->prio) {
 		resched_curr(rq);
 		return;
@@ -1493,11 +1548,23 @@ static struct sched_rt_entity *pick_next_rt_entity(struct rq *rq,
 						   struct rt_rq *rt_rq)
 {
 	struct rt_prio_array *array = &rt_rq->active;
+	struct task_struct *curr = rq->curr;
 	struct sched_rt_entity *next = NULL;
 	struct list_head *queue;
 	int idx;
-
-	idx = sched_find_first_bit(array->bitmap);
+	if (curr->policy == SCHED_TT) {
+		// struct task_group *tg = task_group(curr);
+		DECLARE_BITMAP(bitmap_copy, MAX_RT_PRIO+1);
+		struct sched_rt_entity *rt_se = &curr->rt;
+		int tg_prio = rt_se_prio(rt_se);
+		do_div(tg_prio, 10);
+		tg_prio *= 10;
+		// int qofs = tg_prio / (BITS_PER_BYTE * sizeof(long));
+		// int bofs = tg_prio % (BITS_PER_BYTE * sizeof(long));
+		idx = find_next_bit(array->bitmap, MAX_RT_PRIO+1, tg_prio);
+	}
+	else
+		idx = sched_find_first_bit(array->bitmap);
 	BUG_ON(idx >= MAX_RT_PRIO);
 
 	queue = array->queue + idx;

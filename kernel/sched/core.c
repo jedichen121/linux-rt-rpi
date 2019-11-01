@@ -6698,6 +6698,16 @@ static struct cftype cpu_files[] = {
 		.read_u64 = cpu_rt_period_read_uint,
 		.write_u64 = cpu_rt_period_write_uint,
 	},
+	{
+		.name = "rt_container_runtime_us",
+		.read_s64 = cpu_rt_runtime_read, // needs to change
+		.write_s64 = cpu_rt_runtime_write, // needs to change
+	},
+	{
+		.name = "rt_container_period_us",
+		.read_u64 = cpu_rt_period_read_uint, // needs to change
+		.write_u64 = cpu_rt_period_write_uint, // needs to change
+	},
 #endif
 	{ }	/* Terminate */
 };
