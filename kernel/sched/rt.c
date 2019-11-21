@@ -1165,7 +1165,7 @@ unsigned int rt_se_rr_nr_running(struct sched_rt_entity *rt_se)
 
 	tsk = rt_task_of(rt_se);
 
-	return (tsk->policy == SCHED_RR) ? 1 : 0;
+	return (tsk->policy == SCHED_RR || tsk->policy == SCHED_TT) ? 1 : 0;
 }
 
 static inline
@@ -1466,6 +1466,29 @@ static void check_preempt_equal_prio(struct rq *rq, struct task_struct *p)
  */
 static void check_preempt_curr_rt(struct rq *rq, struct task_struct *p, int flags)
 {
+	struct sched_rt_entity *rt_se = &rq->curr->rt;
+	struct rt_rq *rt_rq = rt_rq_of_se(rt_se);
+	struct rt_rq *p_rt_rq = rt_rq_of_se(&(p->rt));
+
+#ifdef CONFIG_RT_GROUP_SCHED
+	// check scheduling class first, then check if belongs to the same group（rt_rq)
+	if (rq->curr->policy == SCHED_TT) {
+		// if the rt_rq is not throttled
+		if (!rt_rq->rt_throttled) {
+			// if the new task is not SCHED_TT, don't bother
+			if (p->policy != SCHED_TT)
+				return;	
+			// if it's SCHED_TT but is not in the same cgroup
+			if (rt_rq != p_rt_rq)
+				return;
+			if (p->prio < rq->curr->prio) {
+				resched_curr(rq);
+				return;
+			}
+		}
+	}
+#endif /* CONFIG_RT_GROUP_SCHED */
+
 	if (p->prio < rq->curr->prio) {
 		resched_curr(rq);
 		return;
@@ -1493,9 +1516,30 @@ static struct sched_rt_entity *pick_next_rt_entity(struct rq *rq,
 						   struct rt_rq *rt_rq)
 {
 	struct rt_prio_array *array = &rt_rq->active;
+	struct task_struct *curr = rq->curr;
 	struct sched_rt_entity *next = NULL;
 	struct list_head *queue;
 	int idx;
+
+#ifdef CONFIG_RT_GROUP_SCHED
+	struct rt_rq *tg_rt_rq;
+	if (curr->policy == SCHED_TT) {
+		struct sched_rt_entity *rt_se = &curr->rt;
+		tg_rt_rq = rt_rq_of_se(rt_se);
+		// find the rt_rq that the curr belongs to
+		// if it's not throttled, only find tasks from this rt_rq(cgroup)
+		if (!tg_rt_rq->rt_throttled) {
+			struct rt_prio_array *tg_array = &tg_rt_rq->active;
+			idx = sched_find_first_bit(tg_array->bitmap);
+			BUG_ON(idx >= MAX_RT_PRIO);
+
+			queue = tg_array->queue + idx;
+			next = list_entry(queue->next, struct sched_rt_entity, run_list);
+
+			return next;
+		}
+	}
+#endif /* CONFIG_RT_GROUP_SCHED */
 
 	idx = sched_find_first_bit(array->bitmap);
 	BUG_ON(idx >= MAX_RT_PRIO);
@@ -2302,14 +2346,15 @@ static void task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
 	 * RR tasks need a special form of timeslice management.
 	 * FIFO tasks have no timeslices.
 	 */
-	if (p->policy != SCHED_RR)
+	if (p->policy != SCHED_RR && p->policy != SCHED_TT)
 		return;
 
 	if (--p->rt.time_slice)
 		return;
-
-	p->rt.time_slice = sched_rr_timeslice;
-
+	if (p->policy == SCHED_RR) 
+		p->rt.time_slice = sched_rr_timeslice;
+	else if (p->policy == SCHED_TT)
+		p->rt.time_slice = sched_rr_timeslice * (p->rt_priority / 10);
 	/*
 	 * Requeue to the end of queue if we (and all of our ancestors) are not
 	 * the only element on the queue
@@ -2338,7 +2383,7 @@ static unsigned int get_rr_interval_rt(struct rq *rq, struct task_struct *task)
 	/*
 	 * Time slice is 0 for SCHED_FIFO tasks
 	 */
-	if (task->policy == SCHED_RR)
+	if (task->policy == SCHED_RR || task->policy == SCHED_TT)
 		return sched_rr_timeslice;
 	else
 		return 0;
