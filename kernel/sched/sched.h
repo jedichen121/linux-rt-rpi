@@ -133,7 +133,7 @@ static inline int fair_policy(int policy)
 
 static inline int rt_policy(int policy)
 {
-	return policy == SCHED_FIFO || policy == SCHED_RR || policy == SCHED_TT;
+	return policy == SCHED_FIFO || policy == SCHED_RR;
 }
 
 static inline int dl_policy(int policy)
@@ -317,10 +317,6 @@ struct task_group {
 	struct rt_rq **rt_rq;
 
 	struct rt_bandwidth rt_bandwidth;
-    struct rt_bandwidth tt_time_slice;
-    int container_throttled;
-	u64 container_time;
-	u64 container_runtime;
 #endif
 
 	struct rcu_head rcu;
@@ -392,10 +388,6 @@ extern int sched_group_set_rt_runtime(struct task_group *tg, long rt_runtime_us)
 extern int sched_group_set_rt_period(struct task_group *tg, u64 rt_period_us);
 extern long sched_group_rt_runtime(struct task_group *tg);
 extern long sched_group_rt_period(struct task_group *tg);
-extern int sched_group_set_container_runtime(struct task_group *tg, long rt_runtime_us);
-extern int sched_group_set_container_period(struct task_group *tg, u64 rt_period_us);
-extern long sched_group_container_runtime(struct task_group *tg);
-extern long sched_group_container_period(struct task_group *tg);
 extern int sched_rt_can_attach(struct task_group *tg, struct task_struct *tsk);
 
 extern struct task_group *sched_create_group(struct task_group *parent);
@@ -1555,7 +1547,6 @@ extern void resched_cpu(int cpu);
 
 extern struct rt_bandwidth def_rt_bandwidth;
 extern void init_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime);
-extern void init_container_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime);
 
 extern struct dl_bandwidth def_dl_bandwidth;
 extern void init_dl_bandwidth(struct dl_bandwidth *dl_b, u64 period, u64 runtime);
