@@ -13,6 +13,7 @@ int sched_rr_timeslice = RR_TIMESLICE;
 int sysctl_sched_rr_timeslice = (MSEC_PER_SEC / HZ) * RR_TIMESLICE;
 
 static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun);
+static int do_sched_container_period_timer(struct rt_bandwidth *rt_b, int overrun);
 
 struct rt_bandwidth def_rt_bandwidth;
 
@@ -40,6 +41,30 @@ static enum hrtimer_restart sched_rt_period_timer(struct hrtimer *timer)
 	return idle ? HRTIMER_NORESTART : HRTIMER_RESTART;
 }
 
+static enum hrtimer_restart sched_container_period_timer(struct hrtimer *timer)
+{
+	struct rt_bandwidth *rt_b =
+		container_of(timer, struct rt_bandwidth, rt_period_timer); // TODO: get the correct rt_bandwidth
+	int idle = 0;
+	int overrun;
+
+	raw_spin_lock(&rt_b->rt_runtime_lock);
+	for (;;) {
+		overrun = hrtimer_forward_now(timer, rt_b->rt_period);
+		if (!overrun)
+			break;
+
+		raw_spin_unlock(&rt_b->rt_runtime_lock);
+		idle = do_sched_container_period_timer(rt_b, overrun);
+		raw_spin_lock(&rt_b->rt_runtime_lock);
+	}
+	if (idle)
+		rt_b->rt_period_active = 0;
+	raw_spin_unlock(&rt_b->rt_runtime_lock);
+
+	return idle ? HRTIMER_NORESTART : HRTIMER_RESTART;
+}
+
 void init_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime)
 {
 	rt_b->rt_period = ns_to_ktime(period);
@@ -50,6 +75,18 @@ void init_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime)
 	hrtimer_init(&rt_b->rt_period_timer,
 			CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	rt_b->rt_period_timer.function = sched_rt_period_timer;
+}
+
+void init_container_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime)
+{
+	rt_b->rt_period = ns_to_ktime(period);
+	rt_b->rt_runtime = runtime;
+
+	raw_spin_lock_init(&rt_b->rt_runtime_lock);
+
+	hrtimer_init(&rt_b->rt_period_timer,
+			CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	rt_b->rt_period_timer.function = sched_container_period_timer;
 }
 
 static void start_rt_bandwidth(struct rt_bandwidth *rt_b)
@@ -196,6 +233,11 @@ int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent)
 
 	init_rt_bandwidth(&tg->rt_bandwidth,
 			ktime_to_ns(def_rt_bandwidth.rt_period), 0);
+	init_container_bandwidth(&tg->tt_time_slice,
+			ktime_to_ns(def_rt_bandwidth.rt_period), 0);
+	tg->container_time = 0;
+	tg->container_throttled = 0;
+	tg->container_runtime = 0;
 
 	for_each_possible_cpu(i) {
 		rt_rq = kzalloc_node(sizeof(struct rt_rq),
@@ -458,7 +500,7 @@ static inline u64 sched_container_runtime(struct rt_rq *rt_rq)
 	if (!rt_rq->tg)
 		return RUNTIME_INF;
 
-	return rt_rq->rt_runtime;
+	return rt_rq->tg->container_runtime;
 }
 
 static inline u64 sched_container_period(struct rt_rq *rt_rq)
@@ -537,6 +579,11 @@ static inline int rt_rq_throttled(struct rt_rq *rt_rq)
 	return rt_rq->rt_throttled && !rt_rq->rt_nr_boosted;
 }
 
+static inline int container_throttled(struct task_group *tg)
+{
+	return tg->container_throttled;
+}
+
 static int rt_se_boosted(struct sched_rt_entity *rt_se)
 {
 	struct rt_rq *rt_rq = group_rt_rq(rt_se);
@@ -567,9 +614,19 @@ struct rt_rq *sched_rt_period_rt_rq(struct rt_bandwidth *rt_b, int cpu)
 	return container_of(rt_b, struct task_group, rt_bandwidth)->rt_rq[cpu];
 }
 
+struct task_group *sched_rt_period_tg(struct rt_bandwidth *rt_b, int cpu)
+{
+	return container_of(rt_b, struct task_group, rt_bandwidth);
+}
+
 static inline struct rt_bandwidth *sched_rt_bandwidth(struct rt_rq *rt_rq)
 {
 	return &rt_rq->tg->rt_bandwidth;
+}
+
+static inline struct rt_bandwidth *sched_container_bandwidth(struct rt_rq *rt_rq)
+{
+	return &rt_rq->tg->tt_time_slice;
 }
 
 #else /* !CONFIG_RT_GROUP_SCHED */
@@ -901,6 +958,88 @@ static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun)
 	return idle;
 }
 
+static int do_sched_container_period_timer(struct rt_bandwidth *rt_b, int overrun)
+{
+	int i, idle = 1, throttled = 0;
+	const struct cpumask *span;
+
+	span = sched_rt_period_mask();
+#ifdef CONFIG_RT_GROUP_SCHED
+	/*
+	 * FIXME: isolated CPUs should really leave the root task group,
+	 * whether they are isolcpus or were isolated via cpusets, lest
+	 * the timer run on a CPU which does not service all runqueues,
+	 * potentially leaving other CPUs indefinitely throttled.  If
+	 * isolation is really required, the user will turn the throttle
+	 * off to kill the perturbations it causes anyway.  Meanwhile,
+	 * this maintains functionality for boot and/or troubleshooting.
+	 */
+	if (rt_b == &root_task_group.rt_bandwidth)
+		span = cpu_online_mask;
+#endif
+	for_each_cpu(i, span) {
+		int enqueue = 0;
+		struct rt_rq *rt_rq = sched_rt_period_rt_rq(rt_b, i);
+		struct rq *rq = rq_of_rt_rq(rt_rq);
+
+		int skip;
+		struct task_group *tg = sched_rt_period_tg(rt_b, i);
+
+		/*
+		 * When span == cpu_online_mask, taking each rq->lock
+		 * can be time-consuming. Try to avoid it when possible.
+		 */
+		raw_spin_lock(&rt_rq->rt_runtime_lock);
+		skip = !rt_rq->rt_time && !rt_rq->rt_nr_running;
+		raw_spin_unlock(&rt_rq->rt_runtime_lock);
+		if (skip)
+			continue;
+
+		raw_spin_lock(&rq->lock);  // use the task group lock, not rq
+		if (tg->container_time) {
+			u64 runtime;
+
+			runtime = tg->container_runtime;
+			tg->container_time -= min(tg->container_time, overrun*runtime);
+			if (tg->container_throttled && tg->container_time < runtime) {
+				tg->container_throttled = 0;
+				enqueue = 1;
+
+				/*
+				 * When we're idle and a woken (rt) task is
+				 * throttled check_preempt_curr() will set
+				 * skip_update and the time between the wakeup
+				 * and this unthrottle will get accounted as
+				 * 'runtime'.
+				 */
+				if (rt_rq->rt_nr_running && rq->curr == rq->idle)
+					rq_clock_skip_update(rq, false);
+			}
+
+			if (tg->container_time)
+				idle = 0;
+			
+		} else if (rt_rq->rt_nr_running) {
+			idle = 0;
+			if (!rt_rq_throttled(rt_rq))
+				enqueue = 1;
+		}
+		if (rt_rq->rt_throttled)
+			throttled = 1;
+
+		if (enqueue)
+			sched_rt_rq_enqueue(rt_rq);
+		raw_spin_unlock(&rq->lock);
+		if (rt_rq->highest_prio.curr < rq->curr->prio)
+			resched_curr(rq);
+	}
+
+	if (!throttled && (!rt_bandwidth_enabled() || rt_b->rt_runtime == RUNTIME_INF))
+		return 1;
+
+	return idle;
+}
+
 static inline int rt_se_prio(struct sched_rt_entity *rt_se)
 {
 #ifdef CONFIG_RT_GROUP_SCHED
@@ -960,20 +1099,46 @@ static int sched_rt_runtime_exceeded(struct rt_rq *rt_rq)
 
 // need to be used with lock
 // can add another variable to indicate if the cgroup has been throttled
-static int check_rt_container_exceeded(struct rt_rq * rt_rq)
+
+static int sched_container_runtime_exceeded(struct rt_rq *rt_rq)
 {
-	u64 runtime = sched_container_runtime(rt_rq);
+	u64 runtime = sched_rt_runtime(rt_rq);
+	struct task_group *tg = rt_rq->tg;
+
+	if (tg->container_throttled)
+		return 1;
 
 	if (runtime >= sched_container_period(rt_rq))
 		return 0;
-	
-	runtime = sched_container_runtime(rt_rq);
+
 	if (runtime == RUNTIME_INF)
 		return 0;
-	
-	if (rt_rq->rt_time > runtime) {
-		return 1;
+
+	if (tg->container_time > runtime) {
+		/*
+		 * Don't actually throttle groups that have no runtime assigned
+		 * but accrue some time due to boosting.
+		 */
+		if (likely(tg->container_runtime)) {
+			tg->container_throttled = 1;
+			printk_deferred_once("sched: container throttling activated\n");
+		} else {
+			/*
+			 * In case we did anyway, make it go away,
+			 * replenishment is a joke, since it will replenish us
+			 * with exactly 0 ns.
+			 */
+			tg->container_time = 0;
+		}
+
+		// figure out whether do dequeue here
+		if (container_throttled(tg)) {
+			sched_rt_rq_dequeue(rt_rq);
+			return 1;
+		}
 	}
+
+	return 0;
 }
 #endif /* CONFIG_RT_GROUP_SCHED */
 
@@ -1154,6 +1319,7 @@ inc_rt_group(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
 
 	if (rt_rq->tg)
 		start_rt_bandwidth(&rt_rq->tg->rt_bandwidth);
+		start_rt_bandwidth(&rt_rq->tg->tt_time_slice);
 }
 
 static void
@@ -1501,23 +1667,26 @@ static void check_preempt_equal_prio(struct rq *rq, struct task_struct *p)
  */
 static void check_preempt_curr_rt(struct rq *rq, struct task_struct *p, int flags)
 {
-
+	struct sched_rt_entity *rt_se = &rq->curr->rt;
+	struct rt_rq *rt_rq = rt_rq_of_se(rt_se);
+	struct rt_rq *p_rt_rq = rt_rq_of_se(&(p->rt));
 #ifdef CONFIG_RT_GROUP_SCHED
     
-	// check scheduling class first, then check if belongs to the same group
+	// check scheduling class first, then check if belongs to the same group（rt_rq)
 	if (rq->curr->policy == SCHED_TT) {
-        // check if the rt group time slice(bandwidth has used up)
-        // TODO:
-
-        
-		if (p->policy != SCHED_TT)
-            return;
-        // ISO C90 forbids mixed declarations and code [-Wdeclaration-after-statement]
-		struct task_group *tg = task_group(p);
-		struct task_group *curr_tg = task_group(rq->curr);
-		// only TT process in the same group is allowed to preempt
-		if (tg != curr_tg)
-		return;
+		
+		
+		if (!rt_rq->rt_throttled) {
+			if (p->policy != SCHED_TT)
+				return;	
+			
+			if (rt_rq != p_rt_rq)
+				return;
+			if (p->prio < rq->curr->prio) {
+				resched_curr(rq);
+				return;
+			}
+		}
 	}
 #endif /* CONFIG_RT_GROUP_SCHED */
 
@@ -1552,19 +1721,33 @@ static struct sched_rt_entity *pick_next_rt_entity(struct rq *rq,
 	struct sched_rt_entity *next = NULL;
 	struct list_head *queue;
 	int idx;
+
+#ifdef CONFIG_RT_GROUP_SCHED
+	struct rt_rq *tg_rt_rq;
 	if (curr->policy == SCHED_TT) {
-		// struct task_group *tg = task_group(curr);
-		DECLARE_BITMAP(bitmap_copy, MAX_RT_PRIO+1);
 		struct sched_rt_entity *rt_se = &curr->rt;
-		int tg_prio = rt_se_prio(rt_se);
-		do_div(tg_prio, 10);
-		tg_prio *= 10;
-		// int qofs = tg_prio / (BITS_PER_BYTE * sizeof(long));
-		// int bofs = tg_prio % (BITS_PER_BYTE * sizeof(long));
-		idx = find_next_bit(array->bitmap, MAX_RT_PRIO+1, tg_prio);
+		tg_rt_rq = rt_rq_of_se(rt_se);
+		// find the rt_rq that the curr belongs to
+		// if it's not throttled, only find tasks from this rt_rq(cgroup)
+		if (!tg_rt_rq->rt_throttled) {
+			struct rt_prio_array *tg_array = &tg_rt_rq->active;
+			idx = sched_find_first_bit(tg_array->bitmap);
+			BUG_ON(idx >= MAX_RT_PRIO);
+
+			queue = tg_array->queue + idx;
+			next = list_entry(queue->next, struct sched_rt_entity, run_list);
+
+			return next;
+		}
+		// // old code when I think each cpu has only one priority array 
+		// int tg_prio = rt_se_prio(rt_se);
+		// do_div(tg_prio, 10);
+		// tg_prio *= 10;
+		// idx = find_next_bit(array->bitmap, MAX_RT_PRIO+1, tg_prio);
 	}
-	else
-		idx = sched_find_first_bit(array->bitmap);
+#endif /* CONFIG_RT_GROUP_SCHED */
+
+	idx = sched_find_first_bit(array->bitmap);
 	BUG_ON(idx >= MAX_RT_PRIO);
 
 	queue = array->queue + idx;
@@ -2589,6 +2772,48 @@ unlock:
 	return err;
 }
 
+static int tg_set_container_bandwidth(struct task_group *tg,
+		u64 rt_period, u64 rt_runtime)
+{
+	int err = 0;
+
+	/*
+	 * Disallowing the root group RT runtime is BAD, it would disallow the
+	 * kernel creating (and or operating) RT threads.
+	 */
+	if (tg == &root_task_group && rt_runtime == 0)
+		return -EINVAL;
+
+	/* No period doesn't make any sense. */
+	if (rt_period == 0)
+		return -EINVAL;
+
+	mutex_lock(&rt_constraints_mutex);
+	read_lock(&tasklist_lock);
+	err = __rt_schedulable(tg, rt_period, rt_runtime);
+	if (err)
+		goto unlock;
+
+	raw_spin_lock_irq(&tg->tt_time_slice.rt_runtime_lock);
+	tg->tt_time_slice.rt_period = ns_to_ktime(rt_period);
+	tg->tt_time_slice.rt_runtime = rt_runtime;
+
+	// for_each_possible_cpu(i) {
+	// 	struct rt_rq *rt_rq = tg->rt_rq[i];
+
+	// 	raw_spin_lock(&rt_rq->rt_runtime_lock);
+	// 	rt_rq->rt_runtime = rt_runtime;
+	// 	raw_spin_unlock(&rt_rq->rt_runtime_lock);
+	// }
+	tg->container_runtime = rt_runtime;
+	raw_spin_unlock_irq(&tg->tt_time_slice.rt_runtime_lock);
+unlock:
+	read_unlock(&tasklist_lock);
+	mutex_unlock(&rt_constraints_mutex);
+
+	return err;
+}
+
 int sched_group_set_rt_runtime(struct task_group *tg, long rt_runtime_us)
 {
 	u64 rt_runtime, rt_period;
@@ -2600,6 +2825,20 @@ int sched_group_set_rt_runtime(struct task_group *tg, long rt_runtime_us)
 
 	return tg_set_rt_bandwidth(tg, rt_period, rt_runtime);
 }
+
+
+int sched_group_set_container_runtime(struct task_group *tg, long rt_runtime_us)
+{
+	u64 rt_runtime, rt_period;
+
+	rt_period = ktime_to_ns(tg->tt_time_slice.rt_period);
+	rt_runtime = (u64)rt_runtime_us * NSEC_PER_USEC;
+	if (rt_runtime_us < 0)
+		rt_runtime = RUNTIME_INF;
+
+	return tg_set_container_bandwidth(tg, rt_period, rt_runtime);
+}
+
 
 long sched_group_rt_runtime(struct task_group *tg)
 {
@@ -2613,6 +2852,19 @@ long sched_group_rt_runtime(struct task_group *tg)
 	return rt_runtime_us;
 }
 
+long sched_group_container_runtime(struct task_group *tg)
+{
+	u64 rt_runtime_us;
+
+	if (tg->tt_time_slice.rt_runtime == RUNTIME_INF)
+		return -1;
+
+	rt_runtime_us = tg->tt_time_slice.rt_runtime;
+	do_div(rt_runtime_us, NSEC_PER_USEC);
+	return rt_runtime_us;
+}
+
+
 int sched_group_set_rt_period(struct task_group *tg, u64 rt_period_us)
 {
 	u64 rt_runtime, rt_period;
@@ -2623,11 +2875,31 @@ int sched_group_set_rt_period(struct task_group *tg, u64 rt_period_us)
 	return tg_set_rt_bandwidth(tg, rt_period, rt_runtime);
 }
 
+int sched_group_set_container_period(struct task_group *tg, u64 rt_period_us)
+{
+	u64 rt_runtime, rt_period;
+
+	rt_period = rt_period_us * NSEC_PER_USEC;
+	rt_runtime = tg->tt_time_slice.rt_runtime;
+
+	return tg_set_container_bandwidth(tg, rt_period, rt_runtime);
+}
+
+
 long sched_group_rt_period(struct task_group *tg)
 {
 	u64 rt_period_us;
 
 	rt_period_us = ktime_to_ns(tg->rt_bandwidth.rt_period);
+	do_div(rt_period_us, NSEC_PER_USEC);
+	return rt_period_us;
+}
+
+long sched_group_container_period(struct task_group *tg)
+{
+	u64 rt_period_us;
+
+	rt_period_us = ktime_to_ns(tg->tt_time_slice.rt_period);
 	do_div(rt_period_us, NSEC_PER_USEC);
 	return rt_period_us;
 }

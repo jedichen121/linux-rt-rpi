@@ -5849,6 +5849,8 @@ void __init sched_init(void)
 #ifdef CONFIG_RT_GROUP_SCHED
 	init_rt_bandwidth(&root_task_group.rt_bandwidth,
 			global_rt_period(), global_rt_runtime());
+	init_container_bandwidth(&root_task_group.tt_time_slice,
+			global_rt_period(), global_rt_runtime());
 #endif /* CONFIG_RT_GROUP_SCHED */
 
 #ifdef CONFIG_CGROUP_SCHED
@@ -6661,6 +6663,31 @@ static u64 cpu_rt_period_read_uint(struct cgroup_subsys_state *css,
 {
 	return sched_group_rt_period(css_tg(css));
 }
+
+static int cpu_container_runtime_write(struct cgroup_subsys_state *css,
+				struct cftype *cft, s64 val)
+{
+	return sched_group_set_container_runtime(css_tg(css), val);
+}
+
+static s64 cpu_container_runtime_read(struct cgroup_subsys_state *css,
+			       struct cftype *cft)
+{
+	return sched_group_container_runtime(css_tg(css));
+}
+
+static int cpu_container_period_write_uint(struct cgroup_subsys_state *css,
+				    struct cftype *cftype, u64 rt_period_us)
+{
+	return sched_group_set_container_period(css_tg(css), rt_period_us);
+}
+
+static u64 cpu_container_period_read_uint(struct cgroup_subsys_state *css,
+				   struct cftype *cft)
+{
+	return sched_group_container_period(css_tg(css));
+}
+
 #endif /* CONFIG_RT_GROUP_SCHED */
 
 static struct cftype cpu_files[] = {
@@ -6700,13 +6727,13 @@ static struct cftype cpu_files[] = {
 	},
 	{
 		.name = "rt_container_runtime_us",
-		.read_s64 = cpu_rt_runtime_read, // needs to change
-		.write_s64 = cpu_rt_runtime_write, // needs to change
+		.read_s64 = cpu_container_runtime_read,
+		.write_s64 = cpu_container_runtime_write,
 	},
 	{
 		.name = "rt_container_period_us",
-		.read_u64 = cpu_rt_period_read_uint, // needs to change
-		.write_u64 = cpu_rt_period_write_uint, // needs to change
+		.read_u64 = cpu_container_period_read_uint,
+		.write_u64 = cpu_container_period_write_uint,
 	},
 #endif
 	{ }	/* Terminate */
