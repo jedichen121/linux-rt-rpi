@@ -2346,15 +2346,15 @@ static void task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
 	 * RR tasks need a special form of timeslice management.
 	 * FIFO tasks have no timeslices.
 	 */
-	if (p->policy != SCHED_RR && p->policy != SCHED_TT)
+	if (p->policy != SCHED_RR)
 		return;
 
 	if (--p->rt.time_slice)
 		return;
 	if (p->policy == SCHED_RR) 
 		p->rt.time_slice = sched_rr_timeslice;
-	else if (p->policy == SCHED_TT)
-		p->rt.time_slice = sched_rr_timeslice * (p->rt_priority / 10);
+	// else if (p->policy == SCHED_TT)
+	// 	p->rt.time_slice = sched_rr_timeslice * (p->rt_priority / 10);
 	/*
 	 * Requeue to the end of queue if we (and all of our ancestors) are not
 	 * the only element on the queue
@@ -2383,7 +2383,7 @@ static unsigned int get_rr_interval_rt(struct rq *rq, struct task_struct *task)
 	/*
 	 * Time slice is 0 for SCHED_FIFO tasks
 	 */
-	if (task->policy == SCHED_RR || task->policy == SCHED_TT)
+	if (task->policy == SCHED_RR)
 		return sched_rr_timeslice;
 	else
 		return 0;
