@@ -1441,6 +1441,24 @@ select_task_rq_rt(struct task_struct *p, int cpu, int sd_flag, int flags)
 out:
 	return cpu;
 }
+/* Must be called with tasklist_lock held */
+static inline int tg_has_rt_tasks(struct task_group *tg)
+{
+	struct task_struct *g, *p;
+
+	/*
+	 * Autogroups do not have RT tasks; see autogroup_create().
+	 */
+	if (task_group_is_autogroup(tg))
+		return 0;
+
+	for_each_process_thread(g, p) {
+		if (rt_task(p) && task_group(p) == tg)
+			return 1;
+	}
+
+	return 0;
+}
 
 static void check_preempt_equal_prio(struct rq *rq, struct task_struct *p)
 {
@@ -1530,6 +1548,42 @@ static void check_preempt_curr_rt(struct rq *rq, struct task_struct *p, int flag
 #endif
 }
 
+static struct sched_rt_entity *pick_next_tt_entity(struct rq *rq,
+						   struct rt_rq *rt_rq)
+{
+	struct rt_prio_array *array = &rt_rq->active;
+	struct sched_rt_entity *next = NULL;
+	struct list_head *queue;
+	int idx;
+	printk("in pick TT entity\n");
+	idx = sched_find_first_bit(array->bitmap);
+	BUG_ON(idx >= MAX_RT_PRIO);
+
+	queue = array->queue + idx;
+	next = list_entry(queue->next, struct sched_rt_entity, run_list);
+
+	return next;
+}
+
+static struct sched_rt_entity *_pick_next_task_tt(struct rq *rq,
+						struct rt_rq *rt_rq)
+{
+	struct sched_rt_entity *rt_se;
+	struct task_struct *p;
+	// struct rt_rq *rt_rq  = &rq->rt;
+	printk("in pick TT loop\n");
+	do {
+		rt_se = pick_next_tt_entity(rq, rt_rq);
+		BUG_ON(!rt_se);
+		rt_rq = group_rt_rq(rt_se);
+	} while (rt_rq);
+
+	// p = rt_task_of(rt_se);
+	// p->se.exec_start = rq_clock_task(rq);
+
+	return rt_se;
+}
+
 static struct sched_rt_entity *pick_next_rt_entity(struct rq *rq,
 						   struct rt_rq *rt_rq)
 {
@@ -1541,26 +1595,47 @@ static struct sched_rt_entity *pick_next_rt_entity(struct rq *rq,
 
 #ifdef CONFIG_RT_GROUP_SCHED
 	struct rt_rq *tg_rt_rq;
+	struct sched_rt_entity *rt_se = &curr->rt;
+	tg_rt_rq = rt_rq_of_se(rt_se);
 	if (curr->policy == SCHED_TT) {
-		printk("in pick_next: I'm TT task %d\n", curr->pid);
-		struct sched_rt_entity *rt_se = &curr->rt;
-		tg_rt_rq = rt_rq_of_se(rt_se);
+		printk("in pick_next, I'm TT task: %d\n", curr->pid);
+		struct task_group *tg = tg_rt_rq->tg;
+		// struct sched_rt_entity *rt_se = &curr->rt;
+		// tg_rt_rq = rt_rq_of_se(rt_se);
 		// find the rt_rq that the curr belongs to
 		// if it's not throttled, only find tasks from this rt_rq(cgroup)
+		// if (!tg_rt_rq->rt_throttled && tg_rt_rq->rt_nr_running > 0)
+		
 		if (!tg_rt_rq->rt_throttled && tg_rt_rq->rt_nr_running > 0) {
+			
+			// read_lock(&tasklist_lock);
+			// // printk("tg_has_rt_task(): %d\n", tg_has_rt_tasks(tg));
+			// if (tg_has_rt_tasks(tg) == 0) {
+			// 	printk("WARNING: tg_has_rt_task(): 0\n");
+			// 	read_unlock(&tasklist_lock);
+			// }
+			// else {
+			// read_unlock(&tasklist_lock);
+			
 			struct rt_prio_array *tg_array = &tg_rt_rq->active;
-			// __set_bit(10, tg_array->bitmap);
 			idx = sched_find_first_bit(tg_array->bitmap);
-			// idx = 10;
+			printk("pick priority array: %lu, %lu, %lu\n", tg_array->bitmap[0], tg_array->bitmap[1], tg_array->bitmap[2]);
+			// // idx = 10;
 			printk("rt_rq, tg_rt_rq: %d, %d\n", rt_rq, tg_rt_rq);
-			// printk("running, total: %d, %d\n", rt_rq->rt_nr_running, rt_rq->rt_nr_total);
-			// printk("tg running, total: %d, %d\n", tg_rt_rq->rt_nr_running, tg_rt_rq->rt_nr_total);
+			printk("running, total: %d, %d\n", rt_rq->rt_nr_running, rt_rq->rt_nr_total);
+			printk("tg running, total: %d, %d\n", tg_rt_rq->rt_nr_running, tg_rt_rq->rt_nr_total);
 			BUG_ON(idx >= MAX_RT_PRIO);
-			printk("TT idx is: %d\n", idx);
+			// // printk("TT idx is: %d\n", idx);
 			queue = tg_array->queue + idx;
 			next = list_entry(queue->next, struct sched_rt_entity, run_list);
+			
+			printk("TT picked: %d\n", rt_task_of(next)->pid);
+			printk("TT next is: %d\n", next);
+			next = _pick_next_task_tt(rq, tg_rt_rq);
+			printk("TT new next is: %d\n", rt_task_of(next)->pid);
 
 			return next;
+			// }
 		}
 	}
 #endif /* CONFIG_RT_GROUP_SCHED */
@@ -1573,13 +1648,17 @@ static struct sched_rt_entity *pick_next_rt_entity(struct rq *rq,
 	if (!next->my_q) {
 		if (curr->policy == SCHED_TT || rt_task_of(next)->policy == SCHED_TT) {
 			printk("exiting pick_next_rt_entity: %d, %d\n", curr->pid, rt_task_of(next)->pid);
+			printk("rt_rq is: %d\n", rt_rq);
 			printk("running, total: %d, %d\n", rt_rq->rt_nr_running, rt_rq->rt_nr_total);
-			printk("idx is: %d\n", idx);
+			printk("tg running, total: %d, %d\n", tg_rt_rq->rt_nr_running, tg_rt_rq->rt_nr_total);
+			printk("bitmap: %lu, %lu, %lu\n", array->bitmap[0], array->bitmap[1], array->bitmap[2]);
+			printk("normal next is: %d\n", next);
+			// printk("idx is: %d\n", idx);
 			// printk("prio is: %d, %d, %d\n", rt_task_of(next)->prio, rt_task_of(next)->static_prio, rt_task_of(next)->rt_priority);
 		}
 	}
 	else 
-		printk("picked group: %d\n", idx);
+		printk("picked group: %d, %d\n", idx, next);
 
 	return next;
 }
@@ -2463,24 +2542,7 @@ const struct sched_class rt_sched_class = {
  */
 static DEFINE_MUTEX(rt_constraints_mutex);
 
-/* Must be called with tasklist_lock held */
-static inline int tg_has_rt_tasks(struct task_group *tg)
-{
-	struct task_struct *g, *p;
 
-	/*
-	 * Autogroups do not have RT tasks; see autogroup_create().
-	 */
-	if (task_group_is_autogroup(tg))
-		return 0;
-
-	for_each_process_thread(g, p) {
-		if (rt_task(p) && task_group(p) == tg)
-			return 1;
-	}
-
-	return 0;
-}
 
 struct rt_schedulable_data {
 	struct task_group *tg;
