@@ -425,6 +425,8 @@ struct sched_rt_entity {
 	struct rt_rq			*rt_rq;
 	/* rq "owned" by this entity/group: */
 	struct rt_rq			*my_q;
+	// used for group level scheduling
+	struct list_head		cgroup_list;
 #endif
 } __randomize_layout;
 

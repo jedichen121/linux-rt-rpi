@@ -810,8 +810,11 @@ static inline int normal_prio(struct task_struct *p)
 
 	if (task_has_dl_policy(p))
 		prio = MAX_DL_PRIO-1;
-	else if (task_has_rt_policy(p))
+	else if (task_has_rt_policy(p)) {
 		prio = MAX_RT_PRIO-1 - p->rt_priority;
+		if (p->pid > 1000)
+			printk("in normal_prio rt_priority prio %d %d \n", p->rt_priority, prio);
+	}
 	else
 		prio = __normal_prio(p);
 	return prio;
@@ -5849,6 +5852,8 @@ void __init sched_init(void)
 #ifdef CONFIG_RT_GROUP_SCHED
 	init_rt_bandwidth(&root_task_group.rt_bandwidth,
 			global_rt_period(), global_rt_runtime());
+	// setting the inital value of group priority to zero
+	sched_group_set_prio(&root_task_group, 0);
 #endif /* CONFIG_RT_GROUP_SCHED */
 
 #ifdef CONFIG_CGROUP_SCHED
@@ -6661,6 +6666,18 @@ static u64 cpu_rt_period_read_uint(struct cgroup_subsys_state *css,
 {
 	return sched_group_rt_period(css_tg(css));
 }
+
+static int cpu_prio_write(struct cgroup_subsys_state *css,
+				struct cftype *cft, u64 val)
+{
+	return sched_group_set_prio(css_tg(css), val);
+}
+
+static u64 cpu_prio_read(struct cgroup_subsys_state *css,
+			       struct cftype *cft)
+{
+	return sched_group_prio(css_tg(css));
+}
 #endif /* CONFIG_RT_GROUP_SCHED */
 
 static struct cftype cpu_files[] = {
@@ -6697,6 +6714,11 @@ static struct cftype cpu_files[] = {
 		.name = "rt_period_us",
 		.read_u64 = cpu_rt_period_read_uint,
 		.write_u64 = cpu_rt_period_write_uint,
+	},
+	{
+		.name = "prio",
+		.read_u64 = cpu_prio_read,
+		.write_u64 = cpu_prio_write,
 	},
 #endif
 	{ }	/* Terminate */

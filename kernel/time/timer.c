@@ -1733,8 +1733,7 @@ signed long __sched schedule_timeout(signed long timeout)
 			goto out;
 		}
 	}
-	if (current->pid > 1000 && current->policy == SCHED_TT)
-		printk("schedule_timeout() pid: %d\n", current->pid);
+
 	expire = timeout + jiffies;
 
 	setup_timer_on_stack(&timer, process_timeout, (unsigned long)current);
