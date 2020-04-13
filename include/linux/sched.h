@@ -427,6 +427,8 @@ struct sched_rt_entity {
 	struct rt_rq			*my_q;
 	// used for group level scheduling
 	struct list_head		cgroup_list;
+	// used for group level scheduling
+	unsigned short			on_cg_list;
 #endif
 } __randomize_layout;
 

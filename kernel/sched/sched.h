@@ -318,7 +318,6 @@ struct task_group {
 
 	struct rt_bandwidth rt_bandwidth;
 	int prio;
-	unsigned short rt_queued;
 #endif
 
 	struct rcu_head rcu;
