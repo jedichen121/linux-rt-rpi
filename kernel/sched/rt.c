@@ -180,7 +180,7 @@ void init_tg_rt_entry(struct task_group *tg, struct rt_rq *rt_rq,
 	tg->rt_rq[cpu] = rt_rq;
 	tg->rt_se[cpu] = rt_se;
 	// if (tg == &root_task_group)
-	// 	printk("in init_tg_rt_entry tg rt_rq rt_se %d %d\n", tg, rt_rq, rt_se);
+	// 	//abcdefg("in init_tg_rt_entry tg rt_rq rt_se %d %d\n", tg, rt_rq, rt_se);
 	// setting the inital value of group priority to zero
 	sched_group_set_prio(tg, 0);
 	if (!rt_se)
@@ -202,7 +202,7 @@ int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent)
 	struct rt_rq *rt_rq;
 	struct sched_rt_entity *rt_se;
 	int i;
-	// printk("in alloc_rt_sched_group tg %d\n", tg);
+	// //abcdefg("in alloc_rt_sched_group tg %d\n", tg);
 	tg->rt_rq = kzalloc(sizeof(rt_rq) * nr_cpu_ids, GFP_KERNEL);
 	if (!tg->rt_rq)
 		goto err;
@@ -509,10 +509,10 @@ static void sched_rt_rq_enqueue(struct rt_rq *rt_rq)
 	int cpu = cpu_of(rq);
 
 	rt_se = rt_rq->tg->rt_se[cpu];
-	printk("##############################\n");
-	printk("in sched_rt_rq_enqueue rt_rq->tg %d\n", rt_rq->tg);
+	//abcdefg("##############################\n");
+	//abcdefg("in sched_rt_rq_enqueue rt_rq->tg %d\n", rt_rq->tg);
 	// if (rt_se)
-	// 	printk("pid task->prio %d %d\n", rt_task_of(rt_se)->pid, rt_task_of(rt_se)->prio);
+	// 	//abcdefg("pid task->prio %d %d\n", rt_task_of(rt_se)->pid, rt_task_of(rt_se)->prio);
 	if (rt_rq->rt_nr_running) {
 		if (!rt_se)
 			enqueue_top_rt_rq(rt_rq);
@@ -531,13 +531,13 @@ static void sched_rt_rq_dequeue(struct rt_rq *rt_rq)
 
 	rt_se = rt_rq->tg->rt_se[cpu];
 	// if (schedddddd) {
-	// 	printk("in sched_rt_rq_dequeue\n");
-	// 	printk("rt_se rt_rq rt_rq->tg %d %d %d\n", rt_se, rt_rq, rt_rq->tg);
-	// 	printk("rt_se[0], rt_se[1] %d %d\n", rt_rq->tg->rt_se[0], rt_rq->tg->rt_se[1]);
+	// 	//abcdefg("in sched_rt_rq_dequeue\n");
+	// 	//abcdefg("rt_se rt_rq rt_rq->tg %d %d %d\n", rt_se, rt_rq, rt_rq->tg);
+	// 	//abcdefg("rt_se[0], rt_se[1] %d %d\n", rt_rq->tg->rt_se[0], rt_rq->tg->rt_se[1]);
 	// }
 	// else
 	// {
-	// 	printk("in sched_rt_rq_dequeue rt_se rt_rq %d %d\n", rt_se, rt_rq);
+	// 	//abcdefg("in sched_rt_rq_dequeue rt_se rt_rq %d %d\n", rt_se, rt_rq);
 	// }
 
 	if (!rt_se)
@@ -951,7 +951,7 @@ static int sched_rt_runtime_exceeded(struct rt_rq *rt_rq)
 		 */
 		if (likely(rt_b->rt_runtime)) {
 			rt_rq->rt_throttled = 1;
-			printk_deferred_once("sched: RT throttling activated\n");
+			//abcdefg_deferred_once("sched: RT throttling activated\n");
 		} else {
 			/*
 			 * In case we did anyway, make it go away,
@@ -962,13 +962,13 @@ static int sched_rt_runtime_exceeded(struct rt_rq *rt_rq)
 		}
 
 		if (rt_rq_throttled(rt_rq)) {
-			printk("****************************************\n");
-			printk("sched_rt_runtime_exceeded rt_rq->tg  prio %d %d\n", rt_rq->tg, rt_rq->tg->prio);
+			//abcdefg("****************************************\n");
+			//abcdefg("sched_rt_runtime_exceeded rt_rq->tg  prio %d %d\n", rt_rq->tg, rt_rq->tg->prio);
 			// schedddddd = 1;
-			// printk("rt_se[0], rt_se[1] %d %d\n", rt_rq->tg->rt_se[0], rt_rq->tg->rt_se[1]);
+			// //abcdefg("rt_se[0], rt_se[1] %d %d\n", rt_rq->tg->rt_se[0], rt_rq->tg->rt_se[1]);
 			sched_rt_rq_dequeue(rt_rq);
 			// schedddddd = 0;
-			printk("finished sched_rt_rq_dequeue\n");
+			//abcdefg("finished sched_rt_rq_dequeue\n");
 			return 1;
 		}
 	}
@@ -1203,30 +1203,30 @@ static void __enqueue_rt_group(struct sched_rt_entity *rt_se, unsigned int flags
 	// here the rt_rq should be the one for this cpu. 
 	// the group_rq should be the one belonging to this cgroup
 	// WARN_ON(group_rq->tg->rt_queued);
-	// printk("------------------\n");
-	// printk("In __enqueue_rt_group\n");
-	// printk("rt_se->my_q->tg %d\n", rt_se->my_q->tg);
-	// // printk("group_rq->tg %d\n", group_rq->tg);
-	// printk("rt_se->my_q->tg prio %d %d\n", rt_se->my_q->tg, group_rq->tg->prio);
-	// printk("rt_rq->tg and group_rt_rq->tg is %d, %d\n", rt_rq->tg, group_rq->tg);
-	// // printk("&rt_rq->rq->rt.active_tg, &rt_rq->active_tg, %d, %d\n", &rt_rq->rq->rt.active_tg, &rt_rq->active_tg);
-	// printk("rt_rq_throttled %d\n", rt_rq_throttled(group_rq));
-	// printk("group_rq->rt_nr_running %d\n", group_rq->rt_nr_running);
+	// //abcdefg("------------------\n");
+	// //abcdefg("In __enqueue_rt_group\n");
+	// //abcdefg("rt_se->my_q->tg %d\n", rt_se->my_q->tg);
+	// // //abcdefg("group_rq->tg %d\n", group_rq->tg);
+	// //abcdefg("rt_se->my_q->tg prio %d %d\n", rt_se->my_q->tg, group_rq->tg->prio);
+	// //abcdefg("rt_rq->tg and group_rt_rq->tg is %d, %d\n", rt_rq->tg, group_rq->tg);
+	// // //abcdefg("&rt_rq->rq->rt.active_tg, &rt_rq->active_tg, %d, %d\n", &rt_rq->rq->rt.active_tg, &rt_rq->active_tg);
+	// //abcdefg("rt_rq_throttled %d\n", rt_rq_throttled(group_rq));
+	// //abcdefg("group_rq->rt_nr_running %d\n", group_rq->rt_nr_running);
 	
 	if (group_rq && (rt_rq_throttled(group_rq) || !group_rq->rt_nr_running)) {
-		printk("in the if\n");
+		//abcdefg("in the if\n");
 		// if (group_rq->tg->rt_queued) {
 		if (rt_se->on_cg_list) {
 
-			printk("throttled group %d\n", group_rq->tg);
+			//abcdefg("throttled group %d\n", group_rq->tg);
 			__delist_rt_group(rt_se, tg_array);
 		}
 		return;
 	}
-	// printk("group_rq->tg->rt_queued %d\n", group_rq->tg->rt_queued);
+	// //abcdefg("group_rq->tg->rt_queued %d\n", group_rq->tg->rt_queued);
 	// if (group_rq->tg->rt_queued == 1){
 	if (rt_se->on_cg_list == 1){
-		printk("group already enqueued %d\n", group_rq->tg);
+		//abcdefg("group already enqueued %d\n", group_rq->tg);
 		return;
 	}
 	
@@ -1238,7 +1238,7 @@ static void __enqueue_rt_group(struct sched_rt_entity *rt_se, unsigned int flags
 	__set_bit(group_rq->tg->prio, tg_array->bitmap);
 	// // test
 	// idx = sched_find_first_bit(tg_array->bitmap);
-	// printk("test idx is %d\n", idx);
+	// //abcdefg("test idx is %d\n", idx);
 	// group_rq->tg->rt_queued = 1;
 	rt_se->on_cg_list = 1;
 	printk("group enqueued tg prio %d %d\n", group_rq->tg, group_rq->tg->prio);
@@ -1251,17 +1251,17 @@ static void __dequeue_rt_group(struct sched_rt_entity *rt_se, unsigned int flags
 	struct rt_rq *group_rq = group_rt_rq(rt_se);
 	// struct rt_prio_array *tg_array = &rt_rq->rq->rt.active_tg;
 	struct rt_prio_array *tg_array = &rt_rq->active_tg;
-	if (schedddddd)
-		printk("in __dequeue_rt_group\n");
+	// if (schedddddd)
+	// 	printk("in __dequeue_rt_group\n");
 	// WARN_ON_ONCE(!rt_se->on_list);
 	// if (group_rq->tg->rt_queued == 0){
 	if (rt_se->on_cg_list == 0){
-		printk("group already dequeued %d\n", group_rq->tg);
+		//abcdefg("group already dequeued %d\n", group_rq->tg);
 		return;
 	}
 	__delist_rt_group(rt_se, tg_array);
 	// if (rt_se)
-	// 	printk("task->prio %d\n", rt_task_of(rt_se)->prio);
+	// 	//abcdefg("task->prio %d\n", rt_task_of(rt_se)->prio);
 }
 
 static void
@@ -1273,42 +1273,42 @@ inc_rt_group(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
 	if (rt_rq->tg)
 		start_rt_bandwidth(&rt_rq->tg->rt_bandwidth);
 	// if (rt_entity_is_task(rt_se) && rt_task_of(rt_se)->pid > 1000)
-	// 	printk("In inc_rt_group %d", rt_task_of(rt_se)->pid);
+	// 	//abcdefg("In inc_rt_group %d", rt_task_of(rt_se)->pid);
 
 	// // here rt_rq rt_se->rt_rq are the same
 	// // need to remove so that 130 does not report warning
 	// if (rt_task_of(rt_se)->pid != 51 && rt_task_of(rt_se)->pid != 53) {
-	// 	printk("-----------------------------\n");
-	// 	// printk("two rt_rq: %d, %d\n", rt_rq, rt_se->rt_rq);
-	// 	printk("In inc_rt_group, pid is %d\n", rt_task_of(rt_se)->pid);
-	// 	printk("rt_se->rt_rq->tg is %d\n", rt_se->rt_rq->tg);
-	// 	// printk("task_group(rt_task_of(rt_se)) %d\n", task_group(rt_task_of(rt_se)));
+	// 	//abcdefg("-----------------------------\n");
+	// 	// //abcdefg("two rt_rq: %d, %d\n", rt_rq, rt_se->rt_rq);
+	// 	//abcdefg("In inc_rt_group, pid is %d\n", rt_task_of(rt_se)->pid);
+	// 	//abcdefg("rt_se->rt_rq->tg is %d\n", rt_se->rt_rq->tg);
+	// 	// //abcdefg("task_group(rt_task_of(rt_se)) %d\n", task_group(rt_task_of(rt_se)));
 	// 	// if (rt_se->my_q) {
-	// 	// 	printk("%d rt_se->my_q->tg is: %d\n", rt_task_of(rt_se)->pid, rt_se->my_q->tg);
-	// 	// 	printk("%d rt_se->my_q->tg->parent is: %d\n", rt_task_of(rt_se)->pid, rt_se->my_q->tg->parent);
+	// 	// 	//abcdefg("%d rt_se->my_q->tg is: %d\n", rt_task_of(rt_se)->pid, rt_se->my_q->tg);
+	// 	// 	//abcdefg("%d rt_se->my_q->tg->parent is: %d\n", rt_task_of(rt_se)->pid, rt_se->my_q->tg->parent);
 	// 	// }
 	// 	// if (rt_se->rt_rq->tg->parent)
-	// 	// 	printk("%d rt_se->rt_rq->tg->parent is %d\n", rt_task_of(rt_se)->pid, rt_se->rt_rq->tg->parent);
+	// 	// 	//abcdefg("%d rt_se->rt_rq->tg->parent is %d\n", rt_task_of(rt_se)->pid, rt_se->rt_rq->tg->parent);
 	// }
 
 	// // check if the parent is the root_task_group
 	// if (rt_se->rt_rq->tg->parent && rt_se->rt_rq->tg->parent == &root_task_group) {
 	// if the rt_se is a task_group
 	if (rt_se->my_q) {
-		printk("------------------------------\n");
-		printk("In inc_rt_group %d\n", rt_task_of(rt_se)->pid);
-		printk("tg prio %d %d\n", rt_se->my_q->tg, rt_se->my_q->tg->prio);
-		printk("rt_rq->rt_nr_running, rt_rq->rt_nr_boosted, %d %d\n", rt_rq->rt_nr_running, rt_rq->rt_nr_boosted);
-		if (rt_rq->tg)
-			printk("parent is tg %d %d\n", rt_rq->tg, rt_rq->tg->prio);
-		// printk("rt_rq->tg->rt_se[0]->my_q->tg %d\n", rt_rq->tg->rt_se[0]->my_q->tg);
-		// printk("rt_se->parent->rt_rq->tg is %d\n", rt_se->parent->rt_rq->tg);
-		// printk("rt_rq->rq->cpu %d\n", rt_rq->rq->cpu);
+		//abcdefg("------------------------------\n");
+		//abcdefg("In inc_rt_group %d\n", rt_task_of(rt_se)->pid);
+		//abcdefg("tg prio %d %d\n", rt_se->my_q->tg, rt_se->my_q->tg->prio);
+		//abcdefg("rt_rq->rt_nr_running, rt_rq->rt_nr_boosted, %d %d\n", rt_rq->rt_nr_running, rt_rq->rt_nr_boosted);
+		// if (rt_rq->tg)
+		// 	printk("parent is tg %d %d\n", rt_rq->tg, rt_rq->tg->prio);
+		// //abcdefg("rt_rq->tg->rt_se[0]->my_q->tg %d\n", rt_rq->tg->rt_se[0]->my_q->tg);
+		// //abcdefg("rt_se->parent->rt_rq->tg is %d\n", rt_se->parent->rt_rq->tg);
+		// //abcdefg("rt_rq->rq->cpu %d\n", rt_rq->rq->cpu);
 		// __test(rt_se, rt_rq->tg->rt_se);
-		// printk("rt_rq->tg->rt_se[rt_rq->rq->cpu] %d\n", rt_rq->tg->rt_se[rt_rq->rq->cpu]);
+		// //abcdefg("rt_rq->tg->rt_se[rt_rq->rq->cpu] %d\n", rt_rq->tg->rt_se[rt_rq->rq->cpu]);
 		// __enqueue_rt_group(rt_rq->tg->rt_se[rt_rq->rq->cpu], ENQUEUE_HEAD);
 		__enqueue_rt_group(rt_se, ENQUEUE_HEAD);
-		printk("enqueued group pid %d\n", rt_task_of(rt_se)->pid);
+		//abcdefg("enqueued group pid %d\n", rt_task_of(rt_se)->pid);
 	}
 }
 
@@ -1318,18 +1318,18 @@ dec_rt_group(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
 	if (rt_se_boosted(rt_se))
 		rt_rq->rt_nr_boosted--;
 	// if (rt_entity_is_task(rt_se) && rt_task_of(rt_se)->pid > 1000)
-	// 	printk("In dec_rt_group %d", rt_task_of(rt_se)->pid);
+	// 	//abcdefg("In dec_rt_group %d", rt_task_of(rt_se)->pid);
 	if (schedddddd) {
 		printk("in dec_rt_group, rt_se, rt_rq %d %d\n", rt_se, rt_rq);
-		// printk("rt_rq->tg %d\n", rt_rq->tg);
+		// //abcdefg("rt_rq->tg %d\n", rt_rq->tg);
 		// if (rt_rq->tg->parent)
-		// 	printk("rt_rq->tg->parent %d\n", rt_rq->tg->parent);
+		// 	//abcdefg("rt_rq->tg->parent %d\n", rt_rq->tg->parent);
 		// else
-		// 	printk("no parent\n");
+		// 	//abcdefg("no parent\n");
 	}
 	WARN_ON(!rt_rq->rt_nr_running && rt_rq->rt_nr_boosted);
 
-	// // printk("In dec_rt_group, rt_se is: %d\n", rt_se);
+	// // //abcdefg("In dec_rt_group, rt_se is: %d\n", rt_se);
 	// if there are still task waiting for run, should not dequeue it
 	// if (rt_rq->rt_nr_running)
 	// 	return;
@@ -1337,14 +1337,15 @@ dec_rt_group(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
 	// if (rt_se->my_q && rt_se->my_q->tg->parent == &root_task_group) {
 	// if (rt_rq->tg->parent && rt_rq->tg->parent == &root_task_group) {
 	if (rt_se->my_q) {
-		printk("------------------------------\n");
-		printk("In dec_rt_group pid %d\n", rt_task_of(rt_se)->pid);
-		printk("tg prio %d %d\n", rt_se->my_q->tg, rt_se->my_q->tg->prio);
+		//abcdefg("------------------------------\n");
+		//abcdefg("In dec_rt_group pid %d\n", rt_task_of(rt_se)->pid);
+		//abcdefg("tg prio %d %d\n", rt_se->my_q->tg, rt_se->my_q->tg->prio);
 		if (rt_rq->tg)
 			printk("parent is tg %d %d\n", rt_rq->tg, rt_rq->tg->prio);
-		printk("rt_rq->rt_nr_running, rt_rq->rt_nr_boosted, %d %d\n", rt_rq->rt_nr_running, rt_rq->rt_nr_boosted);
-		// printk("group_rq->tg->rt_queued %d\n", rt_rq->tg->rt_queued);
+		//abcdefg("rt_rq->rt_nr_running, rt_rq->rt_nr_boosted, %d %d\n", rt_rq->rt_nr_running, rt_rq->rt_nr_boosted);
+		// //abcdefg("group_rq->tg->rt_queued %d\n", rt_rq->tg->rt_queued);
 		// __dequeue_rt_group(rt_rq->tg->rt_se[rt_rq->rq->cpu], ENQUEUE_HEAD);
+		// if ()
 		__dequeue_rt_group(rt_se, ENQUEUE_HEAD);
 	}
 }
@@ -1367,7 +1368,7 @@ void inc_rt_tasks(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
 {
 	int prio = rt_se_prio(rt_se);
 	// if (rt_entity_is_task(rt_se) && rt_task_of(rt_se)->pid > 1000)
-	// 	printk("In inc_rt_tasks %d", rt_task_of(rt_se)->pid);
+	// 	//abcdefg("In inc_rt_tasks %d", rt_task_of(rt_se)->pid);
 	WARN_ON(!rt_prio(prio));
 	rt_rq->rt_nr_running += rt_se_nr_running(rt_se);
 	rt_rq->rr_nr_running += rt_se_rr_nr_running(rt_se);
@@ -1381,7 +1382,7 @@ static inline
 void dec_rt_tasks(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
 {
 	// if (rt_entity_is_task(rt_se) && rt_task_of(rt_se)->pid > 1000)
-	// 	printk("In dec_rt_tasks %d", rt_task_of(rt_se)->pid);
+	// 	//abcdefg("In dec_rt_tasks %d", rt_task_of(rt_se)->pid);
 	if (schedddddd)
 		printk("in dec_rt_tasks, rt_se %d %d\n", rt_se, rt_rq);
 	WARN_ON(!rt_prio(rt_se_prio(rt_se)));
@@ -1424,7 +1425,7 @@ static void __enqueue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flag
 	struct rt_rq *group_rq = group_rt_rq(rt_se);
 	struct list_head *queue = array->queue + rt_se_prio(rt_se);
 	// if (rt_entity_is_task(rt_se) && rt_task_of(rt_se)->pid > 1000)
-	// 	printk("In __enqueue_rt_entity %d", rt_task_of(rt_se)->pid);
+	// 	//abcdefg("In __enqueue_rt_entity %d", rt_task_of(rt_se)->pid);
 	/*
 	 * Don't enqueue the group if its throttled, or when empty.
 	 * The latter is a consequence of the former when a child group
@@ -1454,7 +1455,7 @@ static void __enqueue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flag
 	// if (group_rq && (!rt_rq_throttled(group_rq) && group_rq->rt_nr_running)) {
 	// 	// if (!group_rq->tg->rt_queued) {
 	// 	if (!rt_se->on_cg_list) {
-	// 		printk("unthrottled group %d\n", group_rq->tg);
+	// 		//abcdefg("unthrottled group %d\n", group_rq->tg);
 	// 		__enqueue_rt_group(rt_se, flags);
 	// 	}
 	// 	return;
@@ -1468,7 +1469,7 @@ static void __dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flag
 	struct rt_prio_array *array = &rt_rq->active;
 	struct rt_rq *group_rq = group_rt_rq(rt_se);
 	// if (rt_entity_is_task(rt_se) && rt_task_of(rt_se)->pid > 1000)
-	// 	printk("In __dequeue_rt_entity %d", rt_task_of(rt_se)->pid);
+	// 	//abcdefg("In __dequeue_rt_entity %d", rt_task_of(rt_se)->pid);
 	if (schedddddd)
 		printk("in __dequeue_rt_entity rt_se rt_rq %d %d\n", rt_se, rt_rq);
 	if (move_entity(flags)) {
@@ -1485,8 +1486,8 @@ static void __dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flag
 	// if (group_rq)
 	// 	// if (group_rq->tg->rt_queued) {
 	// 	if (!rt_se->on_cg_list) {
-	// 		printk("throttled group %d\n", group_rq->tg);
-	// 		// printk("group_rq->rt_nr_running %d\n", group_rq->rt_nr_running);
+	// 		//abcdefg("throttled group %d\n", group_rq->tg);
+	// 		// //abcdefg("group_rq->rt_nr_running %d\n", group_rq->rt_nr_running);
 	// 		__dequeue_rt_group(rt_se, flags);
 	// 	}
 	// 	return;
@@ -1502,21 +1503,21 @@ static void dequeue_rt_stack(struct sched_rt_entity *rt_se, unsigned int flags)
 {
 	struct sched_rt_entity *back = NULL;
 	// if (rt_entity_is_task(rt_se) && rt_task_of(rt_se)->pid > 1000)
-	// 	printk("In dequeue_rt_stack %d", rt_task_of(rt_se)->pid);
+	// 	//abcdefg("In dequeue_rt_stack %d", rt_task_of(rt_se)->pid);
 	if (schedddddd)
 		printk("in dequeue_rt_stack, rt_se %d\n", rt_se);
 	for_each_sched_rt_entity(rt_se) {
 		rt_se->back = back;
 		back = rt_se;
 		// if (schedddddd)
-		// 	printk("for_each_sched_rt_entity(rt_se) %d\n", rt_se);
+		// 	//abcdefg("for_each_sched_rt_entity(rt_se) %d\n", rt_se);
 	}
 
 	dequeue_top_rt_rq(rt_rq_of_se(back));
 
 	for (rt_se = back; rt_se; rt_se = rt_se->back) {
 		// if (schedddddd)
-		// 	printk("for (rt_se = back) %d\n", rt_se);
+		// 	//abcdefg("for (rt_se = back) %d\n", rt_se);
 		if (on_rt_rq(rt_se))
 			__dequeue_rt_entity(rt_se, flags);
 	}
@@ -1526,7 +1527,7 @@ static void enqueue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
 {
 	struct rq *rq = rq_of_rt_se(rt_se);
 	// if (rt_entity_is_task(rt_se) && rt_task_of(rt_se)->pid > 1000)
-	// 	printk("In enqueue_rt_entity %d", rt_task_of(rt_se)->pid);
+	// 	//abcdefg("In enqueue_rt_entity %d", rt_task_of(rt_se)->pid);
 	dequeue_rt_stack(rt_se, flags);
 	for_each_sched_rt_entity(rt_se)
 		__enqueue_rt_entity(rt_se, flags);
@@ -1537,7 +1538,7 @@ static void dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
 {
 	struct rq *rq = rq_of_rt_se(rt_se);
 	// if (rt_entity_is_task(rt_se) && rt_task_of(rt_se)->pid > 1000)
-	// 	printk("In dequeue_rt_entity %d", rt_task_of(rt_se)->pid);
+	// 	//abcdefg("In dequeue_rt_entity %d", rt_task_of(rt_se)->pid);
 	if (schedddddd) {
 		printk("in dequeue_rt_entity rt_se %d\n", rt_se);
 	}
@@ -1560,7 +1561,7 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags)
 {
 	struct sched_rt_entity *rt_se = &p->rt;
 	// if (rt_entity_is_task(rt_se) && rt_task_of(rt_se)->pid > 1000)
-	// 	printk("In enqueue_task_rt %d", rt_task_of(rt_se)->pid);
+	// 	//abcdefg("In enqueue_task_rt %d", rt_task_of(rt_se)->pid);
 	if (flags & ENQUEUE_WAKEUP)
 		rt_se->timeout = 0;
 
@@ -1574,7 +1575,7 @@ static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags)
 {
 	struct sched_rt_entity *rt_se = &p->rt;
 	// if (rt_entity_is_task(rt_se) && rt_task_of(rt_se)->pid > 1000)
-	// 	printk("In dequeue_task_rt %d", rt_task_of(rt_se)->pid);
+	// 	//abcdefg("In dequeue_task_rt %d", rt_task_of(rt_se)->pid);
 	update_curr_rt(rq);
 	dequeue_rt_entity(rt_se, flags);
 
@@ -1838,7 +1839,7 @@ static struct sched_rt_entity *pick_next_rt_group(struct rq *rq,
 	queue = array->queue + idx;
 	next = list_entry(queue->next, struct sched_rt_entity, cgroup_list);
 	// if (!next)
-	// 	printk("next is null\n");
+	// 	//abcdefg("next is null\n");
 	return next;
 }
 #endif /* CONFIG_RT_GROUP_SCHED */
@@ -1864,8 +1865,8 @@ static struct task_struct *_pick_next_task_rt(struct rq *rq)
 			return p;
 		}
 
-		printk("previous task TT, now need to select other task_group\n");
-		printk("tg_rt_rq->rt_throttled tg_rt_rq->rt_nr_running %d %d\n", tg_rt_rq->rt_throttled, tg_rt_rq->rt_nr_running);
+		//abcdefg("previous task TT, now need to select other task_group\n");
+		//abcdefg("tg_rt_rq->rt_throttled tg_rt_rq->rt_nr_running %d %d\n", tg_rt_rq->rt_throttled, tg_rt_rq->rt_nr_running);
 	}
 
 	// pick task_group based on priority after we are allowed to
@@ -1882,14 +1883,14 @@ static struct task_struct *_pick_next_task_rt(struct rq *rq)
 	if (rt_se && !back) {
 		rt_se = back;
 		tg_rt_rq = group_rt_rq(rt_se);
-		if (tg_rt_rq) {
-			printk("tg_rt_rq->rt_throttled tg_rt_rq->rt_nr_running %d %d\n", tg_rt_rq->rt_throttled, tg_rt_rq->rt_nr_running);
-			printk("tg_rt_rq->tg prio %d %d\n", tg_rt_rq->tg, tg_rt_rq->tg->prio);
-			printk("tg_rt_rq rt_se->rt_rq %d %d\n", tg_rt_rq, rt_se->rt_rq);
-		}
+		// if (tg_rt_rq) {
+		// 	printk("tg_rt_rq->rt_throttled tg_rt_rq->rt_nr_running %d %d\n", tg_rt_rq->rt_throttled, tg_rt_rq->rt_nr_running);
+		// 	printk("tg_rt_rq->tg prio %d %d\n", tg_rt_rq->tg, tg_rt_rq->tg->prio);
+		// 	printk("tg_rt_rq rt_se->rt_rq %d %d\n", tg_rt_rq, rt_se->rt_rq);
+		// }
 		rt_se = _pick_next_task_tt(rq, tg_rt_rq);
 		p = rt_task_of(rt_se);
-		printk("after pick_next_rt_group() picked %d %d %d\n", p->pid, p->prio, tg_rt_rq->tg);
+		//abcdefg("after pick_next_rt_group() picked %d %d %d\n", p->pid, p->prio, tg_rt_rq->tg);
 		p->se.exec_start = rq_clock_task(rq);
 		return p;
 	}
@@ -1903,10 +1904,10 @@ static struct task_struct *_pick_next_task_rt(struct rq *rq)
 
 	p = rt_task_of(rt_se);
 	p->se.exec_start = rq_clock_task(rq);
-	if (p && p->pid > 1000) {
-		printk("in _pick_next_task_rt curr prio is %d %d\n", curr->pid, curr->prio);
-		printk("in _pick_next_task_rt prio is %d %d\n", p->pid, p->prio);
-	}
+	// if (p && p->pid > 1000) {
+	// 	printk("in _pick_next_task_rt curr prio is %d %d\n", curr->pid, curr->prio);
+	// 	printk("in _pick_next_task_rt prio is %d %d\n", p->pid, p->prio);
+	// }
 
 	return p;
 }
@@ -2900,7 +2901,7 @@ static int tg_set_tg_prio(struct task_group *tg, u64 prio)
 	read_lock(&tasklist_lock);
 
 	tg->prio = MAX_RT_PRIO-1 - prio;
-	// printk("tg_set_tg_prio tg prio %d %d\n", tg, tg->prio);
+	// //abcdefg("tg_set_tg_prio tg prio %d %d\n", tg, tg->prio);
 
 // unlock:
 	read_unlock(&tasklist_lock);
