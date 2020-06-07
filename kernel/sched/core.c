@@ -85,7 +85,7 @@ int sysctl_sched_rt_runtime = 950000;
 
 /* CPUs with isolated domains */
 cpumask_var_t cpu_isolated_map;
-
+bool deactived = false;
 /*
  * __task_rq_lock - lock the rq @p resides on.
  */
@@ -777,7 +777,8 @@ void activate_task(struct rq *rq, struct task_struct *p, int flags)
 {
 	if (task_contributes_to_load(p))
 		rq->nr_uninterruptible--;
-
+	if (p->policy == SCHED_TT)
+		printk("in activate_task %d\n", p->pid);
 	enqueue_task(rq, p, flags);
 }
 
@@ -785,7 +786,8 @@ void deactivate_task(struct rq *rq, struct task_struct *p, int flags)
 {
 	if (task_contributes_to_load(p))
 		rq->nr_uninterruptible++;
-
+	if (p->policy == SCHED_TT)
+		printk("in deactivate_task %d\n", p->pid);
 	dequeue_task(rq, p, flags);
 }
 
@@ -1666,6 +1668,11 @@ static inline void ttwu_activate(struct rq *rq, struct task_struct *p, int en_fl
 static void ttwu_do_wakeup(struct rq *rq, struct task_struct *p, int wake_flags,
 			   struct rq_flags *rf)
 {
+	struct task_struct *prev = rq->curr;
+	if (p->pid < 1000 && deactived == true) {
+		printk("in ttwu_do_wakeup %d %d\n", prev->pid, p->pid);
+		deactived = false;
+	}
 	check_preempt_curr(rq, p, wake_flags);
 	p->state = TASK_RUNNING;
 	trace_sched_wakeup(p);
@@ -3229,6 +3236,10 @@ again:
 	for_each_class(class) {
 		p = class->pick_next_task(rq, prev, rf);
 		if (p) {
+			// if (deactived) {
+			// 	printk("for_each_class picked: %d\n", p->pid);
+			// 	deactived = false;
+			// }
 			if (unlikely(p == RETRY_TASK))
 				goto again;
 			return p;
@@ -3315,6 +3326,10 @@ static void __sched notrace __schedule(bool preempt)
 		if (unlikely(signal_pending_state(prev->state, prev))) {
 			prev->state = TASK_RUNNING;
 		} else {
+			if (prev->policy == SCHED_TT || prev->policy == SCHED_FIFO && prev->pid > 1000) {
+				deactived = true;
+				printk("in __schedule %d %d %d\n", prev->pid, preempt, prev->state);
+			}				
 			deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
 			prev->on_rq = 0;
 
@@ -3338,6 +3353,10 @@ static void __sched notrace __schedule(bool preempt)
 		}
 		switch_count = &prev->nvcsw;
 	}
+	// else {
+	// 	if (prev->policy == SCHED_TT)
+	// 		printk("in __schedule else %d %d %d\n", prev->pid, preempt, prev->state);
+	// }
 
 	next = pick_next_task(rq, prev, &rf);
 	clear_tsk_need_resched(prev);
