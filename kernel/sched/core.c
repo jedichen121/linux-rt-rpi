@@ -777,8 +777,8 @@ void activate_task(struct rq *rq, struct task_struct *p, int flags)
 {
 	if (task_contributes_to_load(p))
 		rq->nr_uninterruptible--;
-	if (p->policy == SCHED_TT)
-		printk("in activate_task %d\n", p->pid);
+	// if (p->policy == SCHED_TT)
+	// 	printk("in activate_task %d\n", p->pid);
 	enqueue_task(rq, p, flags);
 }
 
@@ -786,8 +786,8 @@ void deactivate_task(struct rq *rq, struct task_struct *p, int flags)
 {
 	if (task_contributes_to_load(p))
 		rq->nr_uninterruptible++;
-	if (p->policy == SCHED_TT)
-		printk("in deactivate_task %d\n", p->pid);
+	// if (p->policy == SCHED_TT)
+	// 	printk("in deactivate_task %d\n", p->pid);
 	dequeue_task(rq, p, flags);
 }
 
@@ -814,8 +814,8 @@ static inline int normal_prio(struct task_struct *p)
 		prio = MAX_DL_PRIO-1;
 	else if (task_has_rt_policy(p)) {
 		prio = MAX_RT_PRIO-1 - p->rt_priority;
-		if (p->pid > 1000)
-			printk("in normal_prio rt_priority prio %d %d \n", p->rt_priority, prio);
+		// if (p->pid > 1000)
+		// 	printk("in normal_prio rt_priority prio %d %d \n", p->rt_priority, prio);
 	}
 	else
 		prio = __normal_prio(p);
@@ -1668,11 +1668,11 @@ static inline void ttwu_activate(struct rq *rq, struct task_struct *p, int en_fl
 static void ttwu_do_wakeup(struct rq *rq, struct task_struct *p, int wake_flags,
 			   struct rq_flags *rf)
 {
-	struct task_struct *prev = rq->curr;
-	if (p->pid < 1000 && deactived == true) {
-		printk("in ttwu_do_wakeup %d %d\n", prev->pid, p->pid);
-		deactived = false;
-	}
+	// struct task_struct *prev = rq->curr;
+	// if (p->pid < 1000 && deactived == true) {
+	// 	// printk("in ttwu_do_wakeup %d %d\n", prev->pid, p->pid);
+	// 	deactived = false;
+	// }
 	check_preempt_curr(rq, p, wake_flags);
 	p->state = TASK_RUNNING;
 	trace_sched_wakeup(p);
@@ -3328,7 +3328,7 @@ static void __sched notrace __schedule(bool preempt)
 		} else {
 			if (prev->policy == SCHED_TT || prev->policy == SCHED_FIFO && prev->pid > 1000) {
 				deactived = true;
-				printk("in __schedule %d %d %d\n", prev->pid, preempt, prev->state);
+				// printk("in __schedule %d %d %d\n", prev->pid, preempt, prev->state);
 			}				
 			deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
 			prev->on_rq = 0;
@@ -4078,7 +4078,7 @@ recheck:
 			    !can_nice(p, attr->sched_nice))
 				return -EPERM;
 		}
-
+		printk("after fair_policy\n");
 		if (rt_policy(policy)) {
 			unsigned long rlim_rtprio =
 					task_rlimit(p, RLIMIT_RTPRIO);
@@ -4092,7 +4092,7 @@ recheck:
 			    attr->sched_priority > rlim_rtprio)
 				return -EPERM;
 		}
-
+		printk("after rt_policy\n");
 		 /*
 		  * Can't set/change SCHED_DEADLINE policy at all for now
 		  * (safest behavior); in the future we would like to allow
@@ -4110,11 +4110,11 @@ recheck:
 			if (!can_nice(p, task_nice(p)))
 				return -EPERM;
 		}
-
+		printk("after idle_policy\n");
 		/* Can't change other user's priorities: */
 		if (!check_same_owner(p))
 			return -EPERM;
-
+		printk("after check_same_owner\n");
 		/* Normal users shall not reset the sched_reset_on_fork flag: */
 		if (p->sched_reset_on_fork && !reset_on_fork)
 			return -EPERM;
@@ -4168,12 +4168,22 @@ change:
 		 * Do not allow realtime tasks into groups that have no runtime
 		 * assigned.
 		 */
+		// printk("in CONFIG_RT_GROUP_SCHED\n");
+		// printk("&root_task_group %d\n", &root_task_group);
+		// printk("task_group(p) %d\n", task_group(p));
+		// if (task_group(p)->parent)
+		// 	printk("task_group(p)->parent %d\n", task_group(p)->parent);
+		// printk("task_group(p)->rt_runtime %d\n", task_group(p)->rt_bandwidth.rt_runtime);
+		// printk("task_group(p)->rt_period %d\n", task_group(p)->rt_bandwidth.rt_period);
+		// printk("rt_bandwidth_enabled() %d\n", rt_bandwidth_enabled());
+		// printk("!is_autogroup() %d\n", !task_group_is_autogroup(task_group(p)));
 		if (rt_bandwidth_enabled() && rt_policy(policy) &&
 				task_group(p)->rt_bandwidth.rt_runtime == 0 &&
 				!task_group_is_autogroup(task_group(p))) {
 			task_rq_unlock(rq, p, &rf);
 			return -EPERM;
 		}
+		printk("after CONFIG_RT_GROUP_SCHED\n");
 #endif
 #ifdef CONFIG_SMP
 		if (dl_bandwidth_enabled() && dl_policy(policy)) {
@@ -4296,6 +4306,7 @@ static int _sched_setscheduler(struct task_struct *p, int policy,
 int sched_setscheduler(struct task_struct *p, int policy,
 		       const struct sched_param *param)
 {
+	// printk("in sched_setscheduler\n");
 	return _sched_setscheduler(p, policy, param, true);
 }
 EXPORT_SYMBOL_GPL(sched_setscheduler);
@@ -5811,6 +5822,12 @@ int in_sched_functions(unsigned long addr)
 struct task_group root_task_group;
 LIST_HEAD(task_groups);
 
+#ifdef CONFIG_RT_GROUP_SCHED
+// struct rt_prio_array tg_prio_list;
+struct list_head tg_prio_list;
+struct task_group *prev_tg, *curr_tg;
+#endif /* CONFIG_RT_GROUP_SCHED */
+
 /* Cacheline aligned slab cache for task_group */
 static struct kmem_cache *task_group_cache __read_mostly;
 #endif
@@ -5882,6 +5899,9 @@ void __init sched_init(void)
 	autogroup_init(&init_task);
 #endif /* CONFIG_CGROUP_SCHED */
 
+#ifdef CONFIG_RT_GROUP_SCHED
+	init_tg_prio_list();
+#endif
 	for_each_possible_cpu(i) {
 		struct rq *rq;
 
@@ -6695,6 +6715,30 @@ static u64 cpu_prio_read(struct cgroup_subsys_state *css,
 {
 	return sched_group_prio(css_tg(css));
 }
+
+static int cpu_protect_write(struct cgroup_subsys_state *css,
+				struct cftype *cft, u64 val)
+{
+	return sched_group_set_protect(css_tg(css), val);
+}
+
+static u64 cpu_protect_read(struct cgroup_subsys_state *css,
+			       struct cftype *cft)
+{
+	return sched_group_protect(css_tg(css));
+}
+
+static int cpu_window_write(struct cgroup_subsys_state *css,
+				struct cftype *cft, u64 val)
+{
+	return sched_group_set_window(css_tg(css), val);
+}
+
+static u64 cpu_window_read(struct cgroup_subsys_state *css,
+			       struct cftype *cft)
+{
+	return sched_group_window(css_tg(css));
+}
 #endif /* CONFIG_RT_GROUP_SCHED */
 
 static struct cftype cpu_files[] = {
@@ -6736,6 +6780,16 @@ static struct cftype cpu_files[] = {
 		.name = "prio",
 		.read_u64 = cpu_prio_read,
 		.write_u64 = cpu_prio_write,
+	},
+	{
+		.name = "window",
+		.read_u64 = cpu_window_read,
+		.write_u64 = cpu_window_write,
+	},
+		{
+		.name = "protect",
+		.read_u64 = cpu_protect_read,
+		.write_u64 = cpu_protect_write,
 	},
 #endif
 	{ }	/* Terminate */

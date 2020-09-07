@@ -66,6 +66,12 @@ extern void cpu_load_update_active(struct rq *this_rq);
 static inline void cpu_load_update_active(struct rq *this_rq) { }
 #endif
 
+#ifdef CONFIG_RT_GROUP_SCHED
+// struct rt_prio_array tg_prio_list;
+extern struct list_head tg_prio_list;
+extern struct task_group *prev_tg, *curr_tg;
+#endif /* CONFIG_RT_GROUP_SCHED */
+
 /*
  * Helpers for converting nanosecond timing to jiffy resolution
  */
@@ -318,6 +324,12 @@ struct task_group {
 
 	struct rt_bandwidth rt_bandwidth;
 	int prio;
+	struct list_head prio_list;
+	// what is this count for?
+	int cnt;
+	struct rt_bandwidth win_bandwidth;
+	int preempt;
+	int protect;
 #endif
 
 	struct rcu_head rcu;
@@ -385,12 +397,17 @@ extern int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent
 extern void init_tg_rt_entry(struct task_group *tg, struct rt_rq *rt_rq,
 		struct sched_rt_entity *rt_se, int cpu,
 		struct sched_rt_entity *parent);
+extern void init_tg_prio_list(void);
 extern int sched_group_set_rt_runtime(struct task_group *tg, long rt_runtime_us);
 extern int sched_group_set_rt_period(struct task_group *tg, u64 rt_period_us);
 extern int sched_group_set_prio(struct task_group *tg, u64 prio);
+extern int sched_group_set_protect(struct task_group *tg, u64 p);
+extern int sched_group_set_window(struct task_group *tg, u64 window);
 extern long sched_group_rt_runtime(struct task_group *tg);
 extern long sched_group_rt_period(struct task_group *tg);
 extern long sched_group_prio(struct task_group *tg);
+extern long sched_group_protect(struct task_group *tg);
+extern long sched_group_window(struct task_group *tg);
 extern int sched_rt_can_attach(struct task_group *tg, struct task_struct *tsk);
 
 extern struct task_group *sched_create_group(struct task_group *parent);
@@ -718,6 +735,11 @@ struct rq {
 	struct list_head leaf_cfs_rq_list;
 	struct list_head *tmp_alone_branch;
 #endif /* CONFIG_FAIR_GROUP_SCHED */
+
+// #ifdef CONFIG_RT_GROUP_SCHED
+// 	struct rt_prio_array tg_prio_list;
+// 	struct task_group *prev_tg, *curr_tg;
+// #endif /* CONFIG_FAIR_GROUP_SCHED */
 
 	/*
 	 * This is part of a global counter where only the total sum

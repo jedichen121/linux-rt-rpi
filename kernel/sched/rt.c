@@ -41,6 +41,31 @@ static enum hrtimer_restart sched_rt_period_timer(struct hrtimer *timer)
 	return idle ? HRTIMER_NORESTART : HRTIMER_RESTART;
 }
 
+static enum hrtimer_restart sched_rt_window_timer(struct hrtimer *timer)
+{
+	struct rt_bandwidth *win_b =
+		container_of(timer, struct rt_bandwidth, rt_period_timer);
+	struct task_group *tg = 
+		container_of(win_b, struct task_group, win_bandwidth);
+	int overrun;
+
+	raw_spin_lock(&win_b->rt_runtime_lock);
+	for (;;) {
+		overrun = hrtimer_forward_now(timer, win_b->rt_period);
+		if (!overrun) {
+			printk("no overrun in window timer\n");
+			break;
+		}
+
+		raw_spin_unlock(&win_b->rt_runtime_lock);
+		tg->preempt = 0;
+		raw_spin_lock(&win_b->rt_runtime_lock);
+	}
+	raw_spin_unlock(&win_b->rt_runtime_lock);
+
+	return HRTIMER_NORESTART;
+}
+
 void init_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime)
 {
 	rt_b->rt_period = ns_to_ktime(period);
@@ -51,6 +76,18 @@ void init_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime)
 	hrtimer_init(&rt_b->rt_period_timer,
 			CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	rt_b->rt_period_timer.function = sched_rt_period_timer;
+}
+
+void init_rt_window(struct rt_bandwidth *win_b, u64 period, u64 runtime)
+{
+	win_b->rt_period = ns_to_ktime(period);
+	win_b->rt_runtime = runtime;
+
+	raw_spin_lock_init(&win_b->rt_runtime_lock);
+
+	hrtimer_init(&win_b->rt_period_timer,
+			CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	win_b->rt_period_timer.function = sched_rt_window_timer;
 }
 
 static void start_rt_bandwidth(struct rt_bandwidth *rt_b)
@@ -179,9 +216,7 @@ void init_tg_rt_entry(struct task_group *tg, struct rt_rq *rt_rq,
 
 	tg->rt_rq[cpu] = rt_rq;
 	tg->rt_se[cpu] = rt_se;
-	// if (tg == &root_task_group)
-	// 	//abcdefg("in init_tg_rt_entry tg rt_rq rt_se %d %d\n", tg, rt_rq, rt_se);
-	// setting the inital value of group priority to zero
+
 	sched_group_set_prio(tg, 0);
 	if (!rt_se)
 		return;
@@ -195,6 +230,16 @@ void init_tg_rt_entry(struct task_group *tg, struct rt_rq *rt_rq,
 	rt_se->parent = parent;
 	INIT_LIST_HEAD(&rt_se->run_list);
 	INIT_LIST_HEAD(&rt_se->cgroup_list);
+}
+
+void init_tg_prio_list()
+{
+	printk("in init_tg_prio_list\n");
+	INIT_LIST_HEAD(&tg_prio_list);
+	prev_tg = NULL;
+	curr_tg = NULL;
+	// add root_task_group to the list, for now
+	// list_add(&root_task_group.prio_list, &tg_prio_list);
 }
 
 int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent)
@@ -212,7 +257,9 @@ int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent)
 
 	init_rt_bandwidth(&tg->rt_bandwidth,
 			ktime_to_ns(def_rt_bandwidth.rt_period), 0);
-
+	// init the window time to be 0
+	init_rt_window(&tg->win_bandwidth,
+			ktime_to_ns(0), 0);
 	for_each_possible_cpu(i) {
 		rt_rq = kzalloc_node(sizeof(struct rt_rq),
 				     GFP_KERNEL, cpu_to_node(i));
@@ -229,6 +276,12 @@ int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent)
 		init_tg_rt_entry(tg, rt_rq, rt_se, i, parent->rt_se[i]);
 	}
 
+	// initialize priority list head
+	INIT_LIST_HEAD(&tg->prio_list);
+	// does not support multi-core group yet
+	tg->cnt = 0;
+	tg->preempt = 0;
+	tg->protect = 0;
 	return 1;
 
 err_free_rq:
@@ -952,7 +1005,7 @@ static int sched_rt_runtime_exceeded(struct rt_rq *rt_rq)
 		 */
 		if (likely(rt_b->rt_runtime)) {
 			rt_rq->rt_throttled = 1;
-			printk("sched: RT throttling activated\n");
+			printk_deferred_once("sched: RT throttling activated\n");
 		} else {
 			/*
 			 * In case we did anyway, make it go away,
@@ -1158,7 +1211,7 @@ static void __delist_rt_group(struct sched_rt_entity *rt_se, struct rt_prio_arra
 	
 	// group_rq->tg->rt_queued = 0;
 	rt_se->on_cg_list = 0;
-	printk("group dequeued tg prio %d %d\n", group_rq->tg, group_rq->tg->prio);
+	// printk("group dequeued tg prio %d %d\n", group_rq->tg, group_rq->tg->prio);
 }
 
 static inline
@@ -1242,7 +1295,7 @@ static void __enqueue_rt_group(struct sched_rt_entity *rt_se, unsigned int flags
 	// //abcdefg("test idx is %d\n", idx);
 	// group_rq->tg->rt_queued = 1;
 	rt_se->on_cg_list = 1;
-	printk("group enqueued tg prio %d %d\n", group_rq->tg, group_rq->tg->prio);
+	// printk("group enqueued tg prio %d %d\n", group_rq->tg, group_rq->tg->prio);
 }
 
 // here the rt_se is the task_group to be dequeued
@@ -1817,14 +1870,10 @@ static struct sched_rt_entity *pick_next_rt_group(struct rq *rq,
 	// this is before any task_group 
 	if (idx >= 99)
 		return NULL;
-	// if (idx < 99) {
-	// 	// printk("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
-	// 	printk("in pick_next_rt_group tg picked idx: %d\n", idx);
-	// }
+
 	queue = array->queue + idx;
 	next = list_entry(queue->next, struct sched_rt_entity, cgroup_list);
-	// if (!next)
-	// 	//abcdefg("next is null\n");
+
 	return next;
 }
 #endif /* CONFIG_RT_GROUP_SCHED */
@@ -1842,16 +1891,17 @@ static struct task_struct *_pick_next_task_rt(struct rq *rq)
 	rt_se = &curr->rt;
 	tg_rt_rq = rt_rq_of_se(rt_se);
 	if (curr->policy == SCHED_TT) {
-
 		if (!tg_rt_rq->rt_throttled && tg_rt_rq->rt_nr_running > 0) {
 			rt_se = _pick_next_task_tt(rq, tg_rt_rq);
 			p = rt_task_of(rt_se);
 			p->se.exec_start = rq_clock_task(rq);
+			if (p != curr)
+				printk("picking in same cgroup curr, p pid %d %d\n", curr->pid, p->pid);
 			return p;
 		}
-
-		//abcdefg("previous task TT, now need to select other task_group\n");
-		//abcdefg("tg_rt_rq->rt_throttled tg_rt_rq->rt_nr_running %d %d\n", tg_rt_rq->rt_throttled, tg_rt_rq->rt_nr_running);
+		// this might be duplicate to the ones in __delist_rt_group()
+		prev_tg = tg_rt_rq->tg;
+		printk("1 prev_tg and prio is %d %d\n", prev_tg, prev_tg->prio);
 	}
 
 	// pick task_group based on priority after we are allowed to
@@ -1878,6 +1928,12 @@ static struct task_struct *_pick_next_task_rt(struct rq *rq)
 		p = rt_task_of(rt_se);
 		//abcdefg("after pick_next_rt_group() picked %d %d %d\n", p->pid, p->prio, tg_rt_rq->tg);
 		p->se.exec_start = rq_clock_task(rq);
+		prev_tg = curr_tg;
+		curr_tg = tg_rt_rq->tg;
+		if (prev_tg != NULL)
+			printk("2 prev_tg and prio is %d %d\n", prev_tg, prev_tg->prio);
+		printk("curr_tg and prio is %d %d\n", curr_tg, curr_tg->prio);
+		curr_tg->cnt = 1;
 		return p;
 	}
 #endif /* CONFIG_RT_GROUP_SCHED */
@@ -1890,12 +1946,38 @@ static struct task_struct *_pick_next_task_rt(struct rq *rq)
 
 	p = rt_task_of(rt_se);
 	p->se.exec_start = rq_clock_task(rq);
-	// if (p && p->pid > 1000) {
-	// 	printk("in _pick_next_task_rt curr prio is %d %d\n", curr->pid, curr->prio);
-	// 	printk("in _pick_next_task_rt p prio is %d %d\n", p->pid, p->prio);
-	// 	tg_rt_rq = rt_rq_of_se(rt_se);
-	// 	printk("rt_rq->rt_time runtime %llu %llu\n", tg_rt_rq->rt_time, sched_rt_runtime(tg_rt_rq));
+	
+	if (p->policy == SCHED_TT) {
+		tg_rt_rq = rt_rq_of_se(rt_se);
+		if (tg_rt_rq) {
+			prev_tg = curr_tg;
+			curr_tg = tg_rt_rq->tg;
+			if (prev_tg != NULL)
+				printk("3 prev_tg and prio is %d %d\n", prev_tg, prev_tg->prio);
+			printk("curr_tg and prio is %d %d\n", curr_tg, curr_tg->prio);
+			if (prev_tg != NULL && curr_tg != list_next_entry(prev_tg, prio_list))
+				printk("curr_tg and prev_tg->next does not match, %d\n", list_next_entry(prev_tg, prio_list));
+			curr_tg->cnt = 1;
+		}
+		else
+			printk("tg_rt_rq is null %d %d\n", p->pid, p->prio);
+	}
+	tg_rt_rq = rt_rq_of_se(rt_se);
+
+	if (tg_rt_rq) {
+		curr_tg = tg_rt_rq->tg;
+		curr_tg->cnt = 1;
+	}
+	// if (strcmp(p->comm, "run_SimRCinput") == 0) {
+	// 	printk("run_SimRCinput running at %llu\n", ktime_get_ns());
+	// 	printk("curr_tg->cnt is %d %d\n", curr_tg, curr_tg->cnt);
 	// }
+	if (p && p->pid > 1000) {
+		// printk("in _pick_next_task_rt curr prio is %d %d\n", curr->pid, curr->prio);
+		// printk("in _pick_next_task_rt p prio is %d %d\n", p->pid, p->prio);
+		// tg_rt_rq = rt_rq_of_se(rt_se);
+		// printk("rt_rq->rt_time runtime %llu %llu\n", tg_rt_rq->rt_time, sched_rt_runtime(tg_rt_rq));
+	}
 
 	return p;
 }
@@ -2884,12 +2966,68 @@ unlock:
 static int tg_set_tg_prio(struct task_group *tg, u64 prio)
 {
 	int err = 0;
+	struct task_group *cgroup;
 
 	mutex_lock(&rt_constraints_mutex);
 	read_lock(&tasklist_lock);
 
 	tg->prio = MAX_RT_PRIO-1 - prio;
-	// //abcdefg("tg_set_tg_prio tg prio %d %d\n", tg, tg->prio);
+
+	if (prio != 0) {
+		printk("------------------------\n");
+		list_for_each_entry(cgroup, &tg_prio_list, prio_list) {
+			if (cgroup == tg) {
+				list_del(&tg->prio_list);
+				break;
+			}
+		}
+		list_for_each_entry(cgroup, &tg_prio_list, prio_list) {
+			if (cgroup->prio > tg->prio) {
+				list_add_tail(&tg->prio_list, &cgroup->prio_list);
+				break;
+			}
+
+		}
+		if (list_empty(&tg_prio_list))
+			list_add(&tg->prio_list, &tg_prio_list);
+		list_for_each_entry(cgroup, &tg_prio_list, prio_list) {
+			printk("tg_set_tg_prio tg prio %d %d\n", cgroup, cgroup->prio);
+		}
+	}
+// unlock:
+	read_unlock(&tasklist_lock);
+	mutex_unlock(&rt_constraints_mutex);
+
+	return err;
+}
+
+static int tg_set_tg_protect(struct task_group *tg, u64 p)
+{
+	int err = 0;
+	struct task_group *cgroup;
+
+	mutex_lock(&rt_constraints_mutex);
+	read_lock(&tasklist_lock);
+
+	cgroup->protect = p;
+// unlock:
+	read_unlock(&tasklist_lock);
+	mutex_unlock(&rt_constraints_mutex);
+
+	return err;
+}
+
+static int tg_set_tg_window(struct task_group *tg, u64 window)
+{
+	int err = 0;
+	struct task_group *cgroup;
+	// these locks are used following existing code, not sure if necessary
+	mutex_lock(&rt_constraints_mutex);
+	read_lock(&tasklist_lock);
+
+	raw_spin_lock_irq(&tg->win_bandwidth.rt_runtime_lock);
+	tg->win_bandwidth.rt_period = ns_to_ktime(window);;
+	raw_spin_unlock_irq(&tg->win_bandwidth.rt_runtime_lock);
 
 // unlock:
 	read_unlock(&tasklist_lock);
@@ -2951,6 +3089,30 @@ long sched_group_prio(struct task_group *tg)
 	u64 prio;
 	prio = MAX_RT_PRIO - tg->prio-1;
 	return prio;
+}
+
+int sched_group_set_protect(struct task_group *tg, u64 p)
+{
+	return tg_set_tg_prio(tg, p);
+}
+
+long sched_group_protect(struct task_group *tg)
+{
+	return tg->protect;
+}
+
+int sched_group_set_window(struct task_group *tg, u64 window)
+{
+	return tg_set_tg_window(tg, window);
+}
+
+long sched_group_window(struct task_group *tg)
+{
+	u64 win_us;
+
+	win_us = ktime_to_ns(tg->win_bandwidth.rt_period);
+	do_div(win_us, NSEC_PER_USEC);
+	return win_us;
 }
 
 static int sched_rt_global_constraints(void)

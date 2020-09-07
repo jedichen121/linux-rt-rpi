@@ -1473,7 +1473,7 @@ static int __sched do_nanosleep(struct hrtimer_sleeper *t, enum hrtimer_mode mod
 	hrtimer_init_sleeper(t, current);
 
 	do {
-		printk("in do_nanosleep\n");
+		// printk("in do_nanosleep\n");
 		set_current_state(TASK_INTERRUPTIBLE);
 		hrtimer_start_expires(&t->timer, mode);
 
@@ -1512,7 +1512,7 @@ static long __sched hrtimer_nanosleep_restart(struct restart_block *restart)
 	hrtimer_init_on_stack(&t.timer, restart->nanosleep.clockid,
 				HRTIMER_MODE_ABS);
 	hrtimer_set_expires_tv64(&t.timer, restart->nanosleep.expires);
-	printk("in hrtimer_nanosleep_restart\n");
+	// printk("in hrtimer_nanosleep_restart\n");
 	ret = do_nanosleep(&t, HRTIMER_MODE_ABS);
 	destroy_hrtimer_on_stack(&t.timer);
 	return ret;
@@ -1532,8 +1532,9 @@ long hrtimer_nanosleep(const struct timespec64 *rqtp,
 
 	hrtimer_init_on_stack(&t.timer, clockid, mode);
 	hrtimer_set_expires_range_ns(&t.timer, timespec64_to_ktime(*rqtp), slack);
-	printk("%lld s %ld ns\n", rqtp->tv_sec, rqtp->tv_nsec);
-	printk("in hrtimer_nanosleep\n");
+	// printk("%lld s %ld ns\n", rqtp->tv_sec, rqtp->tv_nsec);
+	if (current->pid > 1000)
+		printk("pid %d call hrtimer_nanosleep\n", current->pid);
 	ret = do_nanosleep(&t, mode);
 	if (ret != -ERESTART_RESTARTBLOCK)
 		goto out;
@@ -1566,7 +1567,7 @@ SYSCALL_DEFINE2(nanosleep, struct timespec __user *, rqtp,
 
 	current->restart_block.nanosleep.type = rmtp ? TT_NATIVE : TT_NONE;
 	current->restart_block.nanosleep.rmtp = rmtp;
-	printk("in nanosleep\n");
+	// printk("in nanosleep\n");
 	return hrtimer_nanosleep(&tu, HRTIMER_MODE_REL, CLOCK_MONOTONIC);
 }
 

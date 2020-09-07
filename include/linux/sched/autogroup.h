@@ -28,6 +28,8 @@ static inline void sched_autogroup_exit_task(struct task_struct *p) { }
 #ifdef CONFIG_CGROUP_SCHED
 extern struct task_group root_task_group;
 extern struct task_struct *monitor_task;
+extern raw_spinlock_t	monitor_timer_lock;
+extern struct hrtimer		monitor_period_timer;
 #endif /* CONFIG_CGROUP_SCHED */
 
 #endif /* _LINUX_SCHED_AUTOGROUP_H */

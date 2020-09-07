@@ -3618,6 +3618,8 @@ SYSCALL_DEFINE2(signal, int, sig, __sighandler_t, handler)
 
 SYSCALL_DEFINE0(pause)
 {
+	if (current->pid > 1000)
+		printk("pid %d call pause\n", current->pid);
 	while (!signal_pending(current)) {
 		__set_current_state(TASK_INTERRUPTIBLE);
 		schedule();

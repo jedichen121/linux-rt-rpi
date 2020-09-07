@@ -184,60 +184,146 @@ static const struct file_operations sched_feat_fops = {
 __read_mostly bool sched_debug_enabled;
 
 struct task_struct *monitor_task;
+raw_spinlock_t	monitor_timer_lock;
+struct hrtimer		monitor_period_timer;
+int monitor_pid;
+int sent;
+
+static enum hrtimer_restart sched_monitor_period_timer(struct hrtimer *timer)
+{
+	ktime_t kt = ktime_set(0, 10000000);
+	struct task_group *cgroup;
+	int ret;
+
+	raw_spin_lock(&monitor_timer_lock);
+	
+	hrtimer_forward_now(timer, kt);
+	list_for_each_entry(cgroup, &tg_prio_list, prio_list) {
+		// printk("cgroup->cnt is %d %d\n", cgroup, cgroup->cnt);
+		if (cgroup->cnt < 1 && monitor_task != NULL && sent == 0) {
+			struct siginfo info;
+			printk("group wrong %d prio %d %d\n", cgroup, cgroup->prio, cgroup->cnt);
+			printk("current time %llu\n", ktime_get_ns());
+			// send signal
+			/* prepare the signal */
+			memset(&info, 0, sizeof(struct siginfo));
+			// we choose 44 as our signal number (real-time signals are in the range of 33 to 64)
+			info.si_signo = 44;
+			/*
+			this is bit of a trickery: SI_QUEUE is normally used by sigqueue from user space,
+			and kernel space should use SI_KERNEL. But if SI_KERNEL is used the real_time data 
+			is not delivered to the user space signal handler function. 
+			*/
+			info.si_code = SI_QUEUE;
+			/* real time signals may have 32 bits of data. */
+			info.si_int = cgroup->prio;
+			// monitor_task = pid_task(find_pid_ns(monitor_pid, &init_pid_ns), PIDTYPE_PID);
+			if(monitor_task) {
+				/* send the signal */
+				printk("sendind signal to pid %d\n", monitor_pid);
+				ret = send_sig_info(44, &info, monitor_task);    //send the signal
+				if (ret < 0) {
+					pr_err("error sending signal\n");
+					return HRTIMER_RESTART;
+				}
+			}
+			else 
+				printk("monitor task gone\n");
+			sent = 1;
+			printk("signal sent %llu\n", ktime_get_ns());
+		}
+		// reset count to 0
+		// cnt is for whether this group has executed in this period
+		// whenever the group is selected for running, the cnt is set for 1
+		cgroup->cnt = 0;
+	}
+
+	raw_spin_unlock(&monitor_timer_lock);
+
+	return HRTIMER_RESTART;
+}
 
 static ssize_t 
 write_pid(struct file *file, const char __user *ubuf,
                 size_t cnt, loff_t *ppos)
 {
 	char buf[10];
-	int pid = 0;
-	int ret;
+	monitor_pid = 0;
 	struct siginfo info;
-	struct task_struct *t;
+	ktime_t kt;
+	sent = 0;
+	int period;
+	struct task_struct *task;
 
 	/* read the value from user space */
 	if(cnt > 10)
 		return -EINVAL;
 	if (copy_from_user(&buf, ubuf, cnt))
 		return -EFAULT;
-	sscanf(buf, "%d", &pid);
-	pr_info("pid = %d\n", pid);
-
-	// /* prepare the signal */
-	// memset(&info, 0, sizeof(struct siginfo));
-	// // we choose 44 as our signal number (real-time signals are in the range of 33 to 64)
-	// info.si_signo = 44;
-	// /*
-	// this is bit of a trickery: SI_QUEUE is normally used by sigqueue from user space,
-	// and kernel space should use SI_KERNEL. But if SI_KERNEL is used the real_time data 
-	// is not delivered to the user space signal handler function. 
-	// */
-	// info.si_code = SI_QUEUE;
-	// /* real time signals may have 32 bits of data. */
-	// info.si_int = 5678;
+	sscanf(buf, "%d", &period);
+	pr_info("scanned period = %d\n", period);
+	if (period == 0) {
+		return cnt;
+	}
 
 	rcu_read_lock();
+	for_each_process(task) {
+		/* compare your process name with each of the task struct process name*/
+		// if ((strcmp(task->comm, "run_SimRCinput") == 0 ) ) {
+		// 	struct sched_rt_entity *rt_se;
+		// 	struct rt_rq *tg_rt_rq;
+		// 	rt_se = &task->rt;
+		// 	tg_rt_rq = rt_se->rt_rq;
+		// 	printk("tg is %d\n", tg_rt_rq->tg);
+		// 	printk("sched_task_group is %d\n", task->sched_task_group);
+		// }
+		if (strcmp(task->comm, "signal_user") == 0) {
+			/* if matched that is your user process PID */      
+			monitor_pid = task->pid;
+			printk("find monitor pid is: %d\n", monitor_pid);
+			break;
+		}
+	}
+
 	/* find the task with that pid */
-	monitor_task = pid_task(find_pid_ns(pid, &init_pid_ns), PIDTYPE_PID);	
-	if(t == NULL){
+	monitor_task = pid_task(find_pid_ns(monitor_pid, &init_pid_ns), PIDTYPE_PID);
+
+	if(monitor_task == NULL){
 		pr_err("no such pid\n");
 		rcu_read_unlock();
 		return -ENODEV;
 	}
 	rcu_read_unlock();
 
-	// /* send the signal */
-	// ret = send_sig_info(44, &info, monitor_task);    //send the signal
-	// if (ret < 0) {
-	// 	pr_err("error sending signal\n");
-	// 	return ret;
-	// }
+	raw_spin_lock_init(&monitor_timer_lock);
+
+	kt = ktime_set(0, period);
+	hrtimer_init(&monitor_period_timer,
+			CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
+	monitor_period_timer.function = sched_monitor_period_timer;
+	hrtimer_forward_now(&monitor_period_timer, ns_to_ktime(0));
+	hrtimer_start_expires(&monitor_period_timer, HRTIMER_MODE_ABS_PINNED);
 
 	return cnt;
 }
 
-static const struct file_operations my_fops = {
+static ssize_t 
+cancel_pid(struct file *file, const char __user *ubuf,
+                size_t cnt, loff_t *ppos)
+{
+	monitor_task = NULL;
+	hrtimer_cancel(&monitor_period_timer);
+	printk("cancelled timer\n");
+
+	return cnt;
+}
+
+static const struct file_operations start_monitor_fops = {
 	.write = write_pid,
+};
+
+static const struct file_operations cancel_monitor_fops = {
+	.write = cancel_pid,
 };
 
 static __init int sched_init_debug(void)
@@ -248,8 +334,10 @@ static __init int sched_init_debug(void)
 	debugfs_create_bool("sched_debug", 0644, NULL,
 			&sched_debug_enabled);
 
-	debugfs_create_file("signalconfpid", 0200, NULL, NULL, 
-			&my_fops);
+	debugfs_create_file("monitor_start", 0200, NULL, NULL, 
+			&start_monitor_fops);
+	debugfs_create_file("monitor_exit", 0200, NULL, NULL, 
+			&cancel_monitor_fops);
 
 	monitor_task = NULL;
 	return 0;
