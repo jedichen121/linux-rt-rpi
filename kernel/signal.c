@@ -40,6 +40,7 @@
 #include <linux/cn_proc.h>
 #include <linux/compiler.h>
 #include <linux/posix-timers.h>
+#include <linux/sched/autogroup.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/signal.h>
@@ -3618,8 +3619,12 @@ SYSCALL_DEFINE2(signal, int, sig, __sighandler_t, handler)
 
 SYSCALL_DEFINE0(pause)
 {
-	if (current->pid > 1000)
-		printk("pid %d call pause\n", current->pid);
+	if (monitor_task) {
+		// set the protect bit
+		protect = 1;
+		// printk("monitor pid %d\n", monitor_task->pid);
+	}
+	
 	while (!signal_pending(current)) {
 		__set_current_state(TASK_INTERRUPTIBLE);
 		schedule();

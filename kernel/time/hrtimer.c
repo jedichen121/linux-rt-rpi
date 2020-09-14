@@ -1533,8 +1533,8 @@ long hrtimer_nanosleep(const struct timespec64 *rqtp,
 	hrtimer_init_on_stack(&t.timer, clockid, mode);
 	hrtimer_set_expires_range_ns(&t.timer, timespec64_to_ktime(*rqtp), slack);
 	// printk("%lld s %ld ns\n", rqtp->tv_sec, rqtp->tv_nsec);
-	if (current->pid > 1000)
-		printk("pid %d call hrtimer_nanosleep\n", current->pid);
+	// if (current->pid > 1000)
+	// 	printk("pid %d call hrtimer_nanosleep\n", current->pid);
 	ret = do_nanosleep(&t, mode);
 	if (ret != -ERESTART_RESTARTBLOCK)
 		goto out;

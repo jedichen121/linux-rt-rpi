@@ -188,6 +188,7 @@ raw_spinlock_t	monitor_timer_lock;
 struct hrtimer		monitor_period_timer;
 int monitor_pid;
 int sent;
+int protect;
 
 static enum hrtimer_restart sched_monitor_period_timer(struct hrtimer *timer)
 {
@@ -260,30 +261,10 @@ write_pid(struct file *file, const char __user *ubuf,
 		return -EINVAL;
 	if (copy_from_user(&buf, ubuf, cnt))
 		return -EFAULT;
-	sscanf(buf, "%d", &period);
-	pr_info("scanned period = %d\n", period);
-	if (period == 0) {
-		return cnt;
-	}
+	sscanf(buf, "%d", &monitor_pid);
+	pr_info("scanned pid = %d\n", monitor_pid);
 
 	rcu_read_lock();
-	for_each_process(task) {
-		/* compare your process name with each of the task struct process name*/
-		// if ((strcmp(task->comm, "run_SimRCinput") == 0 ) ) {
-		// 	struct sched_rt_entity *rt_se;
-		// 	struct rt_rq *tg_rt_rq;
-		// 	rt_se = &task->rt;
-		// 	tg_rt_rq = rt_se->rt_rq;
-		// 	printk("tg is %d\n", tg_rt_rq->tg);
-		// 	printk("sched_task_group is %d\n", task->sched_task_group);
-		// }
-		if (strcmp(task->comm, "signal_user") == 0) {
-			/* if matched that is your user process PID */      
-			monitor_pid = task->pid;
-			printk("find monitor pid is: %d\n", monitor_pid);
-			break;
-		}
-	}
 
 	/* find the task with that pid */
 	monitor_task = pid_task(find_pid_ns(monitor_pid, &init_pid_ns), PIDTYPE_PID);
@@ -294,15 +275,6 @@ write_pid(struct file *file, const char __user *ubuf,
 		return -ENODEV;
 	}
 	rcu_read_unlock();
-
-	raw_spin_lock_init(&monitor_timer_lock);
-
-	kt = ktime_set(0, period);
-	hrtimer_init(&monitor_period_timer,
-			CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
-	monitor_period_timer.function = sched_monitor_period_timer;
-	hrtimer_forward_now(&monitor_period_timer, ns_to_ktime(0));
-	hrtimer_start_expires(&monitor_period_timer, HRTIMER_MODE_ABS_PINNED);
 
 	return cnt;
 }
@@ -340,6 +312,7 @@ static __init int sched_init_debug(void)
 			&cancel_monitor_fops);
 
 	monitor_task = NULL;
+	protect = 0;
 	return 0;
 }
 late_initcall(sched_init_debug);

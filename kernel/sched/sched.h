@@ -402,7 +402,7 @@ extern int sched_group_set_rt_runtime(struct task_group *tg, long rt_runtime_us)
 extern int sched_group_set_rt_period(struct task_group *tg, u64 rt_period_us);
 extern int sched_group_set_prio(struct task_group *tg, u64 prio);
 extern int sched_group_set_protect(struct task_group *tg, u64 p);
-extern int sched_group_set_window(struct task_group *tg, u64 window);
+extern int sched_group_set_window(struct task_group *tg, u64 window_us);
 extern long sched_group_rt_runtime(struct task_group *tg);
 extern long sched_group_rt_period(struct task_group *tg);
 extern long sched_group_prio(struct task_group *tg);

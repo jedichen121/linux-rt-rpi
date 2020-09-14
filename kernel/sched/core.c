@@ -786,7 +786,7 @@ void deactivate_task(struct rq *rq, struct task_struct *p, int flags)
 {
 	if (task_contributes_to_load(p))
 		rq->nr_uninterruptible++;
-	// if (p->policy == SCHED_TT)
+	// if (p->policy == SCHED_FIFO && p->pid > 800)
 	// 	printk("in deactivate_task %d\n", p->pid);
 	dequeue_task(rq, p, flags);
 }
@@ -3211,26 +3211,26 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	const struct sched_class *class;
 	struct task_struct *p;
 
-	/*
-	 * Optimization: we know that if all tasks are in the fair class we can
-	 * call that function directly, but only if the @prev task wasn't of a
-	 * higher scheduling class, because otherwise those loose the
-	 * opportunity to pull in more work from other CPUs.
-	 */
-	if (likely((prev->sched_class == &idle_sched_class ||
-		    prev->sched_class == &fair_sched_class) &&
-		   rq->nr_running == rq->cfs.h_nr_running)) {
+	// /*
+	//  * Optimization: we know that if all tasks are in the fair class we can
+	//  * call that function directly, but only if the @prev task wasn't of a
+	//  * higher scheduling class, because otherwise those loose the
+	//  * opportunity to pull in more work from other CPUs.
+	//  */
+	// if (likely((prev->sched_class == &idle_sched_class ||
+	// 	    prev->sched_class == &fair_sched_class) &&
+	// 	   rq->nr_running == rq->cfs.h_nr_running)) {
 
-		p = fair_sched_class.pick_next_task(rq, prev, rf);
-		if (unlikely(p == RETRY_TASK))
-			goto again;
+	// 	p = fair_sched_class.pick_next_task(rq, prev, rf);
+	// 	if (unlikely(p == RETRY_TASK))
+	// 		goto again;
 
-		/* Assumes fair_sched_class->next == idle_sched_class */
-		if (unlikely(!p))
-			p = idle_sched_class.pick_next_task(rq, prev, rf);
+	// 	/* Assumes fair_sched_class->next == idle_sched_class */
+	// 	if (unlikely(!p))
+	// 		p = idle_sched_class.pick_next_task(rq, prev, rf);
 
-		return p;
-	}
+	// 	return p;
+	// }
 
 again:
 	for_each_class(class) {
@@ -3242,8 +3242,14 @@ again:
 			// }
 			if (unlikely(p == RETRY_TASK))
 				goto again;
+			// if (protect && monitor_task && p != monitor_task && (&p->rt)->rt_rq->tg != &root_task_group && p->policy == SCHED_FIFO) {
+			// 	printk("task to skip: %d\n", p->pid);
+			// 	// (&idle_sched_class)->pick_next_task(rq, prev, rf);
+			// 	continue;
+			// }
 			return p;
 		}
+// testttt:
 	}
 
 	/* The idle class should always have a runnable task: */
@@ -6782,7 +6788,7 @@ static struct cftype cpu_files[] = {
 		.write_u64 = cpu_prio_write,
 	},
 	{
-		.name = "window",
+		.name = "window_us",
 		.read_u64 = cpu_window_read,
 		.write_u64 = cpu_window_write,
 	},
