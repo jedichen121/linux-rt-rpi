@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-1.0+
 /*
  * Renesas USB
  *
@@ -16,6 +17,7 @@
  */
 #ifndef RENESAS_USB_H
 #define RENESAS_USB_H
+#include <linux/notifier.h>
 #include <linux/platform_device.h>
 #include <linux/usb/ch9.h>
 
@@ -62,14 +64,22 @@ struct renesas_usbhs_platform_callback {
 	 * Hardware exit function for platform.
 	 * it is called when driver was removed
 	 */
-	void (*hardware_exit)(struct platform_device *pdev);
+	int (*hardware_exit)(struct platform_device *pdev);
+
+	/*
+	 * option:
+	 *
+	 * for board specific clock control
+	 */
+	int (*power_ctrl)(struct platform_device *pdev,
+			   void __iomem *base, int enable);
 
 	/*
 	 * option:
 	 *
 	 * Phy reset for platform
 	 */
-	void (*phy_reset)(struct platform_device *pdev);
+	int (*phy_reset)(struct platform_device *pdev);
 
 	/*
 	 * get USB ID function
@@ -89,6 +99,13 @@ struct renesas_usbhs_platform_callback {
 	 * VBUS control is needed for Host
 	 */
 	int (*set_vbus)(struct platform_device *pdev, int enable);
+
+	/*
+	 * option:
+	 * extcon notifier to set host/peripheral mode.
+	 */
+	int (*notifier)(struct notifier_block *nb, unsigned long event,
+			void *data);
 };
 
 /*
@@ -97,12 +114,26 @@ struct renesas_usbhs_platform_callback {
  * some register needs USB chip specific parameters.
  * This struct show it to driver
  */
+
+struct renesas_usbhs_driver_pipe_config {
+	u8 type;	/* USB_ENDPOINT_XFER_xxx */
+	u16 bufsize;
+	u8 bufnum;
+	bool double_buf;
+};
+#define RENESAS_USBHS_PIPE(_type, _size, _num, _double_buf)	{	\
+			.type = (_type),		\
+			.bufsize = (_size),		\
+			.bufnum = (_num),		\
+			.double_buf = (_double_buf),	\
+	}
+
 struct renesas_usbhs_driver_param {
 	/*
 	 * pipe settings
 	 */
-	u32 *pipe_type; /* array of USB_ENDPOINT_XFER_xxx (from ep0) */
-	int pipe_size; /* pipe_type array size */
+	struct renesas_usbhs_driver_pipe_config *pipe_configs;
+	int pipe_size; /* pipe_configs array size */
 
 	/*
 	 * option:
@@ -118,17 +149,29 @@ struct renesas_usbhs_driver_param {
 	 *
 	 * delay time from notify_hotplug callback
 	 */
-	int detection_delay;
+	int detection_delay; /* msec */
 
 	/*
 	 * option:
 	 *
 	 * dma id for dmaengine
+	 * The data transfer direction on D0FIFO/D1FIFO should be
+	 * fixed for keeping consistency.
+	 * So, the platform id settings will be..
+	 *	.d0_tx_id = xx_TX,
+	 *	.d1_rx_id = xx_RX,
+	 * or
+	 *	.d1_tx_id = xx_TX,
+	 *	.d0_rx_id = xx_RX,
 	 */
 	int d0_tx_id;
 	int d0_rx_id;
 	int d1_tx_id;
 	int d1_rx_id;
+	int d2_tx_id;
+	int d2_rx_id;
+	int d3_tx_id;
+	int d3_rx_id;
 
 	/*
 	 * option:
@@ -137,11 +180,22 @@ struct renesas_usbhs_driver_param {
 	 */
 	int pio_dma_border; /* default is 64byte */
 
+	uintptr_t type;
+	u32 enable_gpio;
+
 	/*
 	 * option:
 	 */
 	u32 has_otg:1; /* for controlling PWEN/EXTLP */
+	u32 has_sudmac:1; /* for SUDMAC */
+	u32 has_usb_dmac:1; /* for USB-DMAC */
+#define USBHS_USB_DMAC_XFER_SIZE	32	/* hardcode the xfer size */
 };
+
+#define USBHS_TYPE_RCAR_GEN2		1
+#define USBHS_TYPE_RCAR_GEN3		2
+#define USBHS_TYPE_RCAR_GEN3_WITH_PLL	3
+#define USBHS_TYPE_RZA1			4
 
 /*
  * option:

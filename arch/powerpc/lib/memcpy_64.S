@@ -8,11 +8,40 @@
  */
 #include <asm/processor.h>
 #include <asm/ppc_asm.h>
+#include <asm/export.h>
+#include <asm/asm-compat.h>
+#include <asm/feature-fixups.h>
+
+#ifndef SELFTEST_CASE
+/* For big-endian, 0 == most CPUs, 1 == POWER6, 2 == Cell */
+#define SELFTEST_CASE	0
+#endif
 
 	.align	7
-_GLOBAL(memcpy)
-	std	r3,48(r1)	/* save destination pointer for return value */
-	PPC_MTOCRF	0x01,r5
+_GLOBAL_TOC(memcpy)
+BEGIN_FTR_SECTION
+#ifdef __LITTLE_ENDIAN__
+	cmpdi	cr7,r5,0
+#else
+	std	r3,-STACKFRAMESIZE+STK_REG(R31)(r1)	/* save destination pointer for return value */
+#endif
+FTR_SECTION_ELSE
+#ifdef CONFIG_PPC_BOOK3S_64
+	b	memcpy_power7
+#endif
+ALT_FTR_SECTION_END_IFCLR(CPU_FTR_VMX_COPY)
+#ifdef __LITTLE_ENDIAN__
+	/* dumb little-endian memcpy that will get replaced at runtime */
+	addi r9,r3,-1
+	addi r4,r4,-1
+	beqlr cr7
+	mtctr r5
+1:	lbzu r10,1(r4)
+	stbu r10,1(r9)
+	bdnz 1b
+	blr
+#else
+	PPC_MTOCRF(0x01,r5)
 	cmpldi	cr1,r5,16
 	neg	r6,r3		# LS 3 bits = # bytes to 8-byte dest bdry
 	andi.	r6,r6,7
@@ -23,6 +52,7 @@ _GLOBAL(memcpy)
    cleared.
    At the time of writing the only CPU that has this combination of bits
    set is Power6. */
+test_feature = (SELFTEST_CASE == 1)
 BEGIN_FTR_SECTION
 	nop
 FTR_SECTION_ELSE
@@ -31,6 +61,7 @@ ALT_FTR_SECTION_END(CPU_FTR_UNALIGNED_LD_STD | CPU_FTR_CP_USE_DCBTZ, \
                     CPU_FTR_UNALIGNED_LD_STD)
 .Ldst_aligned:
 	addi	r3,r3,-16
+test_feature = (SELFTEST_CASE == 0)
 BEGIN_FTR_SECTION
 	andi.	r0,r4,7
 	bne	.Lsrc_unaligned
@@ -67,7 +98,7 @@ END_FTR_SECTION_IFCLR(CPU_FTR_UNALIGNED_LD_STD)
 2:	bf	cr7*4+3,3f
 	lbz	r9,8(r4)
 	stb	r9,0(r3)
-3:	ld	r3,48(r1)	/* return dest pointer */
+3:	ld	r3,-STACKFRAMESIZE+STK_REG(R31)(r1)	/* return dest pointer */
 	blr
 
 .Lsrc_unaligned:
@@ -150,11 +181,11 @@ END_FTR_SECTION_IFCLR(CPU_FTR_UNALIGNED_LD_STD)
 2:	bf	cr7*4+3,3f
 	rotldi	r9,r9,8
 	stb	r9,0(r3)
-3:	ld	r3,48(r1)	/* return dest pointer */
+3:	ld	r3,-STACKFRAMESIZE+STK_REG(R31)(r1)	/* return dest pointer */
 	blr
 
 .Ldst_unaligned:
-	PPC_MTOCRF	0x01,r6		# put #bytes to 8B bdry into cr7
+	PPC_MTOCRF(0x01,r6)		# put #bytes to 8B bdry into cr7
 	subf	r5,r6,r5
 	li	r7,0
 	cmpldi	cr1,r5,16
@@ -169,7 +200,7 @@ END_FTR_SECTION_IFCLR(CPU_FTR_UNALIGNED_LD_STD)
 2:	bf	cr7*4+1,3f
 	lwzx	r0,r7,r4
 	stwx	r0,r7,r3
-3:	PPC_MTOCRF	0x01,r5
+3:	PPC_MTOCRF(0x01,r5)
 	add	r4,r6,r4
 	add	r3,r6,r3
 	b	.Ldst_aligned
@@ -195,5 +226,7 @@ END_FTR_SECTION_IFCLR(CPU_FTR_UNALIGNED_LD_STD)
 3:	bf	cr7*4+3,4f
 	lbz	r0,0(r4)
 	stb	r0,0(r3)
-4:	ld	r3,48(r1)	/* return dest pointer */
+4:	ld	r3,-STACKFRAMESIZE+STK_REG(R31)(r1)	/* return dest pointer */
 	blr
+#endif
+EXPORT_SYMBOL(memcpy)

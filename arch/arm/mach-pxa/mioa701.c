@@ -26,6 +26,7 @@
 #include <linux/input.h>
 #include <linux/delay.h>
 #include <linux/gpio_keys.h>
+#include <linux/pwm.h>
 #include <linux/pwm_backlight.h>
 #include <linux/rtc.h>
 #include <linux/leds.h>
@@ -37,25 +38,27 @@
 #include <linux/wm97xx.h>
 #include <linux/mtd/physmap.h>
 #include <linux/usb/gpio_vbus.h>
+#include <linux/reboot.h>
+#include <linux/regulator/fixed.h>
 #include <linux/regulator/max1586.h>
 #include <linux/slab.h>
-#include <linux/i2c/pxa-i2c.h>
+#include <linux/platform_data/i2c-pxa.h>
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 
-#include <mach/pxa27x.h>
-#include <mach/regs-rtc.h>
-#include <plat/pxa27x_keypad.h>
-#include <mach/pxafb.h>
-#include <mach/mmc.h>
-#include <mach/udc.h>
-#include <mach/pxa27x-udc.h>
-#include <mach/camera.h>
+#include "pxa27x.h"
+#include "regs-rtc.h"
+#include <linux/platform_data/keypad-pxa27x.h>
+#include <linux/platform_data/video-pxafb.h>
+#include <linux/platform_data/mmc-pxamci.h>
+#include "udc.h"
+#include "pxa27x-udc.h"
+#include <linux/platform_data/media/camera-pxa.h>
 #include <mach/audio.h>
-#include <media/soc_camera.h>
+#include <mach/smemc.h>
 
-#include <mach/mioa701.h>
+#include "mioa701.h"
 
 #include "generic.h"
 #include "devices.h"
@@ -102,6 +105,7 @@ static unsigned long mioa701_pin_config[] = {
 	GPIO82_CIF_DD_5,
 	GPIO84_CIF_FV,
 	GPIO85_CIF_LV,
+	MIO_CFG_OUT(GPIO56_MT9M111_nOE, AF0, DRIVE_LOW),
 
 	/* Bluetooth */
 	MIO_CFG_IN(GPIO14_BT_nACTIVITY, AF0),
@@ -177,12 +181,16 @@ static unsigned long mioa701_pin_config[] = {
 	MFP_CFG_OUT(GPIO116, AF0, DRIVE_HIGH),
 };
 
+static struct pwm_lookup mioa701_pwm_lookup[] = {
+	PWM_LOOKUP("pxa27x-pwm.0", 0, "pwm-backlight", NULL, 4000 * 1024,
+		   PWM_POLARITY_NORMAL),
+};
+
 /* LCD Screen and Backlight */
 static struct platform_pwm_backlight_data mioa701_backlight_data = {
-	.pwm_id		= 0,
 	.max_brightness	= 100,
 	.dft_brightness	= 50,
-	.pwm_period_ns	= 4000 * 1024,	/* Fl = 250kHz */
+	.enable_gpio	= -1,
 };
 
 /*
@@ -220,7 +228,7 @@ static struct pxafb_mach_info mioa701_pxafb_info = {
 /*
  * Keyboard configuration
  */
-static unsigned int mioa701_matrix_keys[] = {
+static const unsigned int mioa701_matrix_keys[] = {
 	KEY(0, 0, KEY_UP),
 	KEY(0, 1, KEY_RIGHT),
 	KEY(0, 2, KEY_MEDIA),
@@ -231,11 +239,16 @@ static unsigned int mioa701_matrix_keys[] = {
 	KEY(2, 1, KEY_PHONE),	/* Phone Green key */
 	KEY(2, 2, KEY_CAMERA)	/* Camera key */
 };
+
+static struct matrix_keymap_data mioa701_matrix_keymap_data = {
+	.keymap			= mioa701_matrix_keys,
+	.keymap_size		= ARRAY_SIZE(mioa701_matrix_keys),
+};
+
 static struct pxa27x_keypad_platform_data mioa701_keypad_info = {
 	.matrix_key_rows = 3,
 	.matrix_key_cols = 3,
-	.matrix_key_map = mioa701_matrix_keys,
-	.matrix_key_map_size = ARRAY_SIZE(mioa701_matrix_keys),
+	.matrix_keymap_data = &mioa701_matrix_keymap_data,
 };
 
 /*
@@ -390,24 +403,19 @@ static struct pxamci_platform_data mioa701_mci_info = {
 };
 
 /* FlashRAM */
-static struct resource strataflash_resource = {
+static struct resource docg3_resource = {
 	.start = PXA_CS0_PHYS,
-	.end   = PXA_CS0_PHYS + SZ_64M - 1,
+	.end   = PXA_CS0_PHYS + SZ_8K - 1,
 	.flags = IORESOURCE_MEM,
 };
 
-static struct physmap_flash_data strataflash_data = {
-	.width = 2,
-	/* .set_vpp = mioa701_set_vpp, */
-};
-
-static struct platform_device strataflash = {
-	.name	       = "physmap-flash",
+static struct platform_device docg3 = {
+	.name	       = "docg3",
 	.id	       = -1,
-	.resource      = &strataflash_resource,
+	.resource      = &docg3_resource,
 	.num_resources = 1,
 	.dev = {
-		.platform_data = &strataflash_data,
+		.platform_data = NULL,
 	},
 };
 
@@ -541,15 +549,15 @@ static struct pda_power_pdata power_pdata = {
 static struct resource power_resources[] = {
 	[0] = {
 		.name	= "ac",
-		.start	= gpio_to_irq(GPIO96_AC_DETECT),
-		.end	= gpio_to_irq(GPIO96_AC_DETECT),
+		.start	= PXA_GPIO_TO_IRQ(GPIO96_AC_DETECT),
+		.end	= PXA_GPIO_TO_IRQ(GPIO96_AC_DETECT),
 		.flags	= IORESOURCE_IRQ | IORESOURCE_IRQ_HIGHEDGE |
 		IORESOURCE_IRQ_LOWEDGE,
 	},
 	[1] = {
 		.name	= "usb",
-		.start	= gpio_to_irq(GPIO13_nUSB_DETECT),
-		.end	= gpio_to_irq(GPIO13_nUSB_DETECT),
+		.start	= PXA_GPIO_TO_IRQ(GPIO13_nUSB_DETECT),
+		.end	= PXA_GPIO_TO_IRQ(GPIO13_nUSB_DETECT),
 		.flags	= IORESOURCE_IRQ | IORESOURCE_IRQ_HIGHEDGE |
 		IORESOURCE_IRQ_LOWEDGE,
 	},
@@ -585,9 +593,7 @@ static struct wm97xx_pdata mioa701_wm97xx_pdata = {
  * Voltage regulation
  */
 static struct regulator_consumer_supply max1586_consumers[] = {
-	{
-		.supply = "vcc_core",
-	}
+	REGULATOR_SUPPLY("vcc_core", NULL),
 };
 
 static struct regulator_init_data max1586_v3_info = {
@@ -620,6 +626,8 @@ struct pxacamera_platform_data mioa701_pxacamera_platform_data = {
 	.flags  = PXA_CAMERA_MASTER | PXA_CAMERA_DATAWIDTH_8 |
 		PXA_CAMERA_PCLK_EN | PXA_CAMERA_MCLK_EN,
 	.mclk_10khz = 5000,
+	.sensor_i2c_adapter_id = 0,
+	.sensor_i2c_address = 0x5d,
 };
 
 static struct i2c_board_info __initdata mioa701_pi2c_devices[] = {
@@ -634,12 +642,6 @@ static struct i2c_board_info mioa701_i2c_devices[] = {
 	{
 		I2C_BOARD_INFO("mt9m111", 0x5d),
 	},
-};
-
-static struct soc_camera_link iclink = {
-	.bus_id		= 0, /* Match id in pxa27x_device_camera in device.c */
-	.board_info	= &mioa701_i2c_devices[0],
-	.i2c_adapter_id	= 0,
 };
 
 struct i2c_pxa_platform_data i2c_pdata = {
@@ -676,7 +678,6 @@ MIO_SIMPLE_DEV(pxa2xx_pcm,	  "pxa2xx-pcm",	    NULL)
 MIO_SIMPLE_DEV(mioa701_sound,	  "mioa701-wm9713", NULL)
 MIO_SIMPLE_DEV(mioa701_board,	  "mioa701-board",  NULL)
 MIO_SIMPLE_DEV(gpio_vbus,	  "gpio-vbus",      &gpio_vbus_data);
-MIO_SIMPLE_DEV(mioa701_camera,	  "soc-camera-pdrv",&iclink);
 
 static struct platform_device *devices[] __initdata = {
 	&mioa701_gpio_keys,
@@ -685,9 +686,8 @@ static struct platform_device *devices[] __initdata = {
 	&pxa2xx_pcm,
 	&mioa701_sound,
 	&power_dev,
-	&strataflash,
+	&docg3,
 	&gpio_vbus,
-	&mioa701_camera,
 	&mioa701_board,
 };
 
@@ -696,19 +696,24 @@ static void mioa701_machine_exit(void);
 static void mioa701_poweroff(void)
 {
 	mioa701_machine_exit();
-	pxa_restart('s', NULL);
+	pxa_restart(REBOOT_SOFT, NULL);
 }
 
-static void mioa701_restart(char c, const char *cmd)
+static void mioa701_restart(enum reboot_mode c, const char *cmd)
 {
 	mioa701_machine_exit();
-	pxa_restart('s', cmd);
+	pxa_restart(REBOOT_SOFT, cmd);
 }
 
 static struct gpio global_gpios[] = {
 	{ GPIO9_CHARGE_EN, GPIOF_OUT_INIT_HIGH, "Charger enable" },
 	{ GPIO18_POWEROFF, GPIOF_OUT_INIT_LOW, "Power Off" },
 	{ GPIO87_LCD_POWER, GPIOF_OUT_INIT_LOW, "LCD Power" },
+	{ GPIO56_MT9M111_nOE, GPIOF_OUT_INIT_LOW, "Camera nOE" },
+};
+
+static struct regulator_consumer_supply fixed_5v0_consumers[] = {
+	REGULATOR_SUPPLY("power", "pwm-backlight"),
 };
 
 static void __init mioa701_machine_init(void)
@@ -719,6 +724,15 @@ static void __init mioa701_machine_init(void)
 	PCFR = PCFR_DC_EN | PCFR_GPR_EN | PCFR_OPDE;
 	RTTR = 32768 - 1; /* Reset crazy WinCE value */
 	UP2OCR = UP2OCR_HXOE;
+
+	/*
+	 * Set up the flash memory : DiskOnChip G3 on first static memory bank
+	 */
+	__raw_writel(0x7ff02dd8, MSC0);
+	__raw_writel(0x0001c391, MCMEM0);
+	__raw_writel(0x0001c391, MCATT0);
+	__raw_writel(0x0001c391, MCIO0);
+
 
 	pxa2xx_mfp_config(ARRAY_AND_SIZE(mioa701_pin_config));
 	pxa_set_ffuart_info(NULL);
@@ -734,13 +748,20 @@ static void __init mioa701_machine_init(void)
 	pxa_set_udc_info(&mioa701_udc_info);
 	pxa_set_ac97_info(&mioa701_ac97_info);
 	pm_power_off = mioa701_poweroff;
+	pwm_add_table(mioa701_pwm_lookup, ARRAY_SIZE(mioa701_pwm_lookup));
 	platform_add_devices(devices, ARRAY_SIZE(devices));
 	gsm_init();
 
+	i2c_register_board_info(0, ARRAY_AND_SIZE(mioa701_i2c_devices));
 	i2c_register_board_info(1, ARRAY_AND_SIZE(mioa701_pi2c_devices));
 	pxa_set_i2c_info(&i2c_pdata);
 	pxa27x_set_i2c_power_info(NULL);
 	pxa_set_camera_info(&mioa701_pxacamera_platform_data);
+
+	regulator_register_always_on(0, "fixed-5.0V", fixed_5v0_consumers,
+				     ARRAY_SIZE(fixed_5v0_consumers),
+				     5000000);
+	regulator_has_full_constraints();
 }
 
 static void mioa701_machine_exit(void)
@@ -751,11 +772,11 @@ static void mioa701_machine_exit(void)
 
 MACHINE_START(MIOA701, "MIO A701")
 	.atag_offset	= 0x100,
-	.restart_mode	= 's',
 	.map_io		= &pxa27x_map_io,
+	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= &pxa27x_init_irq,
 	.handle_irq	= &pxa27x_handle_irq,
 	.init_machine	= mioa701_machine_init,
-	.timer		= &pxa_timer,
+	.init_time	= pxa_timer_init,
 	.restart	= mioa701_restart,
 MACHINE_END

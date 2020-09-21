@@ -32,6 +32,7 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/blktrans.h>
 #include <linux/mutex.h>
+#include <linux/major.h>
 
 
 struct mtdblk_dev {
@@ -44,8 +45,6 @@ struct mtdblk_dev {
 	enum { STATE_EMPTY, STATE_CLEAN, STATE_DIRTY } cache_state;
 };
 
-static DEFINE_MUTEX(mtdblks_lock);
-
 /*
  * Cache stuff...
  *
@@ -56,53 +55,32 @@ static DEFINE_MUTEX(mtdblks_lock);
  * being written to until a different sector is required.
  */
 
-static void erase_callback(struct erase_info *done)
-{
-	wait_queue_head_t *wait_q = (wait_queue_head_t *)done->priv;
-	wake_up(wait_q);
-}
-
 static int erase_write (struct mtd_info *mtd, unsigned long pos,
 			int len, const char *buf)
 {
 	struct erase_info erase;
-	DECLARE_WAITQUEUE(wait, current);
-	wait_queue_head_t wait_q;
 	size_t retlen;
 	int ret;
 
 	/*
 	 * First, let's erase the flash block.
 	 */
-
-	init_waitqueue_head(&wait_q);
-	erase.mtd = mtd;
-	erase.callback = erase_callback;
 	erase.addr = pos;
 	erase.len = len;
-	erase.priv = (u_long)&wait_q;
 
-	set_current_state(TASK_INTERRUPTIBLE);
-	add_wait_queue(&wait_q, &wait);
-
-	ret = mtd->erase(mtd, &erase);
+	ret = mtd_erase(mtd, &erase);
 	if (ret) {
-		set_current_state(TASK_RUNNING);
-		remove_wait_queue(&wait_q, &wait);
 		printk (KERN_WARNING "mtdblock: erase of region [0x%lx, 0x%x] "
 				     "on \"%s\" failed\n",
 			pos, len, mtd->name);
 		return ret;
 	}
 
-	schedule();  /* Wait for erase to finish. */
-	remove_wait_queue(&wait_q, &wait);
-
 	/*
 	 * Next, write the data to flash.
 	 */
 
-	ret = mtd->write(mtd, pos, len, &retlen, buf);
+	ret = mtd_write(mtd, pos, len, &retlen, buf);
 	if (ret)
 		return ret;
 	if (retlen != len)
@@ -152,7 +130,7 @@ static int do_cached_write (struct mtdblk_dev *mtdblk, unsigned long pos,
 		mtd->name, pos, len);
 
 	if (!sect_size)
-		return mtd->write(mtd, pos, len, &retlen, buf);
+		return mtd_write(mtd, pos, len, &retlen, buf);
 
 	while (len > 0) {
 		unsigned long sect_start = (pos/sect_size)*sect_size;
@@ -184,8 +162,8 @@ static int do_cached_write (struct mtdblk_dev *mtdblk, unsigned long pos,
 			    mtdblk->cache_offset != sect_start) {
 				/* fill the cache with the current sector */
 				mtdblk->cache_state = STATE_EMPTY;
-				ret = mtd->read(mtd, sect_start, sect_size,
-						&retlen, mtdblk->cache_data);
+				ret = mtd_read(mtd, sect_start, sect_size,
+					       &retlen, mtdblk->cache_data);
 				if (ret)
 					return ret;
 				if (retlen != sect_size)
@@ -222,7 +200,7 @@ static int do_cached_read (struct mtdblk_dev *mtdblk, unsigned long pos,
 			mtd->name, pos, len);
 
 	if (!sect_size)
-		return mtd->read(mtd, pos, len, &retlen, buf);
+		return mtd_read(mtd, pos, len, &retlen, buf);
 
 	while (len > 0) {
 		unsigned long sect_start = (pos/sect_size)*sect_size;
@@ -241,7 +219,7 @@ static int do_cached_read (struct mtdblk_dev *mtdblk, unsigned long pos,
 		    mtdblk->cache_offset == sect_start) {
 			memcpy (buf, mtdblk->cache_data + offset, size);
 		} else {
-			ret = mtd->read(mtd, pos, size, &retlen, buf);
+			ret = mtd_read(mtd, pos, size, &retlen, buf);
 			if (ret)
 				return ret;
 			if (retlen != size)
@@ -285,10 +263,8 @@ static int mtdblock_open(struct mtd_blktrans_dev *mbd)
 
 	pr_debug("mtdblock_open\n");
 
-	mutex_lock(&mtdblks_lock);
 	if (mtdblk->count) {
 		mtdblk->count++;
-		mutex_unlock(&mtdblks_lock);
 		return 0;
 	}
 
@@ -301,37 +277,32 @@ static int mtdblock_open(struct mtd_blktrans_dev *mbd)
 		mtdblk->cache_data = NULL;
 	}
 
-	mutex_unlock(&mtdblks_lock);
-
 	pr_debug("ok\n");
 
 	return 0;
 }
 
-static int mtdblock_release(struct mtd_blktrans_dev *mbd)
+static void mtdblock_release(struct mtd_blktrans_dev *mbd)
 {
 	struct mtdblk_dev *mtdblk = container_of(mbd, struct mtdblk_dev, mbd);
 
 	pr_debug("mtdblock_release\n");
-
-	mutex_lock(&mtdblks_lock);
 
 	mutex_lock(&mtdblk->cache_mutex);
 	write_cached_data(mtdblk);
 	mutex_unlock(&mtdblk->cache_mutex);
 
 	if (!--mtdblk->count) {
-		/* It was the last usage. Free the cache */
-		if (mbd->mtd->sync)
-			mbd->mtd->sync(mbd->mtd);
+		/*
+		 * It was the last usage. Free the cache, but only sync if
+		 * opened for writing.
+		 */
+		if (mbd->file_mode & FMODE_WRITE)
+			mtd_sync(mbd->mtd);
 		vfree(mtdblk->cache_data);
 	}
 
-	mutex_unlock(&mtdblks_lock);
-
 	pr_debug("ok\n");
-
-	return 0;
 }
 
 static int mtdblock_flush(struct mtd_blktrans_dev *dev)
@@ -341,9 +312,7 @@ static int mtdblock_flush(struct mtd_blktrans_dev *dev)
 	mutex_lock(&mtdblk->cache_mutex);
 	write_cached_data(mtdblk);
 	mutex_unlock(&mtdblk->cache_mutex);
-
-	if (dev->mtd->sync)
-		dev->mtd->sync(dev->mtd);
+	mtd_sync(dev->mtd);
 	return 0;
 }
 
@@ -374,7 +343,7 @@ static void mtdblock_remove_dev(struct mtd_blktrans_dev *dev)
 
 static struct mtd_blktrans_ops mtdblock_tr = {
 	.name		= "mtdblock",
-	.major		= 31,
+	.major		= MTD_BLOCK_MAJOR,
 	.part_bits	= 0,
 	.blksize 	= 512,
 	.open		= mtdblock_open,

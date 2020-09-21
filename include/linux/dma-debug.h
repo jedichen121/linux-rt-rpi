@@ -30,14 +30,14 @@ struct bus_type;
 
 extern void dma_debug_add_bus(struct bus_type *bus);
 
-extern void dma_debug_init(u32 num_entries);
-
 extern int dma_debug_resize_entries(u32 num_entries);
 
 extern void debug_dma_map_page(struct device *dev, struct page *page,
 			       size_t offset, size_t size,
 			       int direction, dma_addr_t dma_addr,
 			       bool map_single);
+
+extern void debug_dma_mapping_error(struct device *dev, dma_addr_t dma_addr);
 
 extern void debug_dma_unmap_page(struct device *dev, dma_addr_t addr,
 				 size_t size, int direction, bool map_single);
@@ -53,6 +53,13 @@ extern void debug_dma_alloc_coherent(struct device *dev, size_t size,
 
 extern void debug_dma_free_coherent(struct device *dev, size_t size,
 				    void *virt, dma_addr_t addr);
+
+extern void debug_dma_map_resource(struct device *dev, phys_addr_t addr,
+				   size_t size, int direction,
+				   dma_addr_t dma_addr);
+
+extern void debug_dma_unmap_resource(struct device *dev, dma_addr_t dma_addr,
+				     size_t size, int direction);
 
 extern void debug_dma_sync_single_for_cpu(struct device *dev,
 					  dma_addr_t dma_handle, size_t size,
@@ -83,13 +90,11 @@ extern void debug_dma_sync_sg_for_device(struct device *dev,
 
 extern void debug_dma_dump_mappings(struct device *dev);
 
+extern void debug_dma_assert_idle(struct page *page);
+
 #else /* CONFIG_DMA_API_DEBUG */
 
 static inline void dma_debug_add_bus(struct bus_type *bus)
-{
-}
-
-static inline void dma_debug_init(u32 num_entries)
 {
 }
 
@@ -102,6 +107,11 @@ static inline void debug_dma_map_page(struct device *dev, struct page *page,
 				      size_t offset, size_t size,
 				      int direction, dma_addr_t dma_addr,
 				      bool map_single)
+{
+}
+
+static inline void debug_dma_mapping_error(struct device *dev,
+					  dma_addr_t dma_addr)
 {
 }
 
@@ -129,6 +139,18 @@ static inline void debug_dma_alloc_coherent(struct device *dev, size_t size,
 
 static inline void debug_dma_free_coherent(struct device *dev, size_t size,
 					   void *virt, dma_addr_t addr)
+{
+}
+
+static inline void debug_dma_map_resource(struct device *dev, phys_addr_t addr,
+					  size_t size, int direction,
+					  dma_addr_t dma_addr)
+{
+}
+
+static inline void debug_dma_unmap_resource(struct device *dev,
+					    dma_addr_t dma_addr, size_t size,
+					    int direction)
 {
 }
 
@@ -173,6 +195,10 @@ static inline void debug_dma_sync_sg_for_device(struct device *dev,
 }
 
 static inline void debug_dma_dump_mappings(struct device *dev)
+{
+}
+
+static inline void debug_dma_assert_idle(struct page *page)
 {
 }
 

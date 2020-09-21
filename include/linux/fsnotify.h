@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_FS_NOTIFY_H
 #define _LINUX_FS_NOTIFY_H
 
@@ -14,18 +15,10 @@
 #include <linux/fsnotify_backend.h>
 #include <linux/audit.h>
 #include <linux/slab.h>
-
-/*
- * fsnotify_d_instantiate - instantiate a dentry for inode
- */
-static inline void fsnotify_d_instantiate(struct dentry *dentry,
-					  struct inode *inode)
-{
-	__fsnotify_d_instantiate(dentry, inode);
-}
+#include <linux/bug.h>
 
 /* Notify this dentry's parent about a child's events. */
-static inline int fsnotify_parent(struct path *path, struct dentry *dentry, __u32 mask)
+static inline int fsnotify_parent(const struct path *path, struct dentry *dentry, __u32 mask)
 {
 	if (!dentry)
 		dentry = path->dentry;
@@ -36,8 +29,8 @@ static inline int fsnotify_parent(struct path *path, struct dentry *dentry, __u3
 /* simple call site for access decisions */
 static inline int fsnotify_perm(struct file *file, int mask)
 {
-	struct path *path = &file->f_path;
-	struct inode *inode = path->dentry->d_inode;
+	const struct path *path = &file->f_path;
+	struct inode *inode = file_inode(file);
 	__u32 fsnotify_mask = 0;
 	int ret;
 
@@ -57,18 +50,6 @@ static inline int fsnotify_perm(struct file *file, int mask)
 		return ret;
 
 	return fsnotify(inode, fsnotify_mask, path, FSNOTIFY_EVENT_PATH, NULL, 0);
-}
-
-/*
- * fsnotify_d_move - dentry has been moved
- */
-static inline void fsnotify_d_move(struct dentry *dentry)
-{
-	/*
-	 * On move we need to update dentry->d_flags to indicate if the new parent
-	 * cares about events from this dentry.
-	 */
-	__fsnotify_update_dcache_flags(dentry);
 }
 
 /*
@@ -100,15 +81,17 @@ static inline void fsnotify_move(struct inode *old_dir, struct inode *new_dir,
 		new_dir_mask |= FS_ISDIR;
 	}
 
-	fsnotify(old_dir, old_dir_mask, old_dir, FSNOTIFY_EVENT_INODE, old_name, fs_cookie);
-	fsnotify(new_dir, new_dir_mask, new_dir, FSNOTIFY_EVENT_INODE, new_name, fs_cookie);
+	fsnotify(old_dir, old_dir_mask, source, FSNOTIFY_EVENT_INODE, old_name,
+		 fs_cookie);
+	fsnotify(new_dir, new_dir_mask, source, FSNOTIFY_EVENT_INODE, new_name,
+		 fs_cookie);
 
 	if (target)
 		fsnotify_link_count(target);
 
 	if (source)
 		fsnotify(source, FS_MOVE_SELF, moved->d_inode, FSNOTIFY_EVENT_INODE, NULL, 0);
-	audit_inode_child(moved, new_dir);
+	audit_inode_child(new_dir, moved, AUDIT_TYPE_CHILD_CREATE);
 }
 
 /*
@@ -154,7 +137,7 @@ static inline void fsnotify_inoderemove(struct inode *inode)
  */
 static inline void fsnotify_create(struct inode *inode, struct dentry *dentry)
 {
-	audit_inode_child(dentry, inode);
+	audit_inode_child(inode, dentry, AUDIT_TYPE_CHILD_CREATE);
 
 	fsnotify(inode, FS_CREATE, dentry->d_inode, FSNOTIFY_EVENT_INODE, dentry->d_name.name, 0);
 }
@@ -167,7 +150,7 @@ static inline void fsnotify_create(struct inode *inode, struct dentry *dentry)
 static inline void fsnotify_link(struct inode *dir, struct inode *inode, struct dentry *new_dentry)
 {
 	fsnotify_link_count(inode);
-	audit_inode_child(new_dentry, dir);
+	audit_inode_child(dir, new_dentry, AUDIT_TYPE_CHILD_CREATE);
 
 	fsnotify(dir, FS_CREATE, inode, FSNOTIFY_EVENT_INODE, new_dentry->d_name.name, 0);
 }
@@ -180,7 +163,7 @@ static inline void fsnotify_mkdir(struct inode *inode, struct dentry *dentry)
 	__u32 mask = (FS_CREATE | FS_ISDIR);
 	struct inode *d_inode = dentry->d_inode;
 
-	audit_inode_child(dentry, inode);
+	audit_inode_child(inode, dentry, AUDIT_TYPE_CHILD_CREATE);
 
 	fsnotify(inode, mask, d_inode, FSNOTIFY_EVENT_INODE, dentry->d_name.name, 0);
 }
@@ -190,8 +173,8 @@ static inline void fsnotify_mkdir(struct inode *inode, struct dentry *dentry)
  */
 static inline void fsnotify_access(struct file *file)
 {
-	struct path *path = &file->f_path;
-	struct inode *inode = path->dentry->d_inode;
+	const struct path *path = &file->f_path;
+	struct inode *inode = file_inode(file);
 	__u32 mask = FS_ACCESS;
 
 	if (S_ISDIR(inode->i_mode))
@@ -208,8 +191,8 @@ static inline void fsnotify_access(struct file *file)
  */
 static inline void fsnotify_modify(struct file *file)
 {
-	struct path *path = &file->f_path;
-	struct inode *inode = path->dentry->d_inode;
+	const struct path *path = &file->f_path;
+	struct inode *inode = file_inode(file);
 	__u32 mask = FS_MODIFY;
 
 	if (S_ISDIR(inode->i_mode))
@@ -226,8 +209,8 @@ static inline void fsnotify_modify(struct file *file)
  */
 static inline void fsnotify_open(struct file *file)
 {
-	struct path *path = &file->f_path;
-	struct inode *inode = path->dentry->d_inode;
+	const struct path *path = &file->f_path;
+	struct inode *inode = file_inode(file);
 	__u32 mask = FS_OPEN;
 
 	if (S_ISDIR(inode->i_mode))
@@ -242,8 +225,8 @@ static inline void fsnotify_open(struct file *file)
  */
 static inline void fsnotify_close(struct file *file)
 {
-	struct path *path = &file->f_path;
-	struct inode *inode = file->f_path.dentry->d_inode;
+	const struct path *path = &file->f_path;
+	struct inode *inode = file_inode(file);
 	fmode_t mode = file->f_mode;
 	__u32 mask = (mode & FMODE_WRITE) ? FS_CLOSE_WRITE : FS_CLOSE_NOWRITE;
 
@@ -306,36 +289,5 @@ static inline void fsnotify_change(struct dentry *dentry, unsigned int ia_valid)
 		fsnotify(inode, mask, inode, FSNOTIFY_EVENT_INODE, NULL, 0);
 	}
 }
-
-#if defined(CONFIG_FSNOTIFY)	/* notify helpers */
-
-/*
- * fsnotify_oldname_init - save off the old filename before we change it
- */
-static inline const unsigned char *fsnotify_oldname_init(const unsigned char *name)
-{
-	return kstrdup(name, GFP_KERNEL);
-}
-
-/*
- * fsnotify_oldname_free - free the name we got from fsnotify_oldname_init
- */
-static inline void fsnotify_oldname_free(const unsigned char *old_name)
-{
-	kfree(old_name);
-}
-
-#else	/* CONFIG_FSNOTIFY */
-
-static inline const char *fsnotify_oldname_init(const unsigned char *name)
-{
-	return NULL;
-}
-
-static inline void fsnotify_oldname_free(const unsigned char *old_name)
-{
-}
-
-#endif	/*  CONFIG_FSNOTIFY */
 
 #endif	/* _LINUX_FS_NOTIFY_H */

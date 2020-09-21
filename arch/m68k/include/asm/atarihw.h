@@ -21,8 +21,8 @@
 #define _LINUX_ATARIHW_H_
 
 #include <linux/types.h>
-#include <asm/bootinfo.h>
-#include <asm/raw_io.h>
+#include <asm/bootinfo-atari.h>
+#include <asm/kmap.h>
 
 extern u_long atari_mch_cookie;
 extern u_long atari_mch_type;
@@ -123,14 +123,6 @@ extern struct atari_hw_present atari_hw_present;
  * reads from memory). Both '040 and '060 invalidate cache entries on snooped
  * DMA reads (i.e., writes to memory).
  */
-
-
-#define atari_readb   raw_inb
-#define atari_writeb  raw_outb
-
-#define atari_inb_p   raw_inb
-#define atari_outb_p  raw_outb
-
 
 
 #include <linux/mm.h>
@@ -804,6 +796,12 @@ struct MSTE_RTC {
 };
 
 #define mste_rtc ((*(volatile struct MSTE_RTC *)MSTE_RTC_BAS))
+
+/*
+** EtherNAT add-on card for Falcon - combined ethernet and USB adapter
+*/
+
+#define ATARI_ETHERNAT_PHYS_ADDR	0x80000000
 
 #endif /* linux/atarihw.h */
 

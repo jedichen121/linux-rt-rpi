@@ -23,6 +23,7 @@ enum iscsi_boot_eth_properties_enum {
 	ISCSI_BOOT_ETH_INDEX,
 	ISCSI_BOOT_ETH_FLAGS,
 	ISCSI_BOOT_ETH_IP_ADDR,
+	ISCSI_BOOT_ETH_PREFIX_LEN,
 	ISCSI_BOOT_ETH_SUBNET_MASK,
 	ISCSI_BOOT_ETH_ORIGIN,
 	ISCSI_BOOT_ETH_GATEWAY,
@@ -63,6 +64,12 @@ enum iscsi_boot_initiator_properties_enum {
 	ISCSI_BOOT_INI_END_MARKER,
 };
 
+enum iscsi_boot_acpitbl_properties_enum {
+	ISCSI_BOOT_ACPITBL_SIGNATURE,
+	ISCSI_BOOT_ACPITBL_OEM_ID,
+	ISCSI_BOOT_ACPITBL_OEM_TABLE_ID,
+};
+
 struct attribute_group;
 
 struct iscsi_boot_kobj {
@@ -91,7 +98,7 @@ struct iscsi_boot_kobj {
 	 * The enum of the type. This can be any value of the above
 	 * properties.
 	 */
-	mode_t (*is_visible) (void *data, int type);
+	umode_t (*is_visible) (void *data, int type);
 
 	/*
 	 * Driver specific release function.
@@ -110,21 +117,28 @@ struct iscsi_boot_kobj *
 iscsi_boot_create_initiator(struct iscsi_boot_kset *boot_kset, int index,
 			    void *data,
 			    ssize_t (*show) (void *data, int type, char *buf),
-			    mode_t (*is_visible) (void *data, int type),
+			    umode_t (*is_visible) (void *data, int type),
 			    void (*release) (void *data));
 
 struct iscsi_boot_kobj *
 iscsi_boot_create_ethernet(struct iscsi_boot_kset *boot_kset, int index,
 			   void *data,
 			   ssize_t (*show) (void *data, int type, char *buf),
-			   mode_t (*is_visible) (void *data, int type),
+			   umode_t (*is_visible) (void *data, int type),
 			   void (*release) (void *data));
 struct iscsi_boot_kobj *
 iscsi_boot_create_target(struct iscsi_boot_kset *boot_kset, int index,
 			 void *data,
 			 ssize_t (*show) (void *data, int type, char *buf),
-			 mode_t (*is_visible) (void *data, int type),
+			 umode_t (*is_visible) (void *data, int type),
 			 void (*release) (void *data));
+
+struct iscsi_boot_kobj *
+iscsi_boot_create_acpitbl(struct iscsi_boot_kset *boot_kset, int index,
+			  void *data,
+			  ssize_t (*show)(void *data, int type, char *buf),
+			  umode_t (*is_visible)(void *data, int type),
+			  void (*release)(void *data));
 
 struct iscsi_boot_kset *iscsi_boot_create_kset(const char *set_name);
 struct iscsi_boot_kset *iscsi_boot_create_host_kset(unsigned int hostno);

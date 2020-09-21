@@ -13,6 +13,7 @@
 #include <linux/syscore_ops.h>
 #include <linux/irq.h>
 #include <linux/gpio.h>
+#include <linux/regulator/machine.h>
 
 #include <linux/dm9000.h>
 #include <linux/leds.h>
@@ -21,10 +22,20 @@
 #include <asm/mach-types.h>
 #include <asm/mach/map.h>
 
-#include <mach/pxa25x.h>
-#include <mach/pxa27x.h>
+#include "pxa25x.h"
+#undef GPIO24_SSP1_SFRM
+#undef GPIO86_GPIO
+#undef GPIO87_GPIO
+#undef GPIO88_GPIO
+#undef GPIO89_GPIO
+#include "pxa27x.h"
+#undef GPIO24_SSP1_SFRM
+#undef GPIO86_GPIO
+#undef GPIO87_GPIO
+#undef GPIO88_GPIO
+#undef GPIO89_GPIO
 #include <mach/audio.h>
-#include <mach/pxafb.h>
+#include <linux/platform_data/video-pxafb.h>
 #include <mach/smemc.h>
 
 #include <asm/hardware/it8152.h>
@@ -58,8 +69,8 @@ extern void cmx270_init(void);
 #define CMX255_GPIO_IT8152_IRQ	(0)
 #define CMX270_GPIO_IT8152_IRQ	(22)
 
-#define CMX255_ETHIRQ		IRQ_GPIO(GPIO22_ETHIRQ)
-#define CMX270_ETHIRQ		IRQ_GPIO(GPIO10_ETHIRQ)
+#define CMX255_ETHIRQ		PXA_GPIO_TO_IRQ(GPIO22_ETHIRQ)
+#define CMX270_ETHIRQ		PXA_GPIO_TO_IRQ(GPIO10_ETHIRQ)
 
 #if defined(CONFIG_DM9000) || defined(CONFIG_DM9000_MODULE)
 static struct resource cmx255_dm9000_resource[] = {
@@ -465,6 +476,8 @@ static void __init cmx2xx_init(void)
 	cmx2xx_init_ac97();
 	cmx2xx_init_touchscreen();
 	cmx2xx_init_leds();
+
+	regulator_has_full_constraints();
 }
 
 static void __init cmx2xx_init_irq(void)
@@ -519,7 +532,7 @@ MACHINE_START(ARMCORE, "Compulab CM-X2XX")
 	.init_irq	= cmx2xx_init_irq,
 	/* NOTE: pxa25x_handle_irq() works on PXA27x w/o camera support */
 	.handle_irq	= pxa25x_handle_irq,
-	.timer		= &pxa_timer,
+	.init_time	= pxa_timer_init,
 	.init_machine	= cmx2xx_init,
 #ifdef CONFIG_PCI
 	.dma_zone_size	= SZ_64M,

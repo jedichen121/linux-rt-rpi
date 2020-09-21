@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * A simple GPIO VBUS sensing driver for B peripheral only devices
  * with internal transceivers.
@@ -17,6 +18,7 @@
  * @gpio_pullup: optional D+ or D- pullup GPIO (else negative/invalid)
  * @gpio_vbus_inverted: true if gpio_vbus is active low
  * @gpio_pullup_inverted: true if gpio_pullup is active low
+ * @wakeup: configure gpio_vbus as a wake-up source
  *
  * The VBUS sensing GPIO should have a pulldown, which will normally be
  * part of a resistor ladder turning a 4.0V-5.25V level on VBUS into a
@@ -27,4 +29,5 @@ struct gpio_vbus_mach_info {
 	int gpio_pullup;
 	bool gpio_vbus_inverted;
 	bool gpio_pullup_inverted;
+	bool wakeup;
 };

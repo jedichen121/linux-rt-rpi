@@ -27,8 +27,8 @@
 #include <linux/i2c.h>
 #include <linux/leds.h>
 #include <linux/mfd/da903x.h>
-#include <linux/i2c/max732x.h>
-#include <linux/i2c/pxa-i2c.h>
+#include <linux/platform_data/max732x.h>
+#include <linux/platform_data/i2c-pxa.h>
 
 #include <asm/types.h>
 #include <asm/setup.h>
@@ -41,12 +41,13 @@
 #include <asm/mach/map.h>
 #include <asm/mach/irq.h>
 
-#include <mach/pxa300.h>
-#include <mach/pxafb.h>
-#include <mach/mmc.h>
-#include <plat/pxa27x_keypad.h>
-#include <mach/littleton.h>
-#include <plat/pxa3xx_nand.h>
+#include "pxa300.h"
+#include "devices.h"
+#include <linux/platform_data/video-pxafb.h>
+#include <linux/platform_data/mmc-pxamci.h>
+#include <linux/platform_data/keypad-pxa27x.h>
+#include "littleton.h"
+#include <linux/platform_data/mtd-nand-pxa3xx.h>
 
 #include "generic.h"
 
@@ -124,8 +125,8 @@ static struct resource smc91x_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= IRQ_GPIO(mfp_to_gpio(MFP_PIN_GPIO90)),
-		.end	= IRQ_GPIO(mfp_to_gpio(MFP_PIN_GPIO90)),
+		.start	= PXA_GPIO_TO_IRQ(mfp_to_gpio(MFP_PIN_GPIO90)),
+		.end	= PXA_GPIO_TO_IRQ(mfp_to_gpio(MFP_PIN_GPIO90)),
 		.flags	= IORESOURCE_IRQ | IORESOURCE_IRQ_LOWEDGE,
 	}
 };
@@ -183,7 +184,7 @@ static struct pxafb_mach_info littleton_lcd_info = {
 	.lcd_conn		= LCD_COLOR_TFT_16BPP,
 };
 
-static void littleton_init_lcd(void)
+static void __init littleton_init_lcd(void)
 {
 	pxa_set_fb_info(NULL, &littleton_lcd_info);
 }
@@ -222,7 +223,7 @@ static inline void littleton_init_spi(void) {}
 #endif
 
 #if defined(CONFIG_KEYBOARD_PXA27x) || defined(CONFIG_KEYBOARD_PXA27x_MODULE)
-static unsigned int littleton_matrix_key_map[] = {
+static const unsigned int littleton_matrix_key_map[] = {
 	/* KEY(row, col, key_code) */
 	KEY(1, 3, KEY_0), KEY(0, 0, KEY_1), KEY(1, 0, KEY_2), KEY(2, 0, KEY_3),
 	KEY(0, 1, KEY_4), KEY(1, 1, KEY_5), KEY(2, 1, KEY_6), KEY(0, 2, KEY_7),
@@ -249,11 +250,15 @@ static unsigned int littleton_matrix_key_map[] = {
 	KEY(3, 1, KEY_F23),	/* soft2 */
 };
 
+static struct matrix_keymap_data littleton_matrix_keymap_data = {
+	.keymap			= littleton_matrix_key_map,
+	.keymap_size		= ARRAY_SIZE(littleton_matrix_key_map),
+};
+
 static struct pxa27x_keypad_platform_data littleton_keypad_info = {
 	.matrix_key_rows	= 6,
 	.matrix_key_cols	= 5,
-	.matrix_key_map		= littleton_matrix_key_map,
-	.matrix_key_map_size	= ARRAY_SIZE(littleton_matrix_key_map),
+	.matrix_keymap_data	= &littleton_matrix_keymap_data,
 
 	.enable_rotary0		= 1,
 	.rotary0_up_key		= KEY_UP,
@@ -286,7 +291,7 @@ static void __init littleton_init_mmc(void)
 static inline void littleton_init_mmc(void) {}
 #endif
 
-#if defined(CONFIG_MTD_NAND_PXA3xx) || defined(CONFIG_MTD_NAND_PXA3xx_MODULE)
+#if IS_ENABLED(CONFIG_MTD_NAND_MARVELL)
 static struct mtd_partition littleton_nand_partitions[] = {
 	[0] = {
 		.name        = "Bootloader",
@@ -324,10 +329,8 @@ static struct mtd_partition littleton_nand_partitions[] = {
 };
 
 static struct pxa3xx_nand_platform_data littleton_nand_info = {
-	.enable_arbiter	= 1,
-	.num_cs		= 1,
-	.parts[0]	= littleton_nand_partitions,
-	.nr_parts[0]	= ARRAY_SIZE(littleton_nand_partitions),
+	.parts		= littleton_nand_partitions,
+	.nr_parts	= ARRAY_SIZE(littleton_nand_partitions),
 };
 
 static void __init littleton_init_nand(void)
@@ -336,7 +339,7 @@ static void __init littleton_init_nand(void)
 }
 #else
 static inline void littleton_init_nand(void) {}
-#endif /* CONFIG_MTD_NAND_PXA3xx || CONFIG_MTD_NAND_PXA3xx_MODULE */
+#endif /* IS_ENABLED(CONFIG_MTD_NAND_MARVELL) */
 
 #if defined(CONFIG_I2C_PXA) || defined(CONFIG_I2C_PXA_MODULE)
 static struct led_info littleton_da9034_leds[] = {
@@ -396,7 +399,7 @@ static struct i2c_board_info littleton_i2c_info[] = {
 		.type		= "da9034",
 		.addr		= 0x34,
 		.platform_data	= &littleton_da9034_info,
-		.irq		= gpio_to_irq(mfp_to_gpio(MFP_PIN_GPIO18)),
+		.irq		= PXA_GPIO_TO_IRQ(mfp_to_gpio(MFP_PIN_GPIO18)),
 	},
 	[1] = {
 		.type		= "max7320",
@@ -443,7 +446,7 @@ MACHINE_START(LITTLETON, "Marvell Form Factor Development Platform (aka Littleto
 	.nr_irqs	= LITTLETON_NR_IRQS,
 	.init_irq	= pxa3xx_init_irq,
 	.handle_irq	= pxa3xx_handle_irq,
-	.timer		= &pxa_timer,
+	.init_time	= pxa_timer_init,
 	.init_machine	= littleton_init,
 	.restart	= pxa_restart,
 MACHINE_END

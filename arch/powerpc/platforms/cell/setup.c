@@ -54,6 +54,7 @@
 #include <asm/cell-regs.h>
 #include <asm/io-workarounds.h>
 
+#include "cell.h"
 #include "interrupt.h"
 #include "pervasive.h"
 #include "ras.h"
@@ -117,7 +118,7 @@ static void cell_fixup_pcie_rootcomplex(struct pci_dev *dev)
 }
 DECLARE_PCI_FIXUP_HEADER(PCI_ANY_ID, PCI_ANY_ID, cell_fixup_pcie_rootcomplex);
 
-static int __devinit cell_setup_phb(struct pci_controller *phb)
+static int cell_setup_phb(struct pci_controller *phb)
 {
 	const char *model;
 	struct device_node *np;
@@ -125,6 +126,8 @@ static int __devinit cell_setup_phb(struct pci_controller *phb)
 	int rc = rtas_setup_phb(phb);
 	if (rc)
 		return rc;
+
+	phb->controller_ops = cell_pci_controller_ops;
 
 	np = phb->dn;
 	model = of_get_property(np, "model", NULL);
@@ -140,7 +143,7 @@ static int __devinit cell_setup_phb(struct pci_controller *phb)
 	return 0;
 }
 
-static const struct of_device_id cell_bus_ids[] __initdata = {
+static const struct of_device_id cell_bus_ids[] __initconst = {
 	{ .type = "soc", },
 	{ .compatible = "soc", },
 	{ .type = "spider", },
@@ -189,15 +192,15 @@ static void __init mpic_init_IRQ(void)
 	struct device_node *dn;
 	struct mpic *mpic;
 
-	for (dn = NULL;
-	     (dn = of_find_node_by_name(dn, "interrupt-controller"));) {
+	for_each_node_by_name(dn, "interrupt-controller") {
 		if (!of_device_is_compatible(dn, "CBEA,platform-open-pic"))
 			continue;
 
 		/* The MPIC driver will get everything it needs from the
 		 * device-tree, just pass 0 to all arguments
 		 */
-		mpic = mpic_alloc(dn, 0, MPIC_SECONDARY, 0, 0, " MPIC     ");
+		mpic = mpic_alloc(dn, 0, MPIC_SECONDARY | MPIC_NO_RESET,
+				0, 0, " MPIC     ");
 		if (mpic == NULL)
 			continue;
 		mpic_init(mpic);
@@ -251,13 +254,11 @@ static void __init cell_setup_arch(void)
 
 static int __init cell_probe(void)
 {
-	unsigned long root = of_get_flat_dt_root();
-
-	if (!of_flat_dt_is_compatible(root, "IBM,CBEA") &&
-	    !of_flat_dt_is_compatible(root, "IBM,CPBW-1.0"))
+	if (!of_machine_is_compatible("IBM,CBEA") &&
+	    !of_machine_is_compatible("IBM,CPBW-1.0"))
 		return 0;
 
-	hpte_init_native();
+	pm_power_off = rtas_power_off;
 
 	return 1;
 }
@@ -268,7 +269,6 @@ define_machine(cell) {
 	.setup_arch		= cell_setup_arch,
 	.show_cpuinfo		= cell_show_cpuinfo,
 	.restart		= rtas_restart,
-	.power_off		= rtas_power_off,
 	.halt			= rtas_halt,
 	.get_boot_time		= rtas_get_boot_time,
 	.get_rtc_time		= rtas_get_rtc_time,
@@ -278,3 +278,5 @@ define_machine(cell) {
 	.init_IRQ       	= cell_init_irq,
 	.pci_setup_phb		= cell_setup_phb,
 };
+
+struct pci_controller_ops cell_pci_controller_ops;

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_PARISC_COMPAT_H
 #define _ASM_PARISC_COMPAT_H
 /*
@@ -12,7 +13,6 @@
 
 typedef u32	compat_size_t;
 typedef s32	compat_ssize_t;
-typedef s32	compat_time_t;
 typedef s32	compat_clock_t;
 typedef s32	compat_pid_t;
 typedef u32	__compat_uid_t;
@@ -28,6 +28,7 @@ typedef u16	compat_nlink_t;
 typedef u16	compat_ipc_pid_t;
 typedef s32	compat_daddr_t;
 typedef u32	compat_caddr_t;
+typedef s32	compat_key_t;
 typedef s32	compat_timer_t;
 
 typedef s32	compat_int_t;
@@ -36,16 +37,7 @@ typedef s64	compat_s64;
 typedef u32	compat_uint_t;
 typedef u32	compat_ulong_t;
 typedef u64	compat_u64;
-
-struct compat_timespec {
-	compat_time_t		tv_sec;
-	s32			tv_nsec;
-};
-
-struct compat_timeval {
-	compat_time_t		tv_sec;
-	s32			tv_usec;
-};
+typedef u32	compat_uptr_t;
 
 struct compat_stat {
 	compat_dev_t		st_dev;	/* dev_t is 32 bits on parisc */
@@ -128,7 +120,72 @@ typedef u32		compat_old_sigset_t;	/* at least 32 bits */
 typedef u32		compat_sigset_word;
 
 #define COMPAT_OFF_T_MAX	0x7fffffff
-#define COMPAT_LOFF_T_MAX	0x7fffffffffffffffL
+
+struct compat_ipc64_perm {
+	compat_key_t key;
+	__compat_uid_t uid;
+	__compat_gid_t gid;
+	__compat_uid_t cuid;
+	__compat_gid_t cgid;
+	unsigned short int __pad1;
+	compat_mode_t mode;
+	unsigned short int __pad2;
+	unsigned short int seq;
+	unsigned int __pad3;
+	unsigned long __unused1;	/* yes they really are 64bit pads */
+	unsigned long __unused2;
+};
+
+struct compat_semid64_ds {
+	struct compat_ipc64_perm sem_perm;
+	unsigned int sem_otime_high;
+	unsigned int sem_otime;
+	unsigned int sem_ctime_high;
+	unsigned int sem_ctime;
+	compat_ulong_t sem_nsems;
+	compat_ulong_t __unused3;
+	compat_ulong_t __unused4;
+};
+
+struct compat_msqid64_ds {
+	struct compat_ipc64_perm msg_perm;
+	unsigned int msg_stime_high;
+	unsigned int msg_stime;
+	unsigned int msg_rtime_high;
+	unsigned int msg_rtime;
+	unsigned int msg_ctime_high;
+	unsigned int msg_ctime;
+	compat_ulong_t msg_cbytes;
+	compat_ulong_t msg_qnum;
+	compat_ulong_t msg_qbytes;
+	compat_pid_t msg_lspid;
+	compat_pid_t msg_lrpid;
+	compat_ulong_t __unused4;
+	compat_ulong_t __unused5;
+};
+
+struct compat_shmid64_ds {
+	struct compat_ipc64_perm shm_perm;
+	unsigned int shm_atime_high;
+	unsigned int shm_atime;
+	unsigned int shm_dtime_high;
+	unsigned int shm_dtime;
+	unsigned int shm_ctime_high;
+	unsigned int shm_ctime;
+	unsigned int __unused4;
+	compat_size_t shm_segsz;
+	compat_pid_t shm_cpid;
+	compat_pid_t shm_lpid;
+	compat_ulong_t shm_nattch;
+	compat_ulong_t __unused5;
+	compat_ulong_t __unused6;
+};
+
+/*
+ * The type of struct elf_prstatus.pr_reg in compatible core dumps.
+ */
+#define COMPAT_ELF_NGREG 80
+typedef compat_ulong_t compat_elf_gregset_t[COMPAT_ELF_NGREG];
 
 /*
  * A pointer passed in from user mode. This should not
@@ -136,7 +193,6 @@ typedef u32		compat_sigset_word;
  * as pointers because the syscall entry code will have
  * appropriately converted them already.
  */
-typedef	u32		compat_uptr_t;
 
 static inline void __user *compat_ptr(compat_uptr_t uptr)
 {

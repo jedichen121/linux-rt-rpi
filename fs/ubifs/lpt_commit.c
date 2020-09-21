@@ -30,11 +30,7 @@
 #include <linux/random.h>
 #include "ubifs.h"
 
-#ifdef CONFIG_UBIFS_FS_DEBUG
 static int dbg_populate_lsave(struct ubifs_info *c);
-#else
-#define dbg_populate_lsave(c) 0
-#endif
 
 /**
  * first_dirty_cnode - find first dirty cnode.
@@ -43,9 +39,9 @@ static int dbg_populate_lsave(struct ubifs_info *c);
  *
  * This function returns the first dirty cnode or %NULL if there is not one.
  */
-static struct ubifs_cnode *first_dirty_cnode(struct ubifs_nnode *nnode)
+static struct ubifs_cnode *first_dirty_cnode(const struct ubifs_info *c, struct ubifs_nnode *nnode)
 {
-	ubifs_assert(nnode);
+	ubifs_assert(c, nnode);
 	while (1) {
 		int i, cont = 0;
 
@@ -69,16 +65,17 @@ static struct ubifs_cnode *first_dirty_cnode(struct ubifs_nnode *nnode)
 
 /**
  * next_dirty_cnode - find next dirty cnode.
+ * @c: UBIFS file-system description object
  * @cnode: cnode from which to begin searching
  *
  * This function returns the next dirty cnode or %NULL if there is not one.
  */
-static struct ubifs_cnode *next_dirty_cnode(struct ubifs_cnode *cnode)
+static struct ubifs_cnode *next_dirty_cnode(const struct ubifs_info *c, struct ubifs_cnode *cnode)
 {
 	struct ubifs_nnode *nnode;
 	int i;
 
-	ubifs_assert(cnode);
+	ubifs_assert(c, cnode);
 	nnode = cnode->parent;
 	if (!nnode)
 		return NULL;
@@ -88,7 +85,7 @@ static struct ubifs_cnode *next_dirty_cnode(struct ubifs_cnode *cnode)
 			if (cnode->level == 0)
 				return cnode; /* cnode is a pnode */
 			/* cnode is a nnode */
-			return first_dirty_cnode((struct ubifs_nnode *)cnode);
+			return first_dirty_cnode(c, (struct ubifs_nnode *)cnode);
 		}
 	}
 	return (struct ubifs_cnode *)nnode;
@@ -111,15 +108,15 @@ static int get_cnodes_to_commit(struct ubifs_info *c)
 	if (!test_bit(DIRTY_CNODE, &c->nroot->flags))
 		return 0;
 
-	c->lpt_cnext = first_dirty_cnode(c->nroot);
+	c->lpt_cnext = first_dirty_cnode(c, c->nroot);
 	cnode = c->lpt_cnext;
 	if (!cnode)
 		return 0;
 	cnt += 1;
 	while (1) {
-		ubifs_assert(!test_bit(COW_CNODE, &cnode->flags));
+		ubifs_assert(c, !test_bit(COW_CNODE, &cnode->flags));
 		__set_bit(COW_CNODE, &cnode->flags);
-		cnext = next_dirty_cnode(cnode);
+		cnext = next_dirty_cnode(c, cnode);
 		if (!cnext) {
 			cnode->cnext = c->lpt_cnext;
 			break;
@@ -130,7 +127,7 @@ static int get_cnodes_to_commit(struct ubifs_info *c)
 	}
 	dbg_cmt("committing %d cnodes", cnt);
 	dbg_lp("committing %d cnodes", cnt);
-	ubifs_assert(cnt == c->dirty_nn_cnt + c->dirty_pn_cnt);
+	ubifs_assert(c, cnt == c->dirty_nn_cnt + c->dirty_pn_cnt);
 	return cnt;
 }
 
@@ -146,7 +143,7 @@ static void upd_ltab(struct ubifs_info *c, int lnum, int free, int dirty)
 	dbg_lp("LEB %d free %d dirty %d to %d +%d",
 	       lnum, c->ltab[lnum - c->lpt_first].free,
 	       c->ltab[lnum - c->lpt_first].dirty, free, dirty);
-	ubifs_assert(lnum >= c->lpt_first && lnum <= c->lpt_last);
+	ubifs_assert(c, lnum >= c->lpt_first && lnum <= c->lpt_last);
 	c->ltab[lnum - c->lpt_first].free = free;
 	c->ltab[lnum - c->lpt_first].dirty += dirty;
 }
@@ -242,7 +239,7 @@ static int layout_cnodes(struct ubifs_info *c)
 			if (err)
 				goto no_space;
 			offs = 0;
-			ubifs_assert(lnum >= c->lpt_first &&
+			ubifs_assert(c, lnum >= c->lpt_first &&
 				     lnum <= c->lpt_last);
 			/* Try to place lsave and ltab nicely */
 			if (!done_lsave) {
@@ -285,7 +282,7 @@ static int layout_cnodes(struct ubifs_info *c)
 			if (err)
 				goto no_space;
 			offs = 0;
-			ubifs_assert(lnum >= c->lpt_first &&
+			ubifs_assert(c, lnum >= c->lpt_first &&
 				     lnum <= c->lpt_last);
 		}
 		done_lsave = 1;
@@ -305,10 +302,9 @@ static int layout_cnodes(struct ubifs_info *c)
 			if (err)
 				goto no_space;
 			offs = 0;
-			ubifs_assert(lnum >= c->lpt_first &&
+			ubifs_assert(c, lnum >= c->lpt_first &&
 				     lnum <= c->lpt_last);
 		}
-		done_ltab = 1;
 		c->ltab_lnum = lnum;
 		c->ltab_offs = offs;
 		offs += c->ltab_sz;
@@ -324,11 +320,10 @@ static int layout_cnodes(struct ubifs_info *c)
 	return 0;
 
 no_space:
-	ubifs_err("LPT out of space");
-	dbg_err("LPT out of space at LEB %d:%d needing %d, done_ltab %d, "
-		"done_lsave %d", lnum, offs, len, done_ltab, done_lsave);
-	dbg_dump_lpt_info(c);
-	dbg_dump_lpt_lebs(c);
+	ubifs_err(c, "LPT out of space at LEB %d:%d needing %d, done_ltab %d, done_lsave %d",
+		  lnum, offs, len, done_ltab, done_lsave);
+	ubifs_dump_lpt_info(c);
+	ubifs_dump_lpt_lebs(c);
 	dump_stack();
 	return err;
 }
@@ -421,7 +416,7 @@ static int write_cnodes(struct ubifs_info *c)
 				alen = ALIGN(wlen, c->min_io_size);
 				memset(buf + offs, 0xff, alen - wlen);
 				err = ubifs_leb_write(c, lnum, buf + from, from,
-						       alen, UBI_SHORTTERM);
+						       alen);
 				if (err)
 					return err;
 			}
@@ -430,7 +425,7 @@ static int write_cnodes(struct ubifs_info *c)
 			if (err)
 				goto no_space;
 			offs = from = 0;
-			ubifs_assert(lnum >= c->lpt_first &&
+			ubifs_assert(c, lnum >= c->lpt_first &&
 				     lnum <= c->lpt_last);
 			err = ubifs_leb_unmap(c, lnum);
 			if (err)
@@ -465,9 +460,9 @@ static int write_cnodes(struct ubifs_info *c)
 		 * important.
 		 */
 		clear_bit(DIRTY_CNODE, &cnode->flags);
-		smp_mb__before_clear_bit();
+		smp_mb__before_atomic();
 		clear_bit(COW_CNODE, &cnode->flags);
-		smp_mb__after_clear_bit();
+		smp_mb__after_atomic();
 		offs += len;
 		dbg_chk_lpt_sz(c, 1, len);
 		cnode = cnode->cnext;
@@ -479,8 +474,7 @@ static int write_cnodes(struct ubifs_info *c)
 			wlen = offs - from;
 			alen = ALIGN(wlen, c->min_io_size);
 			memset(buf + offs, 0xff, alen - wlen);
-			err = ubifs_leb_write(c, lnum, buf + from, from, alen,
-					      UBI_SHORTTERM);
+			err = ubifs_leb_write(c, lnum, buf + from, from, alen);
 			if (err)
 				return err;
 			dbg_chk_lpt_sz(c, 2, c->leb_size - offs);
@@ -488,7 +482,7 @@ static int write_cnodes(struct ubifs_info *c)
 			if (err)
 				goto no_space;
 			offs = from = 0;
-			ubifs_assert(lnum >= c->lpt_first &&
+			ubifs_assert(c, lnum >= c->lpt_first &&
 				     lnum <= c->lpt_last);
 			err = ubifs_leb_unmap(c, lnum);
 			if (err)
@@ -506,8 +500,7 @@ static int write_cnodes(struct ubifs_info *c)
 			wlen = offs - from;
 			alen = ALIGN(wlen, c->min_io_size);
 			memset(buf + offs, 0xff, alen - wlen);
-			err = ubifs_leb_write(c, lnum, buf + from, from, alen,
-					      UBI_SHORTTERM);
+			err = ubifs_leb_write(c, lnum, buf + from, from, alen);
 			if (err)
 				return err;
 			dbg_chk_lpt_sz(c, 2, c->leb_size - offs);
@@ -515,13 +508,12 @@ static int write_cnodes(struct ubifs_info *c)
 			if (err)
 				goto no_space;
 			offs = from = 0;
-			ubifs_assert(lnum >= c->lpt_first &&
+			ubifs_assert(c, lnum >= c->lpt_first &&
 				     lnum <= c->lpt_last);
 			err = ubifs_leb_unmap(c, lnum);
 			if (err)
 				return err;
 		}
-		done_ltab = 1;
 		ubifs_pack_ltab(c, buf + offs, c->ltab_cmt);
 		offs += c->ltab_sz;
 		dbg_chk_lpt_sz(c, 1, c->ltab_sz);
@@ -531,7 +523,7 @@ static int write_cnodes(struct ubifs_info *c)
 	wlen = offs - from;
 	alen = ALIGN(wlen, c->min_io_size);
 	memset(buf + offs, 0xff, alen - wlen);
-	err = ubifs_leb_write(c, lnum, buf + from, from, alen, UBI_SHORTTERM);
+	err = ubifs_leb_write(c, lnum, buf + from, from, alen);
 	if (err)
 		return err;
 
@@ -552,11 +544,10 @@ static int write_cnodes(struct ubifs_info *c)
 	return 0;
 
 no_space:
-	ubifs_err("LPT out of space mismatch");
-	dbg_err("LPT out of space mismatch at LEB %d:%d needing %d, done_ltab "
-		"%d, done_lsave %d", lnum, offs, len, done_ltab, done_lsave);
-	dbg_dump_lpt_info(c);
-	dbg_dump_lpt_lebs(c);
+	ubifs_err(c, "LPT out of space mismatch at LEB %d:%d needing %d, done_ltab %d, done_lsave %d",
+		  lnum, offs, len, done_ltab, done_lsave);
+	ubifs_dump_lpt_info(c);
+	ubifs_dump_lpt_lebs(c);
 	dump_stack();
 	return err;
 }
@@ -630,7 +621,7 @@ static struct ubifs_pnode *next_pnode_to_dirty(struct ubifs_info *c,
 /**
  * pnode_lookup - lookup a pnode in the LPT.
  * @c: UBIFS file-system description object
- * @i: pnode number (0 to main_lebs - 1)
+ * @i: pnode number (0 to (main_lebs - 1) / UBIFS_LPT_FANOUT))
  *
  * This function returns a pointer to the pnode on success or a negative
  * error code on failure.
@@ -817,7 +808,7 @@ static void populate_lsave(struct ubifs_info *c)
 	struct ubifs_lpt_heap *heap;
 	int i, cnt = 0;
 
-	ubifs_assert(c->big_lpt);
+	ubifs_assert(c, c->big_lpt);
 	if (!(c->lpt_drty_flgs & LSAVE_DIRTY)) {
 		c->lpt_drty_flgs |= LSAVE_DIRTY;
 		ubifs_add_lpt_dirt(c, c->lsave_lnum, c->lsave_sz);
@@ -1106,8 +1097,8 @@ static int get_lpt_node_type(const struct ubifs_info *c, uint8_t *buf,
 	uint8_t *addr = buf + UBIFS_LPT_CRC_BYTES;
 	int pos = 0, node_type;
 
-	node_type = ubifs_unpack_bits(&addr, &pos, UBIFS_LPT_TYPE_BITS);
-	*node_num = ubifs_unpack_bits(&addr, &pos, c->pcnt_bits);
+	node_type = ubifs_unpack_bits(c, &addr, &pos, UBIFS_LPT_TYPE_BITS);
+	*node_num = ubifs_unpack_bits(c, &addr, &pos, c->pcnt_bits);
 	return node_type;
 }
 
@@ -1127,7 +1118,7 @@ static int is_a_node(const struct ubifs_info *c, uint8_t *buf, int len)
 
 	if (len < UBIFS_LPT_CRC_BYTES + (UBIFS_LPT_TYPE_BITS + 7) / 8)
 		return 0;
-	node_type = ubifs_unpack_bits(&addr, &pos, UBIFS_LPT_TYPE_BITS);
+	node_type = ubifs_unpack_bits(c, &addr, &pos, UBIFS_LPT_TYPE_BITS);
 	if (node_type == UBIFS_LPT_NOT_A_NODE)
 		return 0;
 	node_len = get_lpt_node_len(c, node_type);
@@ -1135,7 +1126,7 @@ static int is_a_node(const struct ubifs_info *c, uint8_t *buf, int len)
 		return 0;
 	pos = 0;
 	addr = buf;
-	crc = ubifs_unpack_bits(&addr, &pos, UBIFS_LPT_CRC_BITS);
+	crc = ubifs_unpack_bits(c, &addr, &pos, UBIFS_LPT_CRC_BITS);
 	calc_crc = crc16(-1, buf + UBIFS_LPT_CRC_BYTES,
 			 node_len - UBIFS_LPT_CRC_BYTES);
 	if (crc != calc_crc)
@@ -1181,7 +1172,7 @@ static int lpt_gc_lnum(struct ubifs_info *c, int lnum)
 		node_type = get_lpt_node_type(c, buf, &node_num);
 		node_len = get_lpt_node_len(c, node_type);
 		offs = c->leb_size - len;
-		ubifs_assert(node_len != 0);
+		ubifs_assert(c, node_len != 0);
 		mutex_lock(&c->lp_mutex);
 		err = make_node_dirty(c, node_type, node_num, lnum, offs);
 		mutex_unlock(&c->lp_mutex);
@@ -1206,7 +1197,7 @@ static int lpt_gc(struct ubifs_info *c)
 
 	mutex_lock(&c->lp_mutex);
 	for (i = 0; i < c->lpt_lebs; i++) {
-		ubifs_assert(!c->ltab[i].tgc);
+		ubifs_assert(c, !c->ltab[i].tgc);
 		if (i + c->lpt_first == c->nhead_lnum ||
 		    c->ltab[i].free + c->ltab[i].dirty == c->leb_size)
 			continue;
@@ -1282,7 +1273,7 @@ int ubifs_lpt_start_commit(struct ubifs_info *c)
 		populate_lsave(c);
 
 	cnt = get_cnodes_to_commit(c);
-	ubifs_assert(cnt != 0);
+	ubifs_assert(c, cnt != 0);
 
 	err = layout_cnodes(c);
 	if (err)
@@ -1497,7 +1488,9 @@ void ubifs_lpt_free(struct ubifs_info *c, int wr_only)
 	kfree(c->lpt_nod_buf);
 }
 
-#ifdef CONFIG_UBIFS_FS_DEBUG
+/*
+ * Everything below is related to debugging.
+ */
 
 /**
  * dbg_is_all_ff - determine if a buffer contains only 0xFF bytes.
@@ -1631,7 +1624,6 @@ static int dbg_is_node_dirty(struct ubifs_info *c, int node_type, int lnum,
  * dbg_check_ltab_lnum - check the ltab for a LPT LEB number.
  * @c: the UBIFS file-system description object
  * @lnum: LEB number where node was written
- * @offs: offset where node was written
  *
  * This function returns %0 on success and a negative error code on failure.
  */
@@ -1646,7 +1638,7 @@ static int dbg_check_ltab_lnum(struct ubifs_info *c, int lnum)
 
 	buf = p = __vmalloc(c->leb_size, GFP_NOFS, PAGE_KERNEL);
 	if (!buf) {
-		ubifs_err("cannot allocate memory for ltab checking");
+		ubifs_err(c, "cannot allocate memory for ltab checking");
 		return 0;
 	}
 
@@ -1668,21 +1660,19 @@ static int dbg_check_ltab_lnum(struct ubifs_info *c, int lnum)
 				continue;
 			}
 			if (!dbg_is_all_ff(p, len)) {
-				dbg_msg("invalid empty space in LEB %d at %d",
-					lnum, c->leb_size - len);
+				ubifs_err(c, "invalid empty space in LEB %d at %d",
+					  lnum, c->leb_size - len);
 				err = -EINVAL;
 			}
 			i = lnum - c->lpt_first;
 			if (len != c->ltab[i].free) {
-				dbg_msg("invalid free space in LEB %d "
-					"(free %d, expected %d)",
-					lnum, len, c->ltab[i].free);
+				ubifs_err(c, "invalid free space in LEB %d (free %d, expected %d)",
+					  lnum, len, c->ltab[i].free);
 				err = -EINVAL;
 			}
 			if (dirty != c->ltab[i].dirty) {
-				dbg_msg("invalid dirty space in LEB %d "
-					"(dirty %d, expected %d)",
-					lnum, dirty, c->ltab[i].dirty);
+				ubifs_err(c, "invalid dirty space in LEB %d (dirty %d, expected %d)",
+					  lnum, dirty, c->ltab[i].dirty);
 				err = -EINVAL;
 			}
 			goto out;
@@ -1735,7 +1725,7 @@ int dbg_check_ltab(struct ubifs_info *c)
 	for (lnum = c->lpt_first; lnum <= c->lpt_last; lnum++) {
 		err = dbg_check_ltab_lnum(c, lnum);
 		if (err) {
-			dbg_err("failed at LEB %d", lnum);
+			ubifs_err(c, "failed at LEB %d", lnum);
 			return err;
 		}
 	}
@@ -1767,10 +1757,10 @@ int dbg_chk_lpt_free_spc(struct ubifs_info *c)
 			free += c->leb_size;
 	}
 	if (free < c->lpt_sz) {
-		dbg_err("LPT space error: free %lld lpt_sz %lld",
-			free, c->lpt_sz);
-		dbg_dump_lpt_info(c);
-		dbg_dump_lpt_lebs(c);
+		ubifs_err(c, "LPT space error: free %lld lpt_sz %lld",
+			  free, c->lpt_sz);
+		ubifs_dump_lpt_info(c);
+		ubifs_dump_lpt_lebs(c);
 		dump_stack();
 		return -EINVAL;
 	}
@@ -1807,13 +1797,13 @@ int dbg_chk_lpt_sz(struct ubifs_info *c, int action, int len)
 		d->chk_lpt_lebs = 0;
 		d->chk_lpt_wastage = 0;
 		if (c->dirty_pn_cnt > c->pnode_cnt) {
-			dbg_err("dirty pnodes %d exceed max %d",
-				c->dirty_pn_cnt, c->pnode_cnt);
+			ubifs_err(c, "dirty pnodes %d exceed max %d",
+				  c->dirty_pn_cnt, c->pnode_cnt);
 			err = -EINVAL;
 		}
 		if (c->dirty_nn_cnt > c->nnode_cnt) {
-			dbg_err("dirty nnodes %d exceed max %d",
-				c->dirty_nn_cnt, c->nnode_cnt);
+			ubifs_err(c, "dirty nnodes %d exceed max %d",
+				  c->dirty_nn_cnt, c->nnode_cnt);
 			err = -EINVAL;
 		}
 		return err;
@@ -1830,23 +1820,23 @@ int dbg_chk_lpt_sz(struct ubifs_info *c, int action, int len)
 		chk_lpt_sz *= d->chk_lpt_lebs;
 		chk_lpt_sz += len - c->nhead_offs;
 		if (d->chk_lpt_sz != chk_lpt_sz) {
-			dbg_err("LPT wrote %lld but space used was %lld",
-				d->chk_lpt_sz, chk_lpt_sz);
+			ubifs_err(c, "LPT wrote %lld but space used was %lld",
+				  d->chk_lpt_sz, chk_lpt_sz);
 			err = -EINVAL;
 		}
 		if (d->chk_lpt_sz > c->lpt_sz) {
-			dbg_err("LPT wrote %lld but lpt_sz is %lld",
-				d->chk_lpt_sz, c->lpt_sz);
+			ubifs_err(c, "LPT wrote %lld but lpt_sz is %lld",
+				  d->chk_lpt_sz, c->lpt_sz);
 			err = -EINVAL;
 		}
 		if (d->chk_lpt_sz2 && d->chk_lpt_sz != d->chk_lpt_sz2) {
-			dbg_err("LPT layout size %lld but wrote %lld",
-				d->chk_lpt_sz, d->chk_lpt_sz2);
+			ubifs_err(c, "LPT layout size %lld but wrote %lld",
+				  d->chk_lpt_sz, d->chk_lpt_sz2);
 			err = -EINVAL;
 		}
 		if (d->chk_lpt_sz2 && d->new_nhead_offs != len) {
-			dbg_err("LPT new nhead offs: expected %d was %d",
-				d->new_nhead_offs, len);
+			ubifs_err(c, "LPT new nhead offs: expected %d was %d",
+				  d->new_nhead_offs, len);
 			err = -EINVAL;
 		}
 		lpt_sz = (long long)c->pnode_cnt * c->pnode_sz;
@@ -1855,13 +1845,13 @@ int dbg_chk_lpt_sz(struct ubifs_info *c, int action, int len)
 		if (c->big_lpt)
 			lpt_sz += c->lsave_sz;
 		if (d->chk_lpt_sz - d->chk_lpt_wastage > lpt_sz) {
-			dbg_err("LPT chk_lpt_sz %lld + waste %lld exceeds %lld",
-				d->chk_lpt_sz, d->chk_lpt_wastage, lpt_sz);
+			ubifs_err(c, "LPT chk_lpt_sz %lld + waste %lld exceeds %lld",
+				  d->chk_lpt_sz, d->chk_lpt_wastage, lpt_sz);
 			err = -EINVAL;
 		}
 		if (err) {
-			dbg_dump_lpt_info(c);
-			dbg_dump_lpt_lebs(c);
+			ubifs_dump_lpt_info(c);
+			ubifs_dump_lpt_lebs(c);
 			dump_stack();
 		}
 		d->chk_lpt_sz2 = d->chk_lpt_sz;
@@ -1880,7 +1870,7 @@ int dbg_chk_lpt_sz(struct ubifs_info *c, int action, int len)
 }
 
 /**
- * dbg_dump_lpt_leb - dump an LPT LEB.
+ * dump_lpt_leb - dump an LPT LEB.
  * @c: UBIFS file-system description object
  * @lnum: LEB number to dump
  *
@@ -1894,11 +1884,10 @@ static void dump_lpt_leb(const struct ubifs_info *c, int lnum)
 	int err, len = c->leb_size, node_type, node_num, node_len, offs;
 	void *buf, *p;
 
-	printk(KERN_DEBUG "(pid %d) start dumping LEB %d\n",
-	       current->pid, lnum);
+	pr_err("(pid %d) start dumping LEB %d\n", current->pid, lnum);
 	buf = p = __vmalloc(c->leb_size, GFP_NOFS, PAGE_KERNEL);
 	if (!buf) {
-		ubifs_err("cannot allocate memory to dump LPT");
+		ubifs_err(c, "cannot allocate memory to dump LPT");
 		return;
 	}
 
@@ -1913,14 +1902,14 @@ static void dump_lpt_leb(const struct ubifs_info *c, int lnum)
 
 			pad_len = get_pad_len(c, p, len);
 			if (pad_len) {
-				printk(KERN_DEBUG "LEB %d:%d, pad %d bytes\n",
+				pr_err("LEB %d:%d, pad %d bytes\n",
 				       lnum, offs, pad_len);
 				p += pad_len;
 				len -= pad_len;
 				continue;
 			}
 			if (len)
-				printk(KERN_DEBUG "LEB %d:%d, free %d bytes\n",
+				pr_err("LEB %d:%d, free %d bytes\n",
 				       lnum, offs, len);
 			break;
 		}
@@ -1931,11 +1920,10 @@ static void dump_lpt_leb(const struct ubifs_info *c, int lnum)
 		{
 			node_len = c->pnode_sz;
 			if (c->big_lpt)
-				printk(KERN_DEBUG "LEB %d:%d, pnode num %d\n",
+				pr_err("LEB %d:%d, pnode num %d\n",
 				       lnum, offs, node_num);
 			else
-				printk(KERN_DEBUG "LEB %d:%d, pnode\n",
-				       lnum, offs);
+				pr_err("LEB %d:%d, pnode\n", lnum, offs);
 			break;
 		}
 		case UBIFS_LPT_NNODE:
@@ -1945,32 +1933,36 @@ static void dump_lpt_leb(const struct ubifs_info *c, int lnum)
 
 			node_len = c->nnode_sz;
 			if (c->big_lpt)
-				printk(KERN_DEBUG "LEB %d:%d, nnode num %d, ",
+				pr_err("LEB %d:%d, nnode num %d, ",
 				       lnum, offs, node_num);
 			else
-				printk(KERN_DEBUG "LEB %d:%d, nnode, ",
+				pr_err("LEB %d:%d, nnode, ",
 				       lnum, offs);
 			err = ubifs_unpack_nnode(c, p, &nnode);
+			if (err) {
+				pr_err("failed to unpack_node, error %d\n",
+				       err);
+				break;
+			}
 			for (i = 0; i < UBIFS_LPT_FANOUT; i++) {
-				printk(KERN_CONT "%d:%d", nnode.nbranch[i].lnum,
+				pr_cont("%d:%d", nnode.nbranch[i].lnum,
 				       nnode.nbranch[i].offs);
 				if (i != UBIFS_LPT_FANOUT - 1)
-					printk(KERN_CONT ", ");
+					pr_cont(", ");
 			}
-			printk(KERN_CONT "\n");
+			pr_cont("\n");
 			break;
 		}
 		case UBIFS_LPT_LTAB:
 			node_len = c->ltab_sz;
-			printk(KERN_DEBUG "LEB %d:%d, ltab\n",
-			       lnum, offs);
+			pr_err("LEB %d:%d, ltab\n", lnum, offs);
 			break;
 		case UBIFS_LPT_LSAVE:
 			node_len = c->lsave_sz;
-			printk(KERN_DEBUG "LEB %d:%d, lsave len\n", lnum, offs);
+			pr_err("LEB %d:%d, lsave len\n", lnum, offs);
 			break;
 		default:
-			ubifs_err("LPT node type %d not recognized", node_type);
+			ubifs_err(c, "LPT node type %d not recognized", node_type);
 			goto out;
 		}
 
@@ -1978,30 +1970,27 @@ static void dump_lpt_leb(const struct ubifs_info *c, int lnum)
 		len -= node_len;
 	}
 
-	printk(KERN_DEBUG "(pid %d) finish dumping LEB %d\n",
-	       current->pid, lnum);
+	pr_err("(pid %d) finish dumping LEB %d\n", current->pid, lnum);
 out:
 	vfree(buf);
 	return;
 }
 
 /**
- * dbg_dump_lpt_lebs - dump LPT lebs.
+ * ubifs_dump_lpt_lebs - dump LPT lebs.
  * @c: UBIFS file-system description object
  *
  * This function dumps all LPT LEBs. The caller has to make sure the LPT is
  * locked.
  */
-void dbg_dump_lpt_lebs(const struct ubifs_info *c)
+void ubifs_dump_lpt_lebs(const struct ubifs_info *c)
 {
 	int i;
 
-	printk(KERN_DEBUG "(pid %d) start dumping all LPT LEBs\n",
-	       current->pid);
+	pr_err("(pid %d) start dumping all LPT LEBs\n", current->pid);
 	for (i = 0; i < c->lpt_lebs; i++)
 		dump_lpt_leb(c, i + c->lpt_first);
-	printk(KERN_DEBUG "(pid %d) finish dumping all LPT LEBs\n",
-	       current->pid);
+	pr_err("(pid %d) finish dumping all LPT LEBs\n", current->pid);
 }
 
 /**
@@ -2021,30 +2010,28 @@ static int dbg_populate_lsave(struct ubifs_info *c)
 
 	if (!dbg_is_chk_gen(c))
 		return 0;
-	if (random32() & 3)
+	if (prandom_u32() & 3)
 		return 0;
 
 	for (i = 0; i < c->lsave_cnt; i++)
 		c->lsave[i] = c->main_first;
 
 	list_for_each_entry(lprops, &c->empty_list, list)
-		c->lsave[random32() % c->lsave_cnt] = lprops->lnum;
+		c->lsave[prandom_u32() % c->lsave_cnt] = lprops->lnum;
 	list_for_each_entry(lprops, &c->freeable_list, list)
-		c->lsave[random32() % c->lsave_cnt] = lprops->lnum;
+		c->lsave[prandom_u32() % c->lsave_cnt] = lprops->lnum;
 	list_for_each_entry(lprops, &c->frdi_idx_list, list)
-		c->lsave[random32() % c->lsave_cnt] = lprops->lnum;
+		c->lsave[prandom_u32() % c->lsave_cnt] = lprops->lnum;
 
 	heap = &c->lpt_heap[LPROPS_DIRTY_IDX - 1];
 	for (i = 0; i < heap->cnt; i++)
-		c->lsave[random32() % c->lsave_cnt] = heap->arr[i]->lnum;
+		c->lsave[prandom_u32() % c->lsave_cnt] = heap->arr[i]->lnum;
 	heap = &c->lpt_heap[LPROPS_DIRTY - 1];
 	for (i = 0; i < heap->cnt; i++)
-		c->lsave[random32() % c->lsave_cnt] = heap->arr[i]->lnum;
+		c->lsave[prandom_u32() % c->lsave_cnt] = heap->arr[i]->lnum;
 	heap = &c->lpt_heap[LPROPS_FREE - 1];
 	for (i = 0; i < heap->cnt; i++)
-		c->lsave[random32() % c->lsave_cnt] = heap->arr[i]->lnum;
+		c->lsave[prandom_u32() % c->lsave_cnt] = heap->arr[i]->lnum;
 
 	return 1;
 }
-
-#endif /* CONFIG_UBIFS_FS_DEBUG */

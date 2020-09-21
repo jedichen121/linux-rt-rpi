@@ -359,7 +359,6 @@
 #include <asm/byteorder.h>
 #include <asm/processor.h>
 #include <asm/types.h>
-#include <asm/system.h>
 
 #include <scsi/scsi.h>
 #include <scsi/scsi_cmnd.h>
@@ -380,14 +379,7 @@
 #define  DEBUG_PRINT_NVRAM	0
 #define  DEBUG_QLA1280		0
 
-/*
- * The SGI VISWS is broken and doesn't support MMIO ;-(
- */
-#ifdef CONFIG_X86_VISWS
-#define	MEMORY_MAPPED_IO	0
-#else
 #define	MEMORY_MAPPED_IO	1
-#endif
 
 #include "qla1280.h"
 
@@ -766,9 +758,9 @@ enum action {
 };
 
 
-static void qla1280_mailbox_timeout(unsigned long __data)
+static void qla1280_mailbox_timeout(struct timer_list *t)
 {
-	struct scsi_qla_host *ha = (struct scsi_qla_host *)__data;
+	struct scsi_qla_host *ha = from_timer(ha, t, mailbox_timer);
 	struct device_reg __iomem *reg;
 	reg = ha->iobase;
 
@@ -1232,10 +1224,9 @@ qla1280_slave_configure(struct scsi_device *device)
 
 	if (device->tagged_supported &&
 	    (ha->bus_settings[bus].qtag_enables & (BIT_0 << target))) {
-		scsi_adjust_queue_depth(device, MSG_ORDERED_TAG,
-					ha->bus_settings[bus].hiwat);
+		scsi_change_queue_depth(device, ha->bus_settings[bus].hiwat);
 	} else {
-		scsi_adjust_queue_depth(device, 0, default_depth);
+		scsi_change_queue_depth(device, default_depth);
 	}
 
 	nv->bus[bus].target[target].parameter.enable_sync = device->sdtr;
@@ -1439,7 +1430,7 @@ qla1280_return_status(struct response * sts, struct scsi_cmnd *cp)
  * Returns:
  *      0 = success
  */
-static int __devinit
+static int
 qla1280_initialize_adapter(struct scsi_qla_host *ha)
 {
 	struct device_reg __iomem *reg;
@@ -2474,7 +2465,6 @@ qla1280_mailbox_command(struct scsi_qla_host *ha, uint8_t mr, uint16_t *mb)
 	uint16_t __iomem *mptr;
 	uint16_t data;
 	DECLARE_COMPLETION_ONSTACK(wait);
-	struct timer_list timer;
 
 	ENTER("qla1280_mailbox_command");
 
@@ -2503,18 +2493,15 @@ qla1280_mailbox_command(struct scsi_qla_host *ha, uint8_t mr, uint16_t *mb)
 	/* Issue set host interrupt command. */
 
 	/* set up a timer just in case we're really jammed */
-	init_timer(&timer);
-	timer.expires = jiffies + 20*HZ;
-	timer.data = (unsigned long)ha;
-	timer.function = qla1280_mailbox_timeout;
-	add_timer(&timer);
+	timer_setup(&ha->mailbox_timer, qla1280_mailbox_timeout, 0);
+	mod_timer(&ha->mailbox_timer, jiffies + 20 * HZ);
 
 	spin_unlock_irq(ha->host->host_lock);
 	WRT_REG_WORD(&reg->host_cmd, HC_SET_HOST_INT);
 	data = qla1280_debounce_register(&reg->istatus);
 
 	wait_for_completion(&wait);
-	del_timer_sync(&timer);
+	del_timer_sync(&ha->mailbox_timer);
 
 	spin_lock_irq(ha->host->host_lock);
 
@@ -3399,7 +3386,7 @@ qla1280_isp_cmd(struct scsi_qla_host *ha)
 	 *    On PCI bus, order reverses and write of 6 posts, then index 5,
 	 *       causing chip to issue full queue of stale commands
 	 * The mmiowb() prevents future writes from crossing the barrier.
-	 * See Documentation/DocBook/deviceiobook.tmpl for more information.
+	 * See Documentation/driver-api/device-io.rst for more information.
 	 */
 	WRT_REG_WORD(&reg->mailbox4, ha->req_ring_index);
 	mmiowb();
@@ -4223,15 +4210,14 @@ static struct scsi_host_template qla1280_driver_template = {
 	.eh_bus_reset_handler	= qla1280_eh_bus_reset,
 	.eh_host_reset_handler	= qla1280_eh_adapter_reset,
 	.bios_param		= qla1280_biosparam,
-	.can_queue		= 0xfffff,
+	.can_queue		= MAX_OUTSTANDING_COMMANDS,
 	.this_id		= -1,
 	.sg_tablesize		= SG_ALL,
-	.cmd_per_lun		= 1,
 	.use_clustering		= ENABLE_CLUSTERING,
 };
 
 
-static int __devinit
+static int
 qla1280_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	int devnum = id->driver_data;
@@ -4400,7 +4386,7 @@ qla1280_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 }
 
 
-static void __devexit
+static void
 qla1280_remove_one(struct pci_dev *pdev)
 {
 	struct Scsi_Host *host = pci_get_drvdata(pdev);
@@ -4434,7 +4420,7 @@ static struct pci_driver qla1280_pci_driver = {
 	.name		= "qla1280",
 	.id_table	= qla1280_pci_tbl,
 	.probe		= qla1280_probe_one,
-	.remove		= __devexit_p(qla1280_remove_one),
+	.remove		= qla1280_remove_one,
 };
 
 static int __init
@@ -4474,16 +4460,13 @@ qla1280_exit(void)
 	pci_unregister_driver(&qla1280_pci_driver);
 	/* release any allocated firmware images */
 	for (i = 0; i < QL_NUM_FW_IMAGES; i++) {
-		if (qla1280_fw_tbl[i].fw) {
-			release_firmware(qla1280_fw_tbl[i].fw);
-			qla1280_fw_tbl[i].fw = NULL;
-		}
+		release_firmware(qla1280_fw_tbl[i].fw);
+		qla1280_fw_tbl[i].fw = NULL;
 	}
 }
 
 module_init(qla1280_init);
 module_exit(qla1280_exit);
-
 
 MODULE_AUTHOR("Qlogic & Jes Sorensen");
 MODULE_DESCRIPTION("Qlogic ISP SCSI (qla1x80/qla1x160) driver");

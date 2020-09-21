@@ -57,7 +57,7 @@ static inline void ps3_smp_cleanup_cpu(int cpu) { }
 /* time */
 
 void __init ps3_calibrate_decr(void);
-unsigned long __init ps3_get_boot_time(void);
+time64_t __init ps3_get_boot_time(void);
 void ps3_get_rtc_time(struct rtc_time *time);
 int ps3_set_rtc_time(struct rtc_time *time);
 
@@ -188,6 +188,35 @@ int ps3_repository_read_rm_size(unsigned int ppe_id, u64 *rm_size);
 int ps3_repository_read_region_total(u64 *region_total);
 int ps3_repository_read_mm_info(u64 *rm_base, u64 *rm_size,
 	u64 *region_total);
+int ps3_repository_read_highmem_region_count(unsigned int *region_count);
+int ps3_repository_read_highmem_base(unsigned int region_index,
+	u64 *highmem_base);
+int ps3_repository_read_highmem_size(unsigned int region_index,
+	u64 *highmem_size);
+int ps3_repository_read_highmem_info(unsigned int region_index,
+	u64 *highmem_base, u64 *highmem_size);
+
+#if defined (CONFIG_PS3_REPOSITORY_WRITE)
+int ps3_repository_write_highmem_region_count(unsigned int region_count);
+int ps3_repository_write_highmem_base(unsigned int region_index,
+	u64 highmem_base);
+int ps3_repository_write_highmem_size(unsigned int region_index,
+	u64 highmem_size);
+int ps3_repository_write_highmem_info(unsigned int region_index,
+	u64 highmem_base, u64 highmem_size);
+int ps3_repository_delete_highmem_info(unsigned int region_index);
+#else
+static inline int ps3_repository_write_highmem_region_count(
+	unsigned int region_count) {return 0;}
+static inline int ps3_repository_write_highmem_base(unsigned int region_index,
+	u64 highmem_base) {return 0;}
+static inline int ps3_repository_write_highmem_size(unsigned int region_index,
+	u64 highmem_size) {return 0;}
+static inline int ps3_repository_write_highmem_info(unsigned int region_index,
+	u64 highmem_base, u64 highmem_size) {return 0;}
+static inline int ps3_repository_delete_highmem_info(unsigned int region_index)
+	{return 0;}
+#endif
 
 /* repository pme info */
 

@@ -17,17 +17,20 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/i2c.h>
-#include <linux/i2c-pca-platform.h>
+#include <linux/platform_data/i2c-pca-platform.h>
 #include <linux/i2c-algo-pca.h>
 #include <linux/usb/r8a66597.h>
+#include <linux/sh_intc.h>
 #include <linux/irq.h>
 #include <linux/io.h>
 #include <linux/clk.h>
 #include <linux/errno.h>
+#include <linux/gpio/machine.h>
 #include <mach/sh7785lcr.h>
 #include <cpu/sh7785.h>
 #include <asm/heartbeat.h>
 #include <asm/clock.h>
+#include <asm/bl_bit.h>
 
 /*
  * NOTE: This board has 2 physical memory maps.
@@ -104,8 +107,8 @@ static struct resource r8a66597_usb_host_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 2,
-		.end	= 2,
+		.start	= evt2irq(0x240),
+		.end	= evt2irq(0x240),
 		.flags	= IORESOURCE_IRQ | IRQF_TRIGGER_LOW,
 	},
 };
@@ -134,7 +137,7 @@ static struct resource sm501_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[2]	= {
-		.start	= 10,
+		.start	= evt2irq(0x340),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -222,8 +225,8 @@ static struct resource i2c_proto_resources[] = {
 		.flags	= IORESOURCE_MEM | IORESOURCE_MEM_8BIT,
 	},
 	[1] = {
-		.start	= 12,
-		.end	= 12,
+		.start	= evt2irq(0x380),
+		.end	= evt2irq(0x380),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -235,14 +238,21 @@ static struct resource i2c_resources[] = {
 		.flags	= IORESOURCE_MEM | IORESOURCE_MEM_8BIT,
 	},
 	[1] = {
-		.start	= 12,
-		.end	= 12,
+		.start	= evt2irq(0x380),
+		.end	= evt2irq(0x380),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
 
+static struct gpiod_lookup_table i2c_gpio_table = {
+	.dev_id = "i2c.0",
+	.table = {
+		GPIO_LOOKUP("pfc-sh7757", 0, "reset-gpios", GPIO_ACTIVE_LOW),
+		{ },
+	},
+};
+
 static struct i2c_pca9564_pf_platform_data i2c_platform_data = {
-	.gpio			= 0,
 	.i2c_clock_speed	= I2C_PCA_CON_330kHz,
 	.timeout		= HZ,
 };
@@ -281,6 +291,7 @@ static int __init sh7785lcr_devices_setup(void)
 		i2c_device.num_resources = ARRAY_SIZE(i2c_proto_resources);
 	}
 
+	gpiod_add_lookup_table(&i2c_gpio_table);
 	return platform_add_devices(sh7785lcr_devices,
 				    ARRAY_SIZE(sh7785lcr_devices));
 }

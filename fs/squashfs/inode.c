@@ -41,6 +41,7 @@
 #include <linux/fs.h>
 #include <linux/vfs.h>
 #include <linux/xattr.h>
+#include <linux/pagemap.h>
 
 #include "squashfs_fs.h"
 #include "squashfs_fs_sb.h"
@@ -56,16 +57,20 @@
 static int squashfs_new_inode(struct super_block *sb, struct inode *inode,
 				struct squashfs_base_inode *sqsh_ino)
 {
+	uid_t i_uid;
+	gid_t i_gid;
 	int err;
 
-	err = squashfs_get_id(sb, le16_to_cpu(sqsh_ino->uid), &inode->i_uid);
+	err = squashfs_get_id(sb, le16_to_cpu(sqsh_ino->uid), &i_uid);
 	if (err)
 		return err;
 
-	err = squashfs_get_id(sb, le16_to_cpu(sqsh_ino->guid), &inode->i_gid);
+	err = squashfs_get_id(sb, le16_to_cpu(sqsh_ino->guid), &i_gid);
 	if (err)
 		return err;
 
+	i_uid_write(inode, i_uid);
+	i_gid_write(inode, i_gid);
 	inode->i_ino = le32_to_cpu(sqsh_ino->inode_number);
 	inode->i_mtime.tv_sec = le32_to_cpu(sqsh_ino->mtime);
 	inode->i_atime.tv_sec = inode->i_mtime.tv_sec;
@@ -208,8 +213,8 @@ int squashfs_read_inode(struct inode *inode, long long ino)
 		inode->i_op = &squashfs_inode_ops;
 		inode->i_fop = &generic_ro_fops;
 		inode->i_mode |= S_IFREG;
-		inode->i_blocks = ((inode->i_size -
-				le64_to_cpu(sqsh_ino->sparse) - 1) >> 9) + 1;
+		inode->i_blocks = (inode->i_size -
+				le64_to_cpu(sqsh_ino->sparse) + 511) >> 9;
 
 		squashfs_i(inode)->fragment_block = frag_blk;
 		squashfs_i(inode)->fragment_size = frag_size;
@@ -287,6 +292,7 @@ int squashfs_read_inode(struct inode *inode, long long ino)
 		set_nlink(inode, le32_to_cpu(sqsh_ino->nlink));
 		inode->i_size = le32_to_cpu(sqsh_ino->symlink_size);
 		inode->i_op = &squashfs_symlink_inode_ops;
+		inode_nohighmem(inode);
 		inode->i_data.a_ops = &squashfs_symlink_aops;
 		inode->i_mode |= S_IFLNK;
 		squashfs_i(inode)->start = block;
@@ -419,7 +425,6 @@ failed_read:
 
 
 const struct inode_operations squashfs_inode_ops = {
-	.getxattr = generic_getxattr,
 	.listxattr = squashfs_listxattr
 };
 

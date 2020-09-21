@@ -445,7 +445,7 @@ void __init paging_init(void)
  * the user-mode pages.  This will then ensure that we have predictable
  * results when turning the mmu off
  */
-void setup_mm_for_reboot(char mode)
+void setup_mm_for_reboot(void)
 {
 	unsigned long base_pmdval;
 	pgd_t *pgd;
@@ -503,7 +503,7 @@ void update_mmu_cache(struct vm_area_struct *vma, unsigned long addr,
 	if (page == ZERO_PAGE(0))
 		return;
 
-	mapping = page_mapping(page);
+	mapping = page_mapping_file(page);
 	if (!test_and_set_bit(PG_dcache_clean, &page->flags))
 		__flush_dcache_page(mapping, page);
 	if (mapping)

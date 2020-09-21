@@ -14,11 +14,14 @@
 
 #include <linux/in.h>
 
-#define AFS_MAXCELLNAME	64		/* maximum length of a cell name */
-#define AFS_MAXVOLNAME	64		/* maximum length of a volume name */
-#define AFSNAMEMAX	256		/* maximum length of a filename plus NUL */
-#define AFSPATHMAX	1024		/* maximum length of a pathname plus NUL */
-#define AFSOPAQUEMAX	1024		/* maximum length of an opaque field */
+#define AFS_MAXCELLNAME		64  	/* Maximum length of a cell name */
+#define AFS_MAXVOLNAME		64  	/* Maximum length of a volume name */
+#define AFS_MAXNSERVERS		8   	/* Maximum servers in a basic volume record */
+#define AFS_NMAXNSERVERS	13  	/* Maximum servers in a N/U-class volume record */
+#define AFS_MAXTYPES		3	/* Maximum number of volume types */
+#define AFSNAMEMAX		256 	/* Maximum length of a filename plus NUL */
+#define AFSPATHMAX		1024	/* Maximum length of a pathname plus NUL */
+#define AFSOPAQUEMAX		1024	/* Maximum length of an opaque field */
 
 typedef unsigned			afs_volid_t;
 typedef unsigned			afs_vnodeid_t;
@@ -64,13 +67,26 @@ typedef enum {
 } afs_callback_type_t;
 
 struct afs_callback {
-	struct afs_fid		fid;		/* file identifier */
-	unsigned		version;	/* callback version */
-	unsigned		expiry;		/* time at which expires */
-	afs_callback_type_t	type;		/* type of callback */
+	unsigned		version;	/* Callback version */
+	unsigned		expiry;		/* Time at which expires */
+	afs_callback_type_t	type;		/* Type of callback */
+};
+
+struct afs_callback_break {
+	struct afs_fid		fid;		/* File identifier */
+	struct afs_callback	cb;		/* Callback details */
 };
 
 #define AFSCBMAX 50	/* maximum callbacks transferred per bulk op */
+
+struct afs_uuid {
+	__be32		time_low;			/* low part of timestamp */
+	__be16		time_mid;			/* mid part of timestamp */
+	__be16		time_hi_and_version;		/* high part of timestamp and version  */
+	__s8		clock_seq_hi_and_reserved;	/* clock seq hi and variant */
+	__s8		clock_seq_low;			/* clock seq low */
+	__s8		node[6];			/* spatially unique node ID (MAC addr) */
+};
 
 /*
  * AFS volume information
@@ -111,35 +127,26 @@ typedef u32 afs_access_t;
  * AFS file status information
  */
 struct afs_file_status {
-	unsigned		if_version;	/* interface version */
-#define AFS_FSTATUS_VERSION	1
+	u64			size;		/* file size */
+	afs_dataversion_t	data_version;	/* current data version */
+	time_t			mtime_client;	/* last time client changed data */
+	time_t			mtime_server;	/* last time server changed data */
+	unsigned		abort_code;	/* Abort if bulk-fetching this failed */
 
 	afs_file_type_t		type;		/* file type */
 	unsigned		nlink;		/* link count */
-	u64			size;		/* file size */
-	afs_dataversion_t	data_version;	/* current data version */
 	u32			author;		/* author ID */
 	u32			owner;		/* owner ID */
 	u32			group;		/* group ID */
 	afs_access_t		caller_access;	/* access rights for authenticated caller */
 	afs_access_t		anon_access;	/* access rights for unauthenticated caller */
 	umode_t			mode;		/* UNIX mode */
-	struct afs_fid		parent;		/* parent dir ID for non-dirs only */
-	time_t			mtime_client;	/* last time client changed data */
-	time_t			mtime_server;	/* last time server changed data */
 	s32			lock_count;	/* file lock count (0=UNLK -1=WRLCK +ve=#RDLCK */
 };
 
 /*
  * AFS file status change request
  */
-struct afs_store_status {
-	u32			mask;		/* which bits of the struct are set */
-	u32			mtime_client;	/* last time client changed data */
-	u32			owner;		/* owner ID */
-	u32			group;		/* group ID */
-	umode_t			mode;		/* UNIX mode */
-};
 
 #define AFS_SET_MTIME		0x01		/* set the mtime */
 #define AFS_SET_OWNER		0x02		/* set the owner ID */
@@ -173,5 +180,17 @@ struct afs_volume_status {
 };
 
 #define AFS_BLOCK_SIZE	1024
+
+/*
+ * XDR encoding of UUID in AFS.
+ */
+struct afs_uuid__xdr {
+	__be32		time_low;
+	__be32		time_mid;
+	__be32		time_hi_and_version;
+	__be32		clock_seq_hi_and_reserved;
+	__be32		clock_seq_low;
+	__be32		node[6];
+};
 
 #endif /* AFS_H */

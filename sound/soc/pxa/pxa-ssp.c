@@ -21,6 +21,8 @@
 #include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/pxa2xx_ssp.h>
+#include <linux/of.h>
+#include <linux/dmaengine.h>
 
 #include <asm/irq.h>
 
@@ -30,12 +32,8 @@
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
 #include <sound/pxa2xx-lib.h>
+#include <sound/dmaengine_pcm.h>
 
-#include <mach/hardware.h>
-#include <mach/dma.h>
-#include <mach/audio.h>
-
-#include "../../arm/pxa2xx-pcm.h"
 #include "pxa-ssp.h"
 
 /*
@@ -43,8 +41,11 @@
  */
 struct ssp_priv {
 	struct ssp_device *ssp;
+	struct clk *extclk;
+	unsigned long ssp_clk;
 	unsigned int sysclk;
-	int dai_fmt;
+	unsigned int dai_fmt;
+	unsigned int configured_dai_fmt;
 #ifdef CONFIG_PM
 	uint32_t	cr0;
 	uint32_t	cr1;
@@ -80,31 +81,13 @@ static void pxa_ssp_disable(struct ssp_device *ssp)
 	__raw_writel(sscr0, ssp->mmio_base + SSCR0);
 }
 
-struct pxa2xx_pcm_dma_data {
-	struct pxa2xx_pcm_dma_params params;
-	char name[20];
-};
-
-static struct pxa2xx_pcm_dma_params *
-pxa_ssp_get_dma_params(struct ssp_device *ssp, int width4, int out)
+static void pxa_ssp_set_dma_params(struct ssp_device *ssp, int width4,
+			int out, struct snd_dmaengine_dai_dma_data *dma)
 {
-	struct pxa2xx_pcm_dma_data *dma;
-
-	dma = kzalloc(sizeof(struct pxa2xx_pcm_dma_data), GFP_KERNEL);
-	if (dma == NULL)
-		return NULL;
-
-	snprintf(dma->name, 20, "SSP%d PCM %s %s", ssp->port_id,
-			width4 ? "32-bit" : "16-bit", out ? "out" : "in");
-
-	dma->params.name = dma->name;
-	dma->params.drcmr = &DRCMR(out ? ssp->drcmr_tx : ssp->drcmr_rx);
-	dma->params.dcmd = (out ? (DCMD_INCSRCADDR | DCMD_FLOWTRG) :
-				  (DCMD_INCTRGADDR | DCMD_FLOWSRC)) |
-			(width4 ? DCMD_WIDTH4 : DCMD_WIDTH2) | DCMD_BURST16;
-	dma->params.dev_addr = ssp->phys_base + SSDR;
-
-	return &dma->params;
+	dma->addr_width = width4 ? DMA_SLAVE_BUSWIDTH_4_BYTES :
+				   DMA_SLAVE_BUSWIDTH_2_BYTES;
+	dma->maxburst = 16;
+	dma->addr = ssp->phys_base + SSDR;
 }
 
 static int pxa_ssp_startup(struct snd_pcm_substream *substream,
@@ -112,15 +95,21 @@ static int pxa_ssp_startup(struct snd_pcm_substream *substream,
 {
 	struct ssp_priv *priv = snd_soc_dai_get_drvdata(cpu_dai);
 	struct ssp_device *ssp = priv->ssp;
+	struct snd_dmaengine_dai_dma_data *dma;
 	int ret = 0;
 
 	if (!cpu_dai->active) {
-		clk_enable(ssp->clk);
+		clk_prepare_enable(ssp->clk);
 		pxa_ssp_disable(ssp);
 	}
 
-	kfree(snd_soc_dai_get_dma_data(cpu_dai, substream));
-	snd_soc_dai_set_dma_data(cpu_dai, substream, NULL);
+	dma = kzalloc(sizeof(struct snd_dmaengine_dai_dma_data), GFP_KERNEL);
+	if (!dma)
+		return -ENOMEM;
+	dma->chan_name = substream->stream == SNDRV_PCM_STREAM_PLAYBACK ?
+		"tx" : "rx";
+
+	snd_soc_dai_set_dma_data(cpu_dai, substream, dma);
 
 	return ret;
 }
@@ -133,7 +122,7 @@ static void pxa_ssp_shutdown(struct snd_pcm_substream *substream,
 
 	if (!cpu_dai->active) {
 		pxa_ssp_disable(ssp);
-		clk_disable(ssp->clk);
+		clk_disable_unprepare(ssp->clk);
 	}
 
 	kfree(snd_soc_dai_get_dma_data(cpu_dai, substream));
@@ -148,7 +137,7 @@ static int pxa_ssp_suspend(struct snd_soc_dai *cpu_dai)
 	struct ssp_device *ssp = priv->ssp;
 
 	if (!cpu_dai->active)
-		clk_enable(ssp->clk);
+		clk_prepare_enable(ssp->clk);
 
 	priv->cr0 = __raw_readl(ssp->mmio_base + SSCR0);
 	priv->cr1 = __raw_readl(ssp->mmio_base + SSCR1);
@@ -156,7 +145,7 @@ static int pxa_ssp_suspend(struct snd_soc_dai *cpu_dai)
 	priv->psp = __raw_readl(ssp->mmio_base + SSPSP);
 
 	pxa_ssp_disable(ssp);
-	clk_disable(ssp->clk);
+	clk_disable_unprepare(ssp->clk);
 	return 0;
 }
 
@@ -166,7 +155,7 @@ static int pxa_ssp_resume(struct snd_soc_dai *cpu_dai)
 	struct ssp_device *ssp = priv->ssp;
 	uint32_t sssr = SSSR_ROR | SSSR_TUR | SSSR_BCE;
 
-	clk_enable(ssp->clk);
+	clk_prepare_enable(ssp->clk);
 
 	__raw_writel(sssr, ssp->mmio_base + SSSR);
 	__raw_writel(priv->cr0 & ~SSCR0_SSE, ssp->mmio_base + SSCR0);
@@ -177,7 +166,7 @@ static int pxa_ssp_resume(struct snd_soc_dai *cpu_dai)
 	if (cpu_dai->active)
 		pxa_ssp_enable(ssp);
 	else
-		clk_disable(ssp->clk);
+		clk_disable_unprepare(ssp->clk);
 
 	return 0;
 }
@@ -195,7 +184,7 @@ static void pxa_ssp_set_scr(struct ssp_device *ssp, u32 div)
 {
 	u32 sscr0 = pxa_ssp_read_reg(ssp, SSCR0);
 
-	if (cpu_is_pxa25x() && ssp->type == PXA25x_SSP) {
+	if (ssp->type == PXA25x_SSP) {
 		sscr0 &= ~0x0000ff00;
 		sscr0 |= ((div - 2)/2) << 8; /* 2..512 */
 	} else {
@@ -203,21 +192,6 @@ static void pxa_ssp_set_scr(struct ssp_device *ssp, u32 div)
 		sscr0 |= (div - 1) << 8;     /* 1..4096 */
 	}
 	pxa_ssp_write_reg(ssp, SSCR0, sscr0);
-}
-
-/**
- * pxa_ssp_get_clkdiv - get SSP clock divider
- */
-static u32 pxa_ssp_get_scr(struct ssp_device *ssp)
-{
-	u32 sscr0 = pxa_ssp_read_reg(ssp, SSCR0);
-	u32 div;
-
-	if (cpu_is_pxa25x() && ssp->type == PXA25x_SSP)
-		div = ((sscr0 >> 8) & 0xff) * 2 + 2;
-	else
-		div = ((sscr0 >> 8) & 0xfff) + 1;
-	return div;
 }
 
 /*
@@ -228,10 +202,24 @@ static int pxa_ssp_set_dai_sysclk(struct snd_soc_dai *cpu_dai,
 {
 	struct ssp_priv *priv = snd_soc_dai_get_drvdata(cpu_dai);
 	struct ssp_device *ssp = priv->ssp;
-	int val;
 
 	u32 sscr0 = pxa_ssp_read_reg(ssp, SSCR0) &
-		~(SSCR0_ECS |  SSCR0_NCS | SSCR0_MOD | SSCR0_ACS);
+		~(SSCR0_ECS | SSCR0_NCS | SSCR0_MOD | SSCR0_ACS);
+
+	if (priv->extclk) {
+		int ret;
+
+		/*
+		 * For DT based boards, if an extclk is given, use it
+		 * here and configure PXA_SSP_CLK_EXT.
+		 */
+
+		ret = clk_set_rate(priv->extclk, freq);
+		if (ret < 0)
+			return ret;
+
+		clk_id = PXA_SSP_CLK_EXT;
+	}
 
 	dev_dbg(&ssp->pdev->dev,
 		"pxa_ssp_set_dai_sysclk id: %d, clk_id %d, freq %u\n",
@@ -243,7 +231,7 @@ static int pxa_ssp_set_dai_sysclk(struct snd_soc_dai *cpu_dai,
 		break;
 	case PXA_SSP_CLK_PLL:
 		/* Internal PLL is fixed */
-		if (cpu_is_pxa25x())
+		if (ssp->type == PXA25x_SSP)
 			priv->sysclk = 1843200;
 		else
 			priv->sysclk = 13000000;
@@ -267,63 +255,11 @@ static int pxa_ssp_set_dai_sysclk(struct snd_soc_dai *cpu_dai,
 
 	/* The SSP clock must be disabled when changing SSP clock mode
 	 * on PXA2xx.  On PXA3xx it must be enabled when doing so. */
-	if (!cpu_is_pxa3xx())
-		clk_disable(ssp->clk);
-	val = pxa_ssp_read_reg(ssp, SSCR0) | sscr0;
-	pxa_ssp_write_reg(ssp, SSCR0, val);
-	if (!cpu_is_pxa3xx())
-		clk_enable(ssp->clk);
-
-	return 0;
-}
-
-/*
- * Set the SSP clock dividers.
- */
-static int pxa_ssp_set_dai_clkdiv(struct snd_soc_dai *cpu_dai,
-	int div_id, int div)
-{
-	struct ssp_priv *priv = snd_soc_dai_get_drvdata(cpu_dai);
-	struct ssp_device *ssp = priv->ssp;
-	int val;
-
-	switch (div_id) {
-	case PXA_SSP_AUDIO_DIV_ACDS:
-		val = (pxa_ssp_read_reg(ssp, SSACD) & ~0x7) | SSACD_ACDS(div);
-		pxa_ssp_write_reg(ssp, SSACD, val);
-		break;
-	case PXA_SSP_AUDIO_DIV_SCDB:
-		val = pxa_ssp_read_reg(ssp, SSACD);
-		val &= ~SSACD_SCDB;
-#if defined(CONFIG_PXA3xx)
-		if (cpu_is_pxa3xx())
-			val &= ~SSACD_SCDX8;
-#endif
-		switch (div) {
-		case PXA_SSP_CLK_SCDB_1:
-			val |= SSACD_SCDB;
-			break;
-		case PXA_SSP_CLK_SCDB_4:
-			break;
-#if defined(CONFIG_PXA3xx)
-		case PXA_SSP_CLK_SCDB_8:
-			if (cpu_is_pxa3xx())
-				val |= SSACD_SCDX8;
-			else
-				return -EINVAL;
-			break;
-#endif
-		default:
-			return -EINVAL;
-		}
-		pxa_ssp_write_reg(ssp, SSACD, val);
-		break;
-	case PXA_SSP_DIV_SCR:
-		pxa_ssp_set_scr(ssp, div);
-		break;
-	default:
-		return -ENODEV;
-	}
+	if (ssp->type != PXA3xx_SSP)
+		clk_disable_unprepare(ssp->clk);
+	pxa_ssp_write_reg(ssp, SSCR0, sscr0);
+	if (ssp->type != PXA3xx_SSP)
+		clk_prepare_enable(ssp->clk);
 
 	return 0;
 }
@@ -331,19 +267,15 @@ static int pxa_ssp_set_dai_clkdiv(struct snd_soc_dai *cpu_dai,
 /*
  * Configure the PLL frequency pxa27x and (afaik - pxa320 only)
  */
-static int pxa_ssp_set_dai_pll(struct snd_soc_dai *cpu_dai, int pll_id,
-	int source, unsigned int freq_in, unsigned int freq_out)
+static int pxa_ssp_set_pll(struct ssp_priv *priv, unsigned int freq)
 {
-	struct ssp_priv *priv = snd_soc_dai_get_drvdata(cpu_dai);
 	struct ssp_device *ssp = priv->ssp;
 	u32 ssacd = pxa_ssp_read_reg(ssp, SSACD) & ~0x70;
 
-#if defined(CONFIG_PXA3xx)
-	if (cpu_is_pxa3xx())
+	if (ssp->type == PXA3xx_SSP)
 		pxa_ssp_write_reg(ssp, SSACDD, 0);
-#endif
 
-	switch (freq_out) {
+	switch (freq) {
 	case 5622000:
 		break;
 	case 11345000:
@@ -366,15 +298,15 @@ static int pxa_ssp_set_dai_pll(struct snd_soc_dai *cpu_dai, int pll_id,
 		break;
 
 	default:
-#ifdef CONFIG_PXA3xx
 		/* PXA3xx has a clock ditherer which can be used to generate
 		 * a wider range of frequencies - calculate a value for it.
 		 */
-		if (cpu_is_pxa3xx()) {
+		if (ssp->type == PXA3xx_SSP) {
 			u32 val;
 			u64 tmp = 19968;
+
 			tmp *= 1000000;
-			do_div(tmp, freq_out);
+			do_div(tmp, freq);
 			val = tmp;
 
 			val = (val << 16) | 64;
@@ -384,10 +316,9 @@ static int pxa_ssp_set_dai_pll(struct snd_soc_dai *cpu_dai, int pll_id,
 
 			dev_dbg(&ssp->pdev->dev,
 				"Using SSACDD %x to supply %uHz\n",
-				val, freq_out);
+				val, freq);
 			break;
 		}
-#endif
 
 		return -EINVAL;
 	}
@@ -452,36 +383,72 @@ static int pxa_ssp_set_dai_tristate(struct snd_soc_dai *cpu_dai,
 	return 0;
 }
 
+static int pxa_ssp_set_dai_fmt(struct snd_soc_dai *cpu_dai,
+			       unsigned int fmt)
+{
+	struct ssp_priv *priv = snd_soc_dai_get_drvdata(cpu_dai);
+
+	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
+	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBM_CFS:
+	case SND_SOC_DAIFMT_CBS_CFS:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	switch (fmt & SND_SOC_DAIFMT_INV_MASK) {
+	case SND_SOC_DAIFMT_NB_NF:
+	case SND_SOC_DAIFMT_NB_IF:
+	case SND_SOC_DAIFMT_IB_IF:
+	case SND_SOC_DAIFMT_IB_NF:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	switch (fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
+	case SND_SOC_DAIFMT_I2S:
+	case SND_SOC_DAIFMT_DSP_A:
+	case SND_SOC_DAIFMT_DSP_B:
+		break;
+
+	default:
+		return -EINVAL;
+	}
+
+	/* Settings will be applied in hw_params() */
+	priv->dai_fmt = fmt;
+
+	return 0;
+}
+
 /*
  * Set up the SSP DAI format.
  * The SSP Port must be inactive before calling this function as the
  * physical interface format is changed.
  */
-static int pxa_ssp_set_dai_fmt(struct snd_soc_dai *cpu_dai,
-		unsigned int fmt)
+static int pxa_ssp_configure_dai_fmt(struct ssp_priv *priv)
 {
-	struct ssp_priv *priv = snd_soc_dai_get_drvdata(cpu_dai);
 	struct ssp_device *ssp = priv->ssp;
 	u32 sscr0, sscr1, sspsp, scfr;
 
 	/* check if we need to change anything at all */
-	if (priv->dai_fmt == fmt)
+	if (priv->configured_dai_fmt == priv->dai_fmt)
 		return 0;
-
-	/* we can only change the settings if the port is not in use */
-	if (pxa_ssp_read_reg(ssp, SSCR0) & SSCR0_SSE) {
-		dev_err(&ssp->pdev->dev,
-			"can't change hardware dai format: stream is in use");
-		return -EINVAL;
-	}
 
 	/* reset port settings */
 	sscr0 = pxa_ssp_read_reg(ssp, SSCR0) &
-		~(SSCR0_ECS |  SSCR0_NCS | SSCR0_MOD | SSCR0_ACS);
-	sscr1 = SSCR1_RxTresh(8) | SSCR1_TxTresh(7);
-	sspsp = 0;
+		~(SSCR0_PSP | SSCR0_MOD);
+	sscr1 = pxa_ssp_read_reg(ssp, SSCR1) &
+		~(SSCR1_SCLKDIR | SSCR1_SFRMDIR | SSCR1_SCFR |
+		  SSCR1_RWOT | SSCR1_TRAIL | SSCR1_TFT | SSCR1_RFT);
+	sspsp = pxa_ssp_read_reg(ssp, SSPSP) &
+		~(SSPSP_SFRMP | SSPSP_SCMODE(3));
 
-	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
+	sscr1 |= SSCR1_RxTresh(8) | SSCR1_TxTresh(7);
+
+	switch (priv->dai_fmt & SND_SOC_DAIFMT_MASTER_MASK) {
 	case SND_SOC_DAIFMT_CBM_CFM:
 		sscr1 |= SSCR1_SCLKDIR | SSCR1_SFRMDIR | SSCR1_SCFR;
 		break;
@@ -494,7 +461,7 @@ static int pxa_ssp_set_dai_fmt(struct snd_soc_dai *cpu_dai,
 		return -EINVAL;
 	}
 
-	switch (fmt & SND_SOC_DAIFMT_INV_MASK) {
+	switch (priv->dai_fmt & SND_SOC_DAIFMT_INV_MASK) {
 	case SND_SOC_DAIFMT_NB_NF:
 		sspsp |= SSPSP_SFRMP;
 		break;
@@ -510,7 +477,7 @@ static int pxa_ssp_set_dai_fmt(struct snd_soc_dai *cpu_dai,
 		return -EINVAL;
 	}
 
-	switch (fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
+	switch (priv->dai_fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
 	case SND_SOC_DAIFMT_I2S:
 		sscr0 |= SSCR0_PSP;
 		sscr1 |= SSCR1_RWOT | SSCR1_TRAIL;
@@ -519,6 +486,7 @@ static int pxa_ssp_set_dai_fmt(struct snd_soc_dai *cpu_dai,
 
 	case SND_SOC_DAIFMT_DSP_A:
 		sspsp |= SSPSP_FSRT;
+		/* fall through */
 	case SND_SOC_DAIFMT_DSP_B:
 		sscr0 |= SSCR0_MOD | SSCR0_PSP;
 		sscr1 |= SSCR1_TRAIL | SSCR1_RWOT;
@@ -532,7 +500,7 @@ static int pxa_ssp_set_dai_fmt(struct snd_soc_dai *cpu_dai,
 	pxa_ssp_write_reg(ssp, SSCR1, sscr1);
 	pxa_ssp_write_reg(ssp, SSPSP, sspsp);
 
-	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
+	switch (priv->dai_fmt & SND_SOC_DAIFMT_MASTER_MASK) {
 	case SND_SOC_DAIFMT_CBM_CFM:
 	case SND_SOC_DAIFMT_CBM_CFS:
 		scfr = pxa_ssp_read_reg(ssp, SSCR1) | SSCR1_SCFR;
@@ -549,10 +517,28 @@ static int pxa_ssp_set_dai_fmt(struct snd_soc_dai *cpu_dai,
 	 * we have to defer some things until hw_params() where we
 	 * know parameters like the sample size.
 	 */
-	priv->dai_fmt = fmt;
+	priv->configured_dai_fmt = priv->dai_fmt;
 
 	return 0;
 }
+
+struct pxa_ssp_clock_mode {
+	int rate;
+	int pll;
+	u8 acds;
+	u8 scdb;
+};
+
+static const struct pxa_ssp_clock_mode pxa_ssp_clock_modes[] = {
+	{ .rate =  8000, .pll = 32842000, .acds = SSACD_ACDS_32, .scdb = SSACD_SCDB_4X },
+	{ .rate = 11025, .pll =  5622000, .acds = SSACD_ACDS_4,  .scdb = SSACD_SCDB_4X },
+	{ .rate = 16000, .pll = 32842000, .acds = SSACD_ACDS_16, .scdb = SSACD_SCDB_4X },
+	{ .rate = 22050, .pll =  5622000, .acds = SSACD_ACDS_2,  .scdb = SSACD_SCDB_4X },
+	{ .rate = 44100, .pll = 11345000, .acds = SSACD_ACDS_2,  .scdb = SSACD_SCDB_4X },
+	{ .rate = 48000, .pll = 12235000, .acds = SSACD_ACDS_2,  .scdb = SSACD_SCDB_4X },
+	{ .rate = 96000, .pll = 12235000, .acds = SSACD_ACDS_4,  .scdb = SSACD_SCDB_1X },
+	{}
+};
 
 /*
  * Set the SSP audio DMA parameters and sample size.
@@ -565,30 +551,31 @@ static int pxa_ssp_hw_params(struct snd_pcm_substream *substream,
 	struct ssp_priv *priv = snd_soc_dai_get_drvdata(cpu_dai);
 	struct ssp_device *ssp = priv->ssp;
 	int chn = params_channels(params);
-	u32 sscr0;
-	u32 sspsp;
+	u32 sscr0, sspsp;
 	int width = snd_pcm_format_physical_width(params_format(params));
 	int ttsa = pxa_ssp_read_reg(ssp, SSTSA) & 0xf;
-	struct pxa2xx_pcm_dma_params *dma_data;
+	struct snd_dmaengine_dai_dma_data *dma_data;
+	int rate = params_rate(params);
+	int bclk = rate * chn * (width / 8);
+	int ret;
 
 	dma_data = snd_soc_dai_get_dma_data(cpu_dai, substream);
-
-	/* generate correct DMA params */
-	kfree(dma_data);
 
 	/* Network mode with one active slot (ttsa == 1) can be used
 	 * to force 16-bit frame width on the wire (for S16_LE), even
 	 * with two channels. Use 16-bit DMA transfers for this case.
 	 */
-	dma_data = pxa_ssp_get_dma_params(ssp,
-			((chn == 2) && (ttsa != 1)) || (width == 32),
-			substream->stream == SNDRV_PCM_STREAM_PLAYBACK);
-
-	snd_soc_dai_set_dma_data(cpu_dai, substream, dma_data);
+	pxa_ssp_set_dma_params(ssp,
+		((chn == 2) && (ttsa != 1)) || (width == 32),
+		substream->stream == SNDRV_PCM_STREAM_PLAYBACK, dma_data);
 
 	/* we can only change the settings if the port is not in use */
 	if (pxa_ssp_read_reg(ssp, SSCR0) & SSCR0_SSE)
 		return 0;
+
+	ret = pxa_ssp_configure_dai_fmt(priv);
+	if (ret < 0)
+		return ret;
 
 	/* clear selected SSP bits */
 	sscr0 = pxa_ssp_read_reg(ssp, SSCR0) & ~(SSCR0_DSS | SSCR0_EDSS);
@@ -596,10 +583,8 @@ static int pxa_ssp_hw_params(struct snd_pcm_substream *substream,
 	/* bit size */
 	switch (params_format(params)) {
 	case SNDRV_PCM_FORMAT_S16_LE:
-#ifdef CONFIG_PXA3xx
-		if (cpu_is_pxa3xx())
+		if (ssp->type == PXA3xx_SSP)
 			sscr0 |= SSCR0_FPCKE;
-#endif
 		sscr0 |= SSCR0_DataSize(16);
 		break;
 	case SNDRV_PCM_FORMAT_S24_LE:
@@ -611,22 +596,66 @@ static int pxa_ssp_hw_params(struct snd_pcm_substream *substream,
 	}
 	pxa_ssp_write_reg(ssp, SSCR0, sscr0);
 
+	if (sscr0 & SSCR0_ACS) {
+		ret = pxa_ssp_set_pll(priv, bclk);
+
+		/*
+		 * If we were able to generate the bclk directly,
+		 * all is fine. Otherwise, look up the closest rate
+		 * from the table and also set the dividers.
+		 */
+
+		if (ret < 0) {
+			const struct pxa_ssp_clock_mode *m;
+			int ssacd, acds;
+
+			for (m = pxa_ssp_clock_modes; m->rate; m++) {
+				if (m->rate == rate)
+					break;
+			}
+
+			if (!m->rate)
+				return -EINVAL;
+
+			acds = m->acds;
+
+			/* The values in the table are for 16 bits */
+			if (width == 32)
+				acds--;
+
+			ret = pxa_ssp_set_pll(priv, bclk);
+			if (ret < 0)
+				return ret;
+
+			ssacd = pxa_ssp_read_reg(ssp, SSACD);
+			ssacd &= ~(SSACD_ACDS(7) | SSACD_SCDB_1X);
+			ssacd |= SSACD_ACDS(m->acds);
+			ssacd |= m->scdb;
+			pxa_ssp_write_reg(ssp, SSACD, ssacd);
+		}
+	} else if (sscr0 & SSCR0_ECS) {
+		/*
+		 * For setups with external clocking, the PLL and its diviers
+		 * are not active. Instead, the SCR bits in SSCR0 can be used
+		 * to divide the clock.
+		 */
+		pxa_ssp_set_scr(ssp, bclk / rate);
+	}
+
 	switch (priv->dai_fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
 	case SND_SOC_DAIFMT_I2S:
 	       sspsp = pxa_ssp_read_reg(ssp, SSPSP);
 
-		if ((pxa_ssp_get_scr(ssp) == 4) && (width == 16)) {
+		if (((priv->sysclk / bclk) == 64) && (width == 16)) {
 			/* This is a special case where the bitclk is 64fs
-			* and we're not dealing with 2*32 bits of audio
-			* samples.
-			*
-			* The SSP values used for that are all found out by
-			* trying and failing a lot; some of the registers
-			* needed for that mode are only available on PXA3xx.
-			*/
-
-#ifdef CONFIG_PXA3xx
-			if (!cpu_is_pxa3xx())
+			 * and we're not dealing with 2*32 bits of audio
+			 * samples.
+			 *
+			 * The SSP values used for that are all found out by
+			 * trying and failing a lot; some of the registers
+			 * needed for that mode are only available on PXA3xx.
+			 */
+			if (ssp->type != PXA3xx_SSP)
 				return -EINVAL;
 
 			sspsp |= SSPSP_SFRMWDTH(width * 2);
@@ -634,9 +663,6 @@ static int pxa_ssp_hw_params(struct snd_pcm_substream *substream,
 			sspsp |= SSPSP_EDMYSTOP(3);
 			sspsp |= SSPSP_DMYSTOP(3);
 			sspsp |= SSPSP_DMYSTRT(1);
-#else
-			return -EINVAL;
-#endif
 		} else {
 			/* The frame width is the width the LRCLK is
 			 * asserted for; the delay is expressed in
@@ -668,6 +694,38 @@ static int pxa_ssp_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
+static void pxa_ssp_set_running_bit(struct snd_pcm_substream *substream,
+				    struct ssp_device *ssp, int value)
+{
+	uint32_t sscr0 = pxa_ssp_read_reg(ssp, SSCR0);
+	uint32_t sscr1 = pxa_ssp_read_reg(ssp, SSCR1);
+	uint32_t sspsp = pxa_ssp_read_reg(ssp, SSPSP);
+	uint32_t sssr = pxa_ssp_read_reg(ssp, SSSR);
+
+	if (value && (sscr0 & SSCR0_SSE))
+		pxa_ssp_write_reg(ssp, SSCR0, sscr0 & ~SSCR0_SSE);
+
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		if (value)
+			sscr1 |= SSCR1_TSRE;
+		else
+			sscr1 &= ~SSCR1_TSRE;
+	} else {
+		if (value)
+			sscr1 |= SSCR1_RSRE;
+		else
+			sscr1 &= ~SSCR1_RSRE;
+	}
+
+	pxa_ssp_write_reg(ssp, SSCR1, sscr1);
+
+	if (value) {
+		pxa_ssp_write_reg(ssp, SSSR, sssr);
+		pxa_ssp_write_reg(ssp, SSPSP, sspsp);
+		pxa_ssp_write_reg(ssp, SSCR0, sscr0 | SSCR0_SSE);
+	}
+}
+
 static int pxa_ssp_trigger(struct snd_pcm_substream *substream, int cmd,
 			   struct snd_soc_dai *cpu_dai)
 {
@@ -681,42 +739,21 @@ static int pxa_ssp_trigger(struct snd_pcm_substream *substream, int cmd,
 		pxa_ssp_enable(ssp);
 		break;
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
-		val = pxa_ssp_read_reg(ssp, SSCR1);
-		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-			val |= SSCR1_TSRE;
-		else
-			val |= SSCR1_RSRE;
-		pxa_ssp_write_reg(ssp, SSCR1, val);
+		pxa_ssp_set_running_bit(substream, ssp, 1);
 		val = pxa_ssp_read_reg(ssp, SSSR);
 		pxa_ssp_write_reg(ssp, SSSR, val);
 		break;
 	case SNDRV_PCM_TRIGGER_START:
-		val = pxa_ssp_read_reg(ssp, SSCR1);
-		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-			val |= SSCR1_TSRE;
-		else
-			val |= SSCR1_RSRE;
-		pxa_ssp_write_reg(ssp, SSCR1, val);
-		pxa_ssp_enable(ssp);
+		pxa_ssp_set_running_bit(substream, ssp, 1);
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
-		val = pxa_ssp_read_reg(ssp, SSCR1);
-		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-			val &= ~SSCR1_TSRE;
-		else
-			val &= ~SSCR1_RSRE;
-		pxa_ssp_write_reg(ssp, SSCR1, val);
+		pxa_ssp_set_running_bit(substream, ssp, 0);
 		break;
 	case SNDRV_PCM_TRIGGER_SUSPEND:
 		pxa_ssp_disable(ssp);
 		break;
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
-		val = pxa_ssp_read_reg(ssp, SSCR1);
-		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-			val &= ~SSCR1_TSRE;
-		else
-			val &= ~SSCR1_RSRE;
-		pxa_ssp_write_reg(ssp, SSCR1, val);
+		pxa_ssp_set_running_bit(substream, ssp, 0);
 		break;
 
 	default:
@@ -730,6 +767,7 @@ static int pxa_ssp_trigger(struct snd_pcm_substream *substream, int cmd,
 
 static int pxa_ssp_probe(struct snd_soc_dai *dai)
 {
+	struct device *dev = dai->dev;
 	struct ssp_priv *priv;
 	int ret;
 
@@ -737,10 +775,36 @@ static int pxa_ssp_probe(struct snd_soc_dai *dai)
 	if (!priv)
 		return -ENOMEM;
 
-	priv->ssp = pxa_ssp_request(dai->id + 1, "SoC audio");
-	if (priv->ssp == NULL) {
-		ret = -ENODEV;
-		goto err_priv;
+	if (dev->of_node) {
+		struct device_node *ssp_handle;
+
+		ssp_handle = of_parse_phandle(dev->of_node, "port", 0);
+		if (!ssp_handle) {
+			dev_err(dev, "unable to get 'port' phandle\n");
+			ret = -ENODEV;
+			goto err_priv;
+		}
+
+		priv->ssp = pxa_ssp_request_of(ssp_handle, "SoC audio");
+		if (priv->ssp == NULL) {
+			ret = -ENODEV;
+			goto err_priv;
+		}
+
+		priv->extclk = devm_clk_get(dev, "extclk");
+		if (IS_ERR(priv->extclk)) {
+			ret = PTR_ERR(priv->extclk);
+			if (ret == -EPROBE_DEFER)
+				return ret;
+
+			priv->extclk = NULL;
+		}
+	} else {
+		priv->ssp = pxa_ssp_request(dai->id + 1, "SoC audio");
+		if (priv->ssp == NULL) {
+			ret = -ENODEV;
+			goto err_priv;
+		}
 	}
 
 	priv->dai_fmt = (unsigned int) -1;
@@ -764,21 +828,18 @@ static int pxa_ssp_remove(struct snd_soc_dai *dai)
 
 #define PXA_SSP_RATES (SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_11025 |\
 			  SNDRV_PCM_RATE_16000 | SNDRV_PCM_RATE_22050 |	\
-			  SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000 |	\
+			  SNDRV_PCM_RATE_32000 | SNDRV_PCM_RATE_44100 |	\
+			  SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_64000 |	\
 			  SNDRV_PCM_RATE_88200 | SNDRV_PCM_RATE_96000)
 
-#define PXA_SSP_FORMATS (SNDRV_PCM_FMTBIT_S16_LE |\
-			    SNDRV_PCM_FMTBIT_S24_LE |	\
-			    SNDRV_PCM_FMTBIT_S32_LE)
+#define PXA_SSP_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S32_LE)
 
-static struct snd_soc_dai_ops pxa_ssp_dai_ops = {
+static const struct snd_soc_dai_ops pxa_ssp_dai_ops = {
 	.startup	= pxa_ssp_startup,
 	.shutdown	= pxa_ssp_shutdown,
 	.trigger	= pxa_ssp_trigger,
 	.hw_params	= pxa_ssp_hw_params,
 	.set_sysclk	= pxa_ssp_set_dai_sysclk,
-	.set_clkdiv	= pxa_ssp_set_dai_clkdiv,
-	.set_pll	= pxa_ssp_set_dai_pll,
 	.set_fmt	= pxa_ssp_set_dai_fmt,
 	.set_tdm_slot	= pxa_ssp_set_dai_tdm_slot,
 	.set_tristate	= pxa_ssp_set_dai_tristate,
@@ -804,40 +865,40 @@ static struct snd_soc_dai_driver pxa_ssp_dai = {
 		.ops = &pxa_ssp_dai_ops,
 };
 
-static __devinit int asoc_ssp_probe(struct platform_device *pdev)
-{
-	return snd_soc_register_dai(&pdev->dev, &pxa_ssp_dai);
-}
+static const struct snd_soc_component_driver pxa_ssp_component = {
+	.name		= "pxa-ssp",
+	.ops		= &pxa2xx_pcm_ops,
+	.pcm_new	= pxa2xx_soc_pcm_new,
+	.pcm_free	= pxa2xx_pcm_free_dma_buffers,
+};
 
-static int __devexit asoc_ssp_remove(struct platform_device *pdev)
+#ifdef CONFIG_OF
+static const struct of_device_id pxa_ssp_of_ids[] = {
+	{ .compatible = "mrvl,pxa-ssp-dai" },
+	{}
+};
+MODULE_DEVICE_TABLE(of, pxa_ssp_of_ids);
+#endif
+
+static int asoc_ssp_probe(struct platform_device *pdev)
 {
-	snd_soc_unregister_dai(&pdev->dev);
-	return 0;
+	return devm_snd_soc_register_component(&pdev->dev, &pxa_ssp_component,
+					       &pxa_ssp_dai, 1);
 }
 
 static struct platform_driver asoc_ssp_driver = {
 	.driver = {
-			.name = "pxa-ssp-dai",
-			.owner = THIS_MODULE,
+		.name = "pxa-ssp-dai",
+		.of_match_table = of_match_ptr(pxa_ssp_of_ids),
 	},
 
 	.probe = asoc_ssp_probe,
-	.remove = __devexit_p(asoc_ssp_remove),
 };
 
-static int __init pxa_ssp_init(void)
-{
-	return platform_driver_register(&asoc_ssp_driver);
-}
-module_init(pxa_ssp_init);
-
-static void __exit pxa_ssp_exit(void)
-{
-	platform_driver_unregister(&asoc_ssp_driver);
-}
-module_exit(pxa_ssp_exit);
+module_platform_driver(asoc_ssp_driver);
 
 /* Module information */
 MODULE_AUTHOR("Mark Brown <broonie@opensource.wolfsonmicro.com>");
 MODULE_DESCRIPTION("PXA SSP/PCM SoC Interface");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:pxa-ssp-dai");

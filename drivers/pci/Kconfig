@@ -1,14 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # PCI configuration
 #
-config ARCH_SUPPORTS_MSI
-	bool
-	default n
+
+source "drivers/pci/pcie/Kconfig"
 
 config PCI_MSI
 	bool "Message Signaled Interrupts (MSI and MSI-X)"
 	depends on PCI
-	depends on ARCH_SUPPORTS_MSI
+	select GENERIC_MSI_IRQ
 	help
 	   This allows device drivers to enable MSI (Message Signaled
 	   Interrupts).  Message Signaled Interrupts enable a device to
@@ -21,6 +21,20 @@ config PCI_MSI
 
 	   If you don't know what to do here, say Y.
 
+config PCI_MSI_IRQ_DOMAIN
+	def_bool ARC || ARM || ARM64 || X86
+	depends on PCI_MSI
+	select GENERIC_MSI_IRQ_DOMAIN
+
+config PCI_QUIRKS
+	default y
+	bool "Enable PCI quirk workarounds" if EXPERT
+	depends on PCI
+	help
+	  This enables workarounds for various PCI chipset bugs/quirks.
+	  Disable this only if your target machine is unaffected by PCI
+	  quirks.
+
 config PCI_DEBUG
 	bool "PCI Debugging"
 	depends on PCI && DEBUG_KERNEL
@@ -28,6 +42,19 @@ config PCI_DEBUG
 	  Say Y here if you want the PCI core to produce a bunch of debug
 	  messages to the system log.  Select this if you are having a
 	  problem with PCI support and want to see more of what is going on.
+
+	  When in doubt, say N.
+
+config PCI_REALLOC_ENABLE_AUTO
+	bool "Enable PCI resource re-allocation detection"
+	depends on PCI
+	depends on PCI_IOV
+	help
+	  Say Y here if you want the PCI core to detect if PCI resource
+	  re-allocation needs to be enabled. You can always use pci=realloc=on
+	  or pci=realloc=off to override it.  It will automatically
+	  re-allocate PCI resources if SR-IOV BARs have not been allocated by
+	  the BIOS.
 
 	  When in doubt, say N.
 
@@ -40,10 +67,21 @@ config PCI_STUB
 
 	  When in doubt, say N.
 
+config PCI_PF_STUB
+	tristate "PCI PF Stub driver"
+	depends on PCI
+	depends on PCI_IOV
+	help
+	  Say Y or M here if you want to enable support for devices that
+	  require SR-IOV support, while at the same time the PF itself is
+	  not providing any actual services on the host itself such as
+	  storage or networking.
+
+	  When in doubt, say N.
+
 config XEN_PCIDEV_FRONTEND
         tristate "Xen PCI Frontend"
         depends on PCI && X86 && XEN
-        select HOTPLUG
         select PCI_XEN
 	select XEN_XENBUS_FRONTEND
         default y
@@ -51,16 +89,13 @@ config XEN_PCIDEV_FRONTEND
           The PCI device frontend driver allows the kernel to import arbitrary
           PCI devices from a PCI backend to support PCI driver domains.
 
-config HT_IRQ
-	bool "Interrupts on hypertransport devices"
-	default y
-	depends on PCI && X86_LOCAL_APIC && X86_IO_APIC
-	help
-	   This allows native hypertransport devices to use interrupts.
-
-	   If unsure say Y.
-
 config PCI_ATS
+	bool
+
+config PCI_ECAM
+	bool
+
+config PCI_LOCKLESS_CONFIG
 	bool
 
 config PCI_IOV
@@ -97,13 +132,19 @@ config PCI_PASID
 
 	  If unsure, say N.
 
-config PCI_IOAPIC
-	tristate "PCI IO-APIC hotplug support" if X86
-	depends on PCI
-	depends on ACPI
-	depends on HOTPLUG
-	default !X86
-
 config PCI_LABEL
 	def_bool y if (DMI || ACPI)
+	depends on PCI
 	select NLS
+
+config PCI_HYPERV
+        tristate "Hyper-V PCI Frontend"
+        depends on PCI && X86 && HYPERV && PCI_MSI && PCI_MSI_IRQ_DOMAIN && X86_64
+        help
+          The PCI device frontend driver allows the kernel to import arbitrary
+          PCI devices from a PCI backend to support PCI driver domains.
+
+source "drivers/pci/hotplug/Kconfig"
+source "drivers/pci/controller/Kconfig"
+source "drivers/pci/endpoint/Kconfig"
+source "drivers/pci/switch/Kconfig"

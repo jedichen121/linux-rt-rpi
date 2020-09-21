@@ -1,7 +1,7 @@
 /************************************************************************
 
     AudioScience HPI driver
-    Copyright (C) 1997-2010  AudioScience Inc. <support@audioscience.com>
+    Copyright (C) 1997-2011  AudioScience Inc. <support@audioscience.com>
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of version 2 of the GNU General Public License as
@@ -71,8 +71,8 @@ void hpi_debug_data(u16 *pdata, u32 len)
 		printk(KERN_DEBUG "%p:", (pdata + i));
 
 		for (k = 0; k < cols && i < len; i++, k++)
-			printk("%s%04x", k == 0 ? "" : " ", pdata[i]);
+			printk(KERN_CONT "%s%04x", k == 0 ? "" : " ", pdata[i]);
 
-		printk("\n");
+		printk(KERN_CONT "\n");
 	}
 }

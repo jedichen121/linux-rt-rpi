@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *	Copyright (C) 1992, 1998 Linus Torvalds, Ingo Molnar
  *
@@ -10,78 +11,79 @@
 
 #include <linux/kernel_stat.h>
 #include <linux/interrupt.h>
+#include <linux/irq.h>
 #include <linux/seq_file.h>
-#include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/ftrace.h>
 #include <linux/uaccess.h>
 #include <linux/smp.h>
+#include <linux/sched/task_stack.h>
 #include <asm/io_apic.h>
-#include <asm/idle.h>
 #include <asm/apic.h>
 
-DEFINE_PER_CPU_SHARED_ALIGNED(irq_cpustat_t, irq_stat);
-EXPORT_PER_CPU_SYMBOL(irq_stat);
-
-DEFINE_PER_CPU(struct pt_regs *, irq_regs);
-EXPORT_PER_CPU_SYMBOL(irq_regs);
+int sysctl_panic_on_stackoverflow;
 
 /*
  * Probabilistic stack overflow check:
  *
- * Only check the stack in process context, because everything else
- * runs on the big interrupt stacks. Checking reliably is too expensive,
- * so we just check from interrupts.
+ * Regular device interrupts can enter on the following stacks:
+ *
+ * - User stack
+ *
+ * - Kernel task stack
+ *
+ * - Interrupt stack if a device driver reenables interrupts
+ *   which should only happen in really old drivers.
+ *
+ * - Debug IST stack
+ *
+ * All other contexts are invalid.
  */
 static inline void stack_overflow_check(struct pt_regs *regs)
 {
 #ifdef CONFIG_DEBUG_STACKOVERFLOW
+#define STACK_TOP_MARGIN	128
+	struct orig_ist *oist;
+	u64 irq_stack_top, irq_stack_bottom;
+	u64 estack_top, estack_bottom;
 	u64 curbase = (u64)task_stack_page(current);
 
-	if (user_mode_vm(regs))
+	if (user_mode(regs))
 		return;
 
-	WARN_ONCE(regs->sp >= curbase &&
-		  regs->sp <= curbase + THREAD_SIZE &&
-		  regs->sp <  curbase + sizeof(struct thread_info) +
-					sizeof(struct pt_regs) + 128,
+	if (regs->sp >= curbase + sizeof(struct pt_regs) + STACK_TOP_MARGIN &&
+	    regs->sp <= curbase + THREAD_SIZE)
+		return;
 
-		  "do_IRQ: %s near stack overflow (cur:%Lx,sp:%lx)\n",
-			current->comm, curbase, regs->sp);
+	irq_stack_top = (u64)this_cpu_ptr(irq_stack_union.irq_stack) +
+			STACK_TOP_MARGIN;
+	irq_stack_bottom = (u64)__this_cpu_read(irq_stack_ptr);
+	if (regs->sp >= irq_stack_top && regs->sp <= irq_stack_bottom)
+		return;
+
+	oist = this_cpu_ptr(&orig_ist);
+	estack_bottom = (u64)oist->ist[DEBUG_STACK];
+	estack_top = estack_bottom - DEBUG_STKSZ + STACK_TOP_MARGIN;
+	if (regs->sp >= estack_top && regs->sp <= estack_bottom)
+		return;
+
+	WARN_ONCE(1, "do_IRQ(): %s has overflown the kernel stack (cur:%Lx,sp:%lx,irq stk top-bottom:%Lx-%Lx,exception stk top-bottom:%Lx-%Lx,ip:%pF)\n",
+		current->comm, curbase, regs->sp,
+		irq_stack_top, irq_stack_bottom,
+		estack_top, estack_bottom, (void *)regs->ip);
+
+	if (sysctl_panic_on_stackoverflow)
+		panic("low stack detected by irq handler - check messages\n");
 #endif
 }
 
-bool handle_irq(unsigned irq, struct pt_regs *regs)
+bool handle_irq(struct irq_desc *desc, struct pt_regs *regs)
 {
-	struct irq_desc *desc;
-
 	stack_overflow_check(regs);
 
-	desc = irq_to_desc(irq);
-	if (unlikely(!desc))
+	if (IS_ERR_OR_NULL(desc))
 		return false;
 
-	generic_handle_irq_desc(irq, desc);
+	generic_handle_irq_desc(desc);
 	return true;
-}
-
-
-extern void call_softirq(void);
-
-asmlinkage void do_softirq(void)
-{
-	__u32 pending;
-	unsigned long flags;
-
-	if (in_interrupt())
-		return;
-
-	local_irq_save(flags);
-	pending = local_softirq_pending();
-	/* Switch to interrupt stack */
-	if (pending) {
-		call_softirq();
-		WARN_ON_ONCE(softirq_count());
-	}
-	local_irq_restore(flags);
 }

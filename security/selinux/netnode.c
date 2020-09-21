@@ -166,6 +166,7 @@ static void sel_netnode_insert(struct sel_netnode *node)
 		break;
 	default:
 		BUG();
+		return;
 	}
 
 	/* we need to impose a limit on the growth of the hash table so check
@@ -174,7 +175,8 @@ static void sel_netnode_insert(struct sel_netnode *node)
 	if (sel_netnode_hash[idx].size == SEL_NETNODE_HASH_BKT_LIMIT) {
 		struct sel_netnode *tail;
 		tail = list_entry(
-			rcu_dereference(sel_netnode_hash[idx].list.prev),
+			rcu_dereference_protected(sel_netnode_hash[idx].list.prev,
+						  lockdep_is_held(&sel_netnode_lock)),
 			struct sel_netnode, list);
 		list_del_rcu(&tail->list);
 		kfree_rcu(tail, rcu);
@@ -213,17 +215,18 @@ static int sel_netnode_sid_slow(void *addr, u16 family, u32 *sid)
 		goto out;
 	switch (family) {
 	case PF_INET:
-		ret = security_node_sid(PF_INET,
+		ret = security_node_sid(&selinux_state, PF_INET,
 					addr, sizeof(struct in_addr), sid);
 		new->nsec.addr.ipv4 = *(__be32 *)addr;
 		break;
 	case PF_INET6:
-		ret = security_node_sid(PF_INET6,
+		ret = security_node_sid(&selinux_state, PF_INET6,
 					addr, sizeof(struct in6_addr), sid);
 		new->nsec.addr.ipv6 = *(struct in6_addr *)addr;
 		break;
 	default:
 		BUG();
+		ret = -EINVAL;
 	}
 	if (ret != 0)
 		goto out;
@@ -235,9 +238,8 @@ static int sel_netnode_sid_slow(void *addr, u16 family, u32 *sid)
 out:
 	spin_unlock_bh(&sel_netnode_lock);
 	if (unlikely(ret)) {
-		printk(KERN_WARNING
-		       "SELinux: failure in sel_netnode_sid_slow(),"
-		       " unable to determine network node label\n");
+		pr_warn("SELinux: failure in %s(), unable to determine network node label\n",
+			__func__);
 		kfree(new);
 	}
 	return ret;
@@ -280,7 +282,7 @@ int sel_netnode_sid(void *addr, u16 family, u32 *sid)
  * Remove all entries from the network address table.
  *
  */
-static void sel_netnode_flush(void)
+void sel_netnode_flush(void)
 {
 	unsigned int idx;
 	struct sel_netnode *node, *node_tmp;
@@ -297,20 +299,9 @@ static void sel_netnode_flush(void)
 	spin_unlock_bh(&sel_netnode_lock);
 }
 
-static int sel_netnode_avc_callback(u32 event, u32 ssid, u32 tsid,
-				    u16 class, u32 perms, u32 *retained)
-{
-	if (event == AVC_CALLBACK_RESET) {
-		sel_netnode_flush();
-		synchronize_net();
-	}
-	return 0;
-}
-
 static __init int sel_netnode_init(void)
 {
 	int iter;
-	int ret;
 
 	if (!selinux_enabled)
 		return 0;
@@ -320,12 +311,7 @@ static __init int sel_netnode_init(void)
 		sel_netnode_hash[iter].size = 0;
 	}
 
-	ret = avc_add_callback(sel_netnode_avc_callback, AVC_CALLBACK_RESET,
-			       SECSID_NULL, SECSID_NULL, SECCLASS_NULL, 0);
-	if (ret != 0)
-		panic("avc_add_callback() failed, error %d\n", ret);
-
-	return ret;
+	return 0;
 }
 
 __initcall(sel_netnode_init);

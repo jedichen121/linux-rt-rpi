@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * KVM coalesced MMIO
  *
@@ -8,7 +9,7 @@
  *
  */
 
-#include "iodev.h"
+#include <kvm/iodev.h>
 
 #include <linux/kvm_host.h>
 #include <linux/slab.h>
@@ -28,12 +29,18 @@ static int coalesced_mmio_in_range(struct kvm_coalesced_mmio_dev *dev,
 	 * (addr,len) is fully included in
 	 * (zone->addr, zone->size)
 	 */
-
-	return (dev->zone.addr <= addr &&
-		addr + len <= dev->zone.addr + dev->zone.size);
+	if (len < 0)
+		return 0;
+	if (addr + len < addr)
+		return 0;
+	if (addr < dev->zone.addr)
+		return 0;
+	if (addr + len > dev->zone.addr + dev->zone.size)
+		return 0;
+	return 1;
 }
 
-static int coalesced_mmio_has_room(struct kvm_coalesced_mmio_dev *dev)
+static int coalesced_mmio_has_room(struct kvm_coalesced_mmio_dev *dev, u32 last)
 {
 	struct kvm_coalesced_mmio_ring *ring;
 	unsigned avail;
@@ -45,7 +52,7 @@ static int coalesced_mmio_has_room(struct kvm_coalesced_mmio_dev *dev)
 	 * there is always one unused entry in the buffer
 	 */
 	ring = dev->kvm->coalesced_mmio_ring;
-	avail = (ring->first - ring->last - 1) % KVM_COALESCED_MMIO_MAX;
+	avail = (ring->first - last - 1) % KVM_COALESCED_MMIO_MAX;
 	if (avail == 0) {
 		/* full */
 		return 0;
@@ -54,29 +61,33 @@ static int coalesced_mmio_has_room(struct kvm_coalesced_mmio_dev *dev)
 	return 1;
 }
 
-static int coalesced_mmio_write(struct kvm_io_device *this,
-				gpa_t addr, int len, const void *val)
+static int coalesced_mmio_write(struct kvm_vcpu *vcpu,
+				struct kvm_io_device *this, gpa_t addr,
+				int len, const void *val)
 {
 	struct kvm_coalesced_mmio_dev *dev = to_mmio(this);
 	struct kvm_coalesced_mmio_ring *ring = dev->kvm->coalesced_mmio_ring;
+	__u32 insert;
 
 	if (!coalesced_mmio_in_range(dev, addr, len))
 		return -EOPNOTSUPP;
 
 	spin_lock(&dev->kvm->ring_lock);
 
-	if (!coalesced_mmio_has_room(dev)) {
+	insert = READ_ONCE(ring->last);
+	if (!coalesced_mmio_has_room(dev, insert) ||
+	    insert >= KVM_COALESCED_MMIO_MAX) {
 		spin_unlock(&dev->kvm->ring_lock);
 		return -EOPNOTSUPP;
 	}
 
 	/* copy data in first free entry of the ring */
 
-	ring->coalesced_mmio[ring->last].phys_addr = addr;
-	ring->coalesced_mmio[ring->last].len = len;
-	memcpy(ring->coalesced_mmio[ring->last].data, val, len);
+	ring->coalesced_mmio[insert].phys_addr = addr;
+	ring->coalesced_mmio[insert].len = len;
+	memcpy(ring->coalesced_mmio[insert].data, val, len);
 	smp_wmb();
-	ring->last = (ring->last + 1) % KVM_COALESCED_MMIO_MAX;
+	ring->last = (insert + 1) % KVM_COALESCED_MMIO_MAX;
 	spin_unlock(&dev->kvm->ring_lock);
 	return 0;
 }
@@ -148,17 +159,13 @@ int kvm_vm_ioctl_register_coalesced_mmio(struct kvm *kvm,
 	list_add_tail(&dev->list, &kvm->coalesced_zones);
 	mutex_unlock(&kvm->slots_lock);
 
-	return ret;
+	return 0;
 
 out_free_dev:
 	mutex_unlock(&kvm->slots_lock);
-
 	kfree(dev);
 
-	if (dev == NULL)
-		return -ENXIO;
-
-	return 0;
+	return ret;
 }
 
 int kvm_vm_ioctl_unregister_coalesced_mmio(struct kvm *kvm,

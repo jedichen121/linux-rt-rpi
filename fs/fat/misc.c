@@ -6,10 +6,6 @@
  *		 and date_dos2unix for date==0 by Igor Zhbanov(bsg@uniyar.ac.ru)
  */
 
-#include <linux/module.h>
-#include <linux/fs.h>
-#include <linux/buffer_head.h>
-#include <linux/time.h>
 #include "fat.h"
 
 /*
@@ -30,16 +26,15 @@ void __fat_fs_error(struct super_block *sb, int report, const char *fmt, ...)
 		va_start(args, fmt);
 		vaf.fmt = fmt;
 		vaf.va = &args;
-		printk(KERN_ERR "FAT-fs (%s): error, %pV\n", sb->s_id, &vaf);
+		fat_msg(sb, KERN_ERR, "error, %pV", &vaf);
 		va_end(args);
 	}
 
 	if (opts->errors == FAT_ERRORS_PANIC)
 		panic("FAT-fs (%s): fs panic from previous error\n", sb->s_id);
-	else if (opts->errors == FAT_ERRORS_RO && !(sb->s_flags & MS_RDONLY)) {
-		sb->s_flags |= MS_RDONLY;
-		printk(KERN_ERR "FAT-fs (%s): Filesystem has been "
-				"set read-only\n", sb->s_id);
+	else if (opts->errors == FAT_ERRORS_RO && !sb_rdonly(sb)) {
+		sb->s_flags |= SB_RDONLY;
+		fat_msg(sb, KERN_ERR, "Filesystem has been set read-only");
 	}
 }
 EXPORT_SYMBOL_GPL(__fat_fs_error);
@@ -135,6 +130,10 @@ int fat_chain_add(struct inode *inode, int new_dclus, int nr_cluster)
 		}
 		if (ret < 0)
 			return ret;
+		/*
+		 * FIXME:Although we can add this cache, fat_cache_add() is
+		 * assuming to be called after linear search with fat_cache_id.
+		 */
 //		fat_cache_add(inode, new_fclus, new_dclus);
 	} else {
 		MSDOS_I(inode)->i_start = new_dclus;
@@ -161,8 +160,6 @@ int fat_chain_add(struct inode *inode, int new_dclus, int nr_cluster)
 	return 0;
 }
 
-extern struct timezone sys_tz;
-
 /*
  * The epoch of FAT timestamp is 1980.
  *     :  bits :     value
@@ -183,17 +180,18 @@ extern struct timezone sys_tz;
 #define IS_LEAP_YEAR(y)	(!((y) & 3) && (y) != YEAR_2100)
 
 /* Linear day numbers of the respective 1sts in non-leap years. */
-static time_t days_in_year[] = {
+static long days_in_year[] = {
 	/* Jan  Feb  Mar  Apr  May  Jun  Jul  Aug  Sep  Oct  Nov  Dec */
 	0,   0,  31,  59,  90, 120, 151, 181, 212, 243, 273, 304, 334, 0, 0, 0,
 };
 
 /* Convert a FAT time/date pair to a UNIX date (seconds since 1 1 70). */
-void fat_time_fat2unix(struct msdos_sb_info *sbi, struct timespec *ts,
+void fat_time_fat2unix(struct msdos_sb_info *sbi, struct timespec64 *ts,
 		       __le16 __time, __le16 __date, u8 time_cs)
 {
 	u16 time = le16_to_cpu(__time), date = le16_to_cpu(__date);
-	time_t second, day, leap_day, month, year;
+	time64_t second;
+	long day, leap_day, month, year;
 
 	year  = date >> 9;
 	month = max(1, (date >> 5) & 0xf);
@@ -208,12 +206,14 @@ void fat_time_fat2unix(struct msdos_sb_info *sbi, struct timespec *ts,
 	second =  (time & 0x1f) << 1;
 	second += ((time >> 5) & 0x3f) * SECS_PER_MIN;
 	second += (time >> 11) * SECS_PER_HOUR;
-	second += (year * 365 + leap_day
+	second += (time64_t)(year * 365 + leap_day
 		   + days_in_year[month] + day
 		   + DAYS_DELTA) * SECS_PER_DAY;
 
-	if (!sbi->options.tz_utc)
+	if (!sbi->options.tz_set)
 		second += sys_tz.tz_minuteswest * SECS_PER_MIN;
+	else
+		second -= sbi->options.time_offset * SECS_PER_MIN;
 
 	if (time_cs) {
 		ts->tv_sec = second + (time_cs / 100);
@@ -225,12 +225,13 @@ void fat_time_fat2unix(struct msdos_sb_info *sbi, struct timespec *ts,
 }
 
 /* Convert linear UNIX date to a FAT time/date pair. */
-void fat_time_unix2fat(struct msdos_sb_info *sbi, struct timespec *ts,
+void fat_time_unix2fat(struct msdos_sb_info *sbi, struct timespec64 *ts,
 		       __le16 *time, __le16 *date, u8 *time_cs)
 {
 	struct tm tm;
-	time_to_tm(ts->tv_sec, sbi->options.tz_utc ? 0 :
-		   -sys_tz.tz_minuteswest * 60, &tm);
+	time64_to_tm(ts->tv_sec,
+		   (sbi->options.tz_set ? sbi->options.time_offset :
+		   -sys_tz.tz_minuteswest) * SECS_PER_MIN, &tm);
 
 	/*  FAT can only support year between 1980 to 2107 */
 	if (tm.tm_year < 1980 - 1900) {
@@ -267,7 +268,7 @@ int fat_sync_bhs(struct buffer_head **bhs, int nr_bhs)
 	int i, err = 0;
 
 	for (i = 0; i < nr_bhs; i++)
-		write_dirty_buffer(bhs[i], WRITE);
+		write_dirty_buffer(bhs[i], 0);
 
 	for (i = 0; i < nr_bhs; i++) {
 		wait_on_buffer(bhs[i]);

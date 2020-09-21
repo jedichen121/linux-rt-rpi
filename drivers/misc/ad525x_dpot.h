@@ -195,12 +195,12 @@ enum dpot_devid {
 struct dpot_data;
 
 struct ad_dpot_bus_ops {
-	int (*read_d8) (void *client);
-	int (*read_r8d8) (void *client, u8 reg);
-	int (*read_r8d16) (void *client, u8 reg);
-	int (*write_d8) (void *client, u8 val);
-	int (*write_r8d8) (void *client, u8 reg, u8 val);
-	int (*write_r8d16) (void *client, u8 reg, u16 val);
+	int (*read_d8)(void *client);
+	int (*read_r8d8)(void *client, u8 reg);
+	int (*read_r8d16)(void *client, u8 reg);
+	int (*write_d8)(void *client, u8 val);
+	int (*write_r8d8)(void *client, u8 reg, u8 val);
+	int (*write_r8d16)(void *client, u8 reg, u16 val);
 };
 
 struct ad_dpot_bus_data {
@@ -208,12 +208,8 @@ struct ad_dpot_bus_data {
 	const struct ad_dpot_bus_ops *bops;
 };
 
-struct ad_dpot_id {
-	char *name;
-	unsigned long devid;
-};
-
-int ad_dpot_probe(struct device *dev, struct ad_dpot_bus_data *bdata, const struct ad_dpot_id *id);
+int ad_dpot_probe(struct device *dev, struct ad_dpot_bus_data *bdata,
+		  unsigned long devid, const char *name);
 int ad_dpot_remove(struct device *dev);
 
 #endif

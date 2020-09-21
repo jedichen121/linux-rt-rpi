@@ -64,10 +64,9 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 
-#include <asm/system.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/bitops.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/string.h>
 #include <linux/mm.h>
 #include <linux/interrupt.h>
@@ -84,6 +83,7 @@
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/slab.h>
+#include <linux/workqueue.h>
 #include "slip.h"
 #ifdef CONFIG_INET
 #include <linux/ip.h>
@@ -106,8 +106,8 @@ static int slip_esc6(unsigned char *p, unsigned char *d, int len);
 static void slip_unesc6(struct slip *sl, unsigned char c);
 #endif
 #ifdef CONFIG_SLIP_SMART
-static void sl_keepalive(unsigned long sls);
-static void sl_outfill(unsigned long sls);
+static void sl_keepalive(struct timer_list *t);
+static void sl_outfill(struct timer_list *t);
 static int sl_ioctl(struct net_device *dev, struct ifreq *rq, int cmd);
 #endif
 
@@ -164,7 +164,7 @@ static int sl_alloc_bufs(struct slip *sl, int mtu)
 	if (cbuff == NULL)
 		goto err_exit;
 	slcomp = slhc_init(16, 16);
-	if (slcomp == NULL)
+	if (IS_ERR(slcomp))
 		goto err_exit;
 #endif
 	spin_lock_bh(&sl->lock);
@@ -364,7 +364,7 @@ static void sl_bump(struct slip *sl)
 		return;
 	}
 	skb->dev = dev;
-	memcpy(skb_put(skb, count), sl->rbuff, count);
+	skb_put_data(skb, sl->rbuff, count);
 	skb_reset_mac_header(skb);
 	skb->protocol = htons(ETH_P_IP);
 	netif_rx_ni(skb);
@@ -391,10 +391,10 @@ static void sl_encaps(struct slip *sl, unsigned char *icp, int len)
 #endif
 #ifdef CONFIG_SLIP_MODE_SLIP6
 	if (sl->mode & SL_MODE_SLIP6)
-		count = slip_esc6(p, (unsigned char *) sl->xbuff, len);
+		count = slip_esc6(p, sl->xbuff, len);
 	else
 #endif
-		count = slip_esc(p, (unsigned char *) sl->xbuff, len);
+		count = slip_esc(p, sl->xbuff, len);
 
 	/* Order of next two lines is *very* important.
 	 * When we are sending a little amount of data,
@@ -407,7 +407,7 @@ static void sl_encaps(struct slip *sl, unsigned char *icp, int len)
 	set_bit(TTY_DO_WRITE_WAKEUP, &sl->tty->flags);
 	actual = sl->tty->ops->write(sl->tty, sl->xbuff, count);
 #ifdef SL_CHECK_TRANSMIT
-	sl->dev->trans_start = jiffies;
+	netif_trans_update(sl->dev);
 #endif
 	sl->xleft = count - actual;
 	sl->xhead = sl->xbuff + actual;
@@ -417,31 +417,44 @@ static void sl_encaps(struct slip *sl, unsigned char *icp, int len)
 #endif
 }
 
-/*
- * Called by the driver when there's room for more data.  If we have
- * more packets to send, we send them here.
- */
-static void slip_write_wakeup(struct tty_struct *tty)
+/* Write out any remaining transmit buffer. Scheduled when tty is writable */
+static void slip_transmit(struct work_struct *work)
 {
+	struct slip *sl = container_of(work, struct slip, tx_work);
 	int actual;
-	struct slip *sl = tty->disc_data;
 
+	spin_lock_bh(&sl->lock);
 	/* First make sure we're connected. */
-	if (!sl || sl->magic != SLIP_MAGIC || !netif_running(sl->dev))
+	if (!sl->tty || sl->magic != SLIP_MAGIC || !netif_running(sl->dev)) {
+		spin_unlock_bh(&sl->lock);
 		return;
+	}
 
 	if (sl->xleft <= 0)  {
 		/* Now serial buffer is almost free & we can start
 		 * transmission of another packet */
 		sl->dev->stats.tx_packets++;
-		clear_bit(TTY_DO_WRITE_WAKEUP, &tty->flags);
+		clear_bit(TTY_DO_WRITE_WAKEUP, &sl->tty->flags);
+		spin_unlock_bh(&sl->lock);
 		sl_unlock(sl);
 		return;
 	}
 
-	actual = tty->ops->write(tty, sl->xhead, sl->xleft);
+	actual = sl->tty->ops->write(sl->tty, sl->xhead, sl->xleft);
 	sl->xleft -= actual;
 	sl->xhead += actual;
+	spin_unlock_bh(&sl->lock);
+}
+
+/*
+ * Called by the driver when there's room for more data.
+ * Schedule the transmit.
+ */
+static void slip_write_wakeup(struct tty_struct *tty)
+{
+	struct slip *sl = tty->disc_data;
+
+	schedule_work(&sl->tx_work);
 }
 
 static void sl_tx_timeout(struct net_device *dev)
@@ -548,17 +561,12 @@ static int sl_change_mtu(struct net_device *dev, int new_mtu)
 {
 	struct slip *sl = netdev_priv(dev);
 
-	if (new_mtu < 68 || new_mtu > 65534)
-		return -EINVAL;
-
-	if (new_mtu != dev->mtu)
-		return sl_realloc_bufs(sl, new_mtu);
-	return 0;
+	return sl_realloc_bufs(sl, new_mtu);
 }
 
 /* Netdevice get statistics request */
 
-static struct rtnl_link_stats64 *
+static void
 sl_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats)
 {
 	struct net_device_stats *devstats = &dev->stats;
@@ -589,7 +597,6 @@ sl_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats)
 		stats->collisions     += comp->sls_o_misses;
 	}
 #endif
-	return stats;
 }
 
 /* Netdevice register callback */
@@ -622,7 +629,7 @@ static void sl_uninit(struct net_device *dev)
 static void sl_free_netdev(struct net_device *dev)
 {
 	int i = dev->base_addr;
-	free_netdev(dev);
+
 	slip_devs[i] = NULL;
 }
 
@@ -644,11 +651,16 @@ static const struct net_device_ops sl_netdev_ops = {
 static void sl_setup(struct net_device *dev)
 {
 	dev->netdev_ops		= &sl_netdev_ops;
-	dev->destructor		= sl_free_netdev;
+	dev->needs_free_netdev	= true;
+	dev->priv_destructor	= sl_free_netdev;
 
 	dev->hard_header_len	= 0;
 	dev->addr_len		= 0;
 	dev->tx_queue_len	= 10;
+
+	/* MTU range: 68 - 65534 */
+	dev->min_mtu = 68;
+	dev->max_mtu = 65534;
 
 	/* New-style flags. */
 	dev->flags		= IFF_NOARP|IFF_POINTOPOINT|IFF_MULTICAST;
@@ -719,7 +731,7 @@ static void sl_sync(void)
 
 
 /* Find a free SLIP channel, and link in this `tty' line. */
-static struct slip *sl_alloc(dev_t line)
+static struct slip *sl_alloc(void)
 {
 	int i;
 	char name[IFNAMSIZ];
@@ -736,7 +748,7 @@ static struct slip *sl_alloc(dev_t line)
 		return NULL;
 
 	sprintf(name, "sl%d", i);
-	dev = alloc_netdev(sizeof(*sl), name, sl_setup);
+	dev = alloc_netdev(sizeof(*sl), name, NET_NAME_UNKNOWN, sl_setup);
 	if (!dev)
 		return NULL;
 
@@ -747,15 +759,12 @@ static struct slip *sl_alloc(dev_t line)
 	sl->magic       = SLIP_MAGIC;
 	sl->dev	      	= dev;
 	spin_lock_init(&sl->lock);
+	INIT_WORK(&sl->tx_work, slip_transmit);
 	sl->mode        = SL_MODE_DEFAULT;
 #ifdef CONFIG_SLIP_SMART
 	/* initialize timer_list struct */
-	init_timer(&sl->keepalive_timer);
-	sl->keepalive_timer.data = (unsigned long)sl;
-	sl->keepalive_timer.function = sl_keepalive;
-	init_timer(&sl->outfill_timer);
-	sl->outfill_timer.data = (unsigned long)sl;
-	sl->outfill_timer.function = sl_outfill;
+	timer_setup(&sl->keepalive_timer, sl_keepalive, 0);
+	timer_setup(&sl->outfill_timer, sl_outfill, 0);
 #endif
 	slip_devs[i] = dev;
 	return sl;
@@ -800,7 +809,7 @@ static int slip_open(struct tty_struct *tty)
 
 	/* OK.  Find a free SLIP channel to use. */
 	err = -ENFILE;
-	sl = sl_alloc(tty_devnum(tty));
+	sl = sl_alloc();
 	if (sl == NULL)
 		goto err_exit;
 
@@ -870,8 +879,12 @@ static void slip_close(struct tty_struct *tty)
 	if (!sl || sl->magic != SLIP_MAGIC || sl->tty != tty)
 		return;
 
+	spin_lock_bh(&sl->lock);
 	tty->disc_data = NULL;
 	sl->tty = NULL;
+	spin_unlock_bh(&sl->lock);
+
+	flush_work(&sl->tx_work);
 
 	/* VSV = very important to remove timers */
 #ifdef CONFIG_SLIP_SMART
@@ -1294,12 +1307,10 @@ static int __init slip_init(void)
 	printk(KERN_INFO "SLIP linefill/keepalive option.\n");
 #endif
 
-	slip_devs = kzalloc(sizeof(struct net_device *)*slip_maxdev,
+	slip_devs = kcalloc(slip_maxdev, sizeof(struct net_device *),
 								GFP_KERNEL);
-	if (!slip_devs) {
-		printk(KERN_ERR "SLIP: Can't allocate slip devices array.\n");
+	if (!slip_devs)
 		return -ENOMEM;
-	}
 
 	/* Fill in our line protocol discipline, and register it */
 	status = tty_register_ldisc(N_SLIP, &sl_ldisc);
@@ -1355,8 +1366,6 @@ static void __exit slip_exit(void)
 		if (sl->tty) {
 			printk(KERN_ERR "%s: tty discipline still running\n",
 			       dev->name);
-			/* Intentionally leak the control block. */
-			dev->destructor = NULL;
 		}
 
 		unregister_netdev(dev);
@@ -1379,9 +1388,9 @@ module_exit(slip_exit);
  * added by Stanislav Voronyi. All changes before marked VSV
  */
 
-static void sl_outfill(unsigned long sls)
+static void sl_outfill(struct timer_list *t)
 {
-	struct slip *sl = (struct slip *)sls;
+	struct slip *sl = from_timer(sl, t, outfill_timer);
 
 	spin_lock(&sl->lock);
 
@@ -1410,9 +1419,9 @@ out:
 	spin_unlock(&sl->lock);
 }
 
-static void sl_keepalive(unsigned long sls)
+static void sl_keepalive(struct timer_list *t)
 {
-	struct slip *sl = (struct slip *)sls;
+	struct slip *sl = from_timer(sl, t, keepalive_timer);
 
 	spin_lock(&sl->lock);
 

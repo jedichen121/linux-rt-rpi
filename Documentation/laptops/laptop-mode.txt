@@ -184,7 +184,7 @@ is done when dirty_ratio is reached.
 DO_CPU:
 
 Enable CPU frequency scaling when in laptop mode. (Requires CPUFreq to be setup.
-See Documentation/cpu-freq/user-guide.txt for more info. Disabled by default.)
+See Documentation/admin-guide/pm/cpufreq.rst for more info. Disabled by default.)
 
 CPU_MAXFREQ:
 
@@ -262,9 +262,9 @@ MINIMUM_BATTERY_MINUTES=10
 
 #
 # Allowed dirty background ratio, in percent.  Once DIRTY_RATIO has been
-# exceeded, the kernel will wake pdflush which will then reduce the amount
-# of dirty memory to dirty_background_ratio.  Set this nice and low, so once
-# some writeout has commenced, we do a lot of it.
+# exceeded, the kernel will wake flusher threads which will then reduce the
+# amount of dirty memory to dirty_background_ratio.  Set this nice and low,
+# so once some writeout has commenced, we do a lot of it.
 #
 #DIRTY_BACKGROUND_RATIO=5
 
@@ -287,7 +287,7 @@ MINIMUM_BATTERY_MINUTES=10
 
 # Should the maximum CPU frequency be adjusted down while on battery?
 # Requires CPUFreq to be setup.
-# See Documentation/cpu-freq/user-guide.txt for more info
+# See Documentation/admin-guide/pm/cpufreq.rst for more info
 #DO_CPU=0
 
 # When on battery what is the maximum CPU speed that the system should
@@ -378,15 +378,15 @@ BATT_HD=${BATT_HD:-'4'}
 DIRTY_RATIO=${DIRTY_RATIO:-'40'}
 
 # cpu frequency scaling
-# See Documentation/cpu-freq/user-guide.txt for more info
+# See Documentation/admin-guide/pm/cpufreq.rst for more info
 DO_CPU=${CPU_MANAGE:-'0'}
 CPU_MAXFREQ=${CPU_MAXFREQ:-'slowest'}
 
 #
 # Allowed dirty background ratio, in percent.  Once DIRTY_RATIO has been
-# exceeded, the kernel will wake pdflush which will then reduce the amount
-# of dirty memory to dirty_background_ratio.  Set this nice and low, so once
-# some writeout has commenced, we do a lot of it.
+# exceeded, the kernel will wake flusher threads which will then reduce the
+# amount of dirty memory to dirty_background_ratio.  Set this nice and low,
+# so once some writeout has commenced, we do a lot of it.
 #
 DIRTY_BACKGROUND_RATIO=${DIRTY_BACKGROUND_RATIO:-'5'}
 
@@ -779,4 +779,4 @@ Monitoring tool
 ---------------
 
 Bartek Kania submitted this, it can be used to measure how much time your disk
-spends spun up/down.  See Documentation/laptops/dslm.c
+spends spun up/down.  See tools/laptop/dslm/dslm.c

@@ -56,18 +56,6 @@ static int z2_hw_params(struct snd_pcm_substream *substream,
 		break;
 	}
 
-	/* set codec DAI configuration */
-	ret = snd_soc_dai_set_fmt(codec_dai, SND_SOC_DAIFMT_I2S |
-		SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBS_CFS);
-	if (ret < 0)
-		return ret;
-
-	/* set cpu DAI configuration */
-	ret = snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_I2S |
-		SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBS_CFS);
-	if (ret < 0)
-		return ret;
-
 	/* set the codec system clock for DAC and ADC */
 	ret = snd_soc_dai_set_sysclk(codec_dai, WM8750_SYSCLK, clk,
 		SND_SOC_CLOCK_IN);
@@ -124,15 +112,15 @@ static const struct snd_soc_dapm_widget wm8750_dapm_widgets[] = {
 };
 
 /* Z2 machine audio_map */
-static const struct snd_soc_dapm_route audio_map[] = {
+static const struct snd_soc_dapm_route z2_audio_map[] = {
 
 	/* headphone connected to LOUT1, ROUT1 */
 	{"Headphone Jack", NULL, "LOUT1"},
 	{"Headphone Jack", NULL, "ROUT1"},
 
 	/* ext speaker connected to LOUT2, ROUT2  */
-	{"Ext Spk", NULL , "ROUT2"},
-	{"Ext Spk", NULL , "LOUT2"},
+	{"Ext Spk", NULL, "ROUT2"},
+	{"Ext Spk", NULL, "LOUT2"},
 
 	/* mic is connected to R input 2 - with bias */
 	{"RINPUT2", NULL, "Mic Bias"},
@@ -144,31 +132,12 @@ static const struct snd_soc_dapm_route audio_map[] = {
  */
 static int z2_wm8750_init(struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_soc_codec *codec = rtd->codec;
-	struct snd_soc_dapm_context *dapm = &codec->dapm;
 	int ret;
 
-	/* NC codec pins */
-	snd_soc_dapm_disable_pin(dapm, "LINPUT3");
-	snd_soc_dapm_disable_pin(dapm, "RINPUT3");
-	snd_soc_dapm_disable_pin(dapm, "OUT3");
-	snd_soc_dapm_disable_pin(dapm, "MONO1");
-
-	/* Add z2 specific widgets */
-	snd_soc_dapm_new_controls(dapm, wm8750_dapm_widgets,
-				 ARRAY_SIZE(wm8750_dapm_widgets));
-
-	/* Set up z2 specific audio paths */
-	snd_soc_dapm_add_routes(dapm, audio_map, ARRAY_SIZE(audio_map));
-
 	/* Jack detection API stuff */
-	ret = snd_soc_jack_new(codec, "Headset Jack", SND_JACK_HEADSET,
-				&hs_jack);
-	if (ret)
-		goto err;
-
-	ret = snd_soc_jack_add_pins(&hs_jack, ARRAY_SIZE(hs_jack_pins),
-				hs_jack_pins);
+	ret = snd_soc_card_jack_new(rtd->card, "Headset Jack", SND_JACK_HEADSET,
+				    &hs_jack, hs_jack_pins,
+				    ARRAY_SIZE(hs_jack_pins));
 	if (ret)
 		goto err;
 
@@ -183,7 +152,7 @@ err:
 	return ret;
 }
 
-static struct snd_soc_ops z2_ops = {
+static const struct snd_soc_ops z2_ops = {
 	.hw_params = z2_hw_params,
 };
 
@@ -196,14 +165,23 @@ static struct snd_soc_dai_link z2_dai = {
 	.platform_name = "pxa-pcm-audio",
 	.codec_name	= "wm8750.0-001b",
 	.init		= z2_wm8750_init,
+	.dai_fmt	= SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
+			  SND_SOC_DAIFMT_CBS_CFS,
 	.ops		= &z2_ops,
 };
 
 /* z2 audio machine driver */
 static struct snd_soc_card snd_soc_z2 = {
 	.name		= "Z2",
+	.owner		= THIS_MODULE,
 	.dai_link	= &z2_dai,
 	.num_links	= 1,
+
+	.dapm_widgets = wm8750_dapm_widgets,
+	.num_dapm_widgets = ARRAY_SIZE(wm8750_dapm_widgets),
+	.dapm_routes = z2_audio_map,
+	.num_dapm_routes = ARRAY_SIZE(z2_audio_map),
+	.fully_routed = true,
 };
 
 static struct platform_device *z2_snd_device;

@@ -12,7 +12,6 @@
 
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/leds.h>
 #include <asm/hd64461.h>
@@ -51,7 +50,7 @@ static struct led_classdev hp6xx_red_led = {
 
 static struct led_classdev hp6xx_green_led = {
 	.name			= "hp6xx:green",
-	.default_trigger	= "ide-disk",
+	.default_trigger	= "disk-activity",
 	.brightness_set		= hp6xxled_green_set,
 	.flags			= LED_CORE_SUSPENDRESUME,
 };
@@ -60,50 +59,23 @@ static int hp6xxled_probe(struct platform_device *pdev)
 {
 	int ret;
 
-	ret = led_classdev_register(&pdev->dev, &hp6xx_red_led);
+	ret = devm_led_classdev_register(&pdev->dev, &hp6xx_red_led);
 	if (ret < 0)
 		return ret;
 
-	ret = led_classdev_register(&pdev->dev, &hp6xx_green_led);
-	if (ret < 0)
-		led_classdev_unregister(&hp6xx_red_led);
-
-	return ret;
+	return devm_led_classdev_register(&pdev->dev, &hp6xx_green_led);
 }
-
-static int hp6xxled_remove(struct platform_device *pdev)
-{
-	led_classdev_unregister(&hp6xx_red_led);
-	led_classdev_unregister(&hp6xx_green_led);
-
-	return 0;
-}
-
-/* work with hotplug and coldplug */
-MODULE_ALIAS("platform:hp6xx-led");
 
 static struct platform_driver hp6xxled_driver = {
 	.probe		= hp6xxled_probe,
-	.remove		= hp6xxled_remove,
 	.driver		= {
 		.name		= "hp6xx-led",
-		.owner		= THIS_MODULE,
 	},
 };
 
-static int __init hp6xxled_init(void)
-{
-	return platform_driver_register(&hp6xxled_driver);
-}
-
-static void __exit hp6xxled_exit(void)
-{
-	platform_driver_unregister(&hp6xxled_driver);
-}
-
-module_init(hp6xxled_init);
-module_exit(hp6xxled_exit);
+module_platform_driver(hp6xxled_driver);
 
 MODULE_AUTHOR("Kristoffer Ericson <kristoffer.ericson@gmail.com>");
 MODULE_DESCRIPTION("HP Jornada 6xx LED driver");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:hp6xx-led");

@@ -20,10 +20,6 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
- * Should you need to contact me, the author, you can do so either by
- * e-mail - mail your message to <vojtech@ucw.cz>, or by paper mail:
- * Vojtech Pavlik, Simunkova 1594, Prague 8, 182 00 Czech Republic
  */
 
 #include <linux/delay.h>
@@ -31,7 +27,6 @@
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/interrupt.h>
-#include <linux/init.h>
 #include <linux/input.h>
 #include <linux/serio.h>
 #include <linux/workqueue.h>
@@ -340,7 +335,7 @@ static void sunkbd_disconnect(struct serio *serio)
 	kfree(sunkbd);
 }
 
-static struct serio_device_id sunkbd_serio_ids[] = {
+static const struct serio_device_id sunkbd_serio_ids[] = {
 	{
 		.type	= SERIO_RS232,
 		.proto	= SERIO_SUNKBD,
@@ -369,19 +364,4 @@ static struct serio_driver sunkbd_drv = {
 	.disconnect	= sunkbd_disconnect,
 };
 
-/*
- * The functions for insering/removing us as a module.
- */
-
-static int __init sunkbd_init(void)
-{
-	return serio_register_driver(&sunkbd_drv);
-}
-
-static void __exit sunkbd_exit(void)
-{
-	serio_unregister_driver(&sunkbd_drv);
-}
-
-module_init(sunkbd_init);
-module_exit(sunkbd_exit);
+module_serio_driver(sunkbd_drv);

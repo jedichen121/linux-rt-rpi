@@ -656,7 +656,6 @@ xpc_initiate_connect(int ch_number)
 {
 	short partid;
 	struct xpc_partition *part;
-	struct xpc_channel *ch;
 
 	DBUG_ON(ch_number < 0 || ch_number >= XPC_MAX_NCHANNELS);
 
@@ -664,8 +663,6 @@ xpc_initiate_connect(int ch_number)
 		part = &xpc_partitions[partid];
 
 		if (xpc_part_ref(part)) {
-			ch = &part->channels[ch_number];
-
 			/*
 			 * Initiate the establishment of a connection on the
 			 * newly registered channel to the remote partition.
@@ -828,6 +825,7 @@ enum xp_retval
 xpc_allocate_msg_wait(struct xpc_channel *ch)
 {
 	enum xp_retval ret;
+	DEFINE_WAIT(wait);
 
 	if (ch->flags & XPC_C_DISCONNECTING) {
 		DBUG_ON(ch->reason == xpInterrupted);
@@ -835,7 +833,9 @@ xpc_allocate_msg_wait(struct xpc_channel *ch)
 	}
 
 	atomic_inc(&ch->n_on_msg_allocate_wq);
-	ret = interruptible_sleep_on_timeout(&ch->msg_allocate_wq, 1);
+	prepare_to_wait(&ch->msg_allocate_wq, &wait, TASK_INTERRUPTIBLE);
+	ret = schedule_timeout(1);
+	finish_wait(&ch->msg_allocate_wq, &wait);
 	atomic_dec(&ch->n_on_msg_allocate_wq);
 
 	if (ch->flags & XPC_C_DISCONNECTING) {

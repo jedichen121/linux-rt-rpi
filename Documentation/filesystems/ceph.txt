@@ -62,6 +62,18 @@ subdirectories, and a summation of all nested file sizes.  This makes
 the identification of large disk space consumers relatively quick, as
 no 'du' or similar recursive scan of the file system is required.
 
+Finally, Ceph also allows quotas to be set on any directory in the system.
+The quota can restrict the number of bytes or the number of files stored
+beneath that point in the directory hierarchy.  Quotas can be set using
+extended attributes 'ceph.quota.max_files' and 'ceph.quota.max_bytes', eg:
+
+ setfattr -n ceph.quota.max_bytes -v 100000000 /some/dir
+ getfattr -n ceph.quota.max_bytes /some/dir
+
+A limitation of the current quotas implementation is that it relies on the
+cooperation of the client mounting the file system to stop writers when a
+limit is reached.  A modified or adversarial client cannot be prevented
+from writing as much data as it needs.
 
 Mount Syntax
 ============
@@ -93,12 +105,13 @@ Mount Options
 	address its connection to the monitor originates from.
 
   wsize=X
-	Specify the maximum write size in bytes.  By default there is no
-	maximum.  Ceph will normally size writes based on the file stripe
-	size.
+	Specify the maximum write size in bytes.  Default: 16 MB.
 
   rsize=X
-	Specify the maximum readahead.
+	Specify the maximum read size in bytes.  Default: 16 MB.
+
+  rasize=X
+	Specify the maximum readahead size in bytes.  Default: 8 MB.
 
   mount_timeout=X
 	Specify the timeout value for mount (in seconds), in the case
@@ -119,12 +132,24 @@ Mount Options
 	must rely on TCP's error correction to detect data corruption
 	in the data payload.
 
-  noasyncreaddir
-	Disable client's use its local cache to satisfy	readdir
-	requests.  (This does not change correctness; the client uses
-	cached metadata only when a lease or capability ensures it is
-	valid.)
+  dcache
+        Use the dcache contents to perform negative lookups and
+        readdir when the client has the entire directory contents in
+        its cache.  (This does not change correctness; the client uses
+        cached metadata only when a lease or capability ensures it is
+        valid.)
 
+  nodcache
+        Do not use the dcache as above.  This avoids a significant amount of
+        complex code, sacrificing performance without affecting correctness,
+        and is useful for tracking down bugs.
+
+  noasyncreaddir
+	Do not use the dcache as above for readdir.
+
+  noquotadf
+        Report overall filesystem usage in statfs instead of using the root
+        directory quota.
 
 More Information
 ================

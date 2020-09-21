@@ -1,7 +1,7 @@
 /*
  * i2c-smbus.h - SMBus extensions to the I2C protocol
  *
- * Copyright (C) 2010 Jean Delvare <khali@linux-fr.org>
+ * Copyright (C) 2010 Jean Delvare <jdelvare@suse.de>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,13 +15,16 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
+ * MA 02110-1301 USA.
  */
 
 #ifndef _LINUX_I2C_SMBUS_H
 #define _LINUX_I2C_SMBUS_H
 
 #include <linux/i2c.h>
+#include <linux/spinlock.h>
+#include <linux/workqueue.h>
 
 
 /**
@@ -39,12 +42,20 @@
  * properly set.
  */
 struct i2c_smbus_alert_setup {
-	unsigned int		alert_edge_triggered:1;
 	int			irq;
 };
 
 struct i2c_client *i2c_setup_smbus_alert(struct i2c_adapter *adapter,
 					 struct i2c_smbus_alert_setup *setup);
 int i2c_handle_smbus_alert(struct i2c_client *ara);
+
+#if IS_ENABLED(CONFIG_I2C_SMBUS) && IS_ENABLED(CONFIG_OF)
+int of_i2c_setup_smbus_alert(struct i2c_adapter *adap);
+#else
+static inline int of_i2c_setup_smbus_alert(struct i2c_adapter *adap)
+{
+	return 0;
+}
+#endif
 
 #endif /* _LINUX_I2C_SMBUS_H */

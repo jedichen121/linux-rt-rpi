@@ -22,9 +22,9 @@
 #define WM8996_FLL_DACLRCLK1  3
 #define WM8996_FLL_BCLK1      4
 
-typedef void (*wm8996_polarity_fn)(struct snd_soc_codec *codec, int polarity);
+typedef void (*wm8996_polarity_fn)(struct snd_soc_component *component, int polarity);
 
-int wm8996_detect(struct snd_soc_codec *codec, struct snd_soc_jack *jack,
+int wm8996_detect(struct snd_soc_component *component, struct snd_soc_jack *jack,
 		  wm8996_polarity_fn polarity_cb);
 
 /*
@@ -1567,6 +1567,10 @@ int wm8996_detect(struct snd_soc_codec *codec, struct snd_soc_jack *jack,
 /*
  * R257 (0x101) - Control Interface (1)
  */
+#define WM8996_REG_SYNC                         0x8000  /* REG_SYNC */
+#define WM8996_REG_SYNC_MASK                    0x8000  /* REG_SYNC */
+#define WM8996_REG_SYNC_SHIFT                       15  /* REG_SYNC */
+#define WM8996_REG_SYNC_WIDTH                        1  /* REG_SYNC */
 #define WM8996_AUTO_INC                         0x0004  /* AUTO_INC */
 #define WM8996_AUTO_INC_MASK                    0x0004  /* AUTO_INC */
 #define WM8996_AUTO_INC_SHIFT                        2  /* AUTO_INC */

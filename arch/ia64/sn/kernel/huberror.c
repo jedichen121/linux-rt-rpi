@@ -50,7 +50,7 @@ static irqreturn_t hub_eint_handler(int irq, void *arg)
 			if ((int)ret_stuff.v0)
 				panic("%s: Fatal TIO Error", __func__);
 		} else
-			bte_error_handler((unsigned long)NODEPDA(nasid_to_cnodeid(nasid)));
+			bte_error_handler(NODEPDA(nasid_to_cnodeid(nasid)));
 
 	return IRQ_HANDLED;
 }
@@ -192,6 +192,7 @@ void hub_error_init(struct hubdev_info *hubdev_info)
 		    hubdev_info);
 		return;
 	}
+	irq_set_handler(SGI_II_ERROR, handle_level_irq);
 	sn_set_err_irq_affinity(SGI_II_ERROR);
 }
 
@@ -213,6 +214,7 @@ void ice_error_init(struct hubdev_info *hubdev_info)
                        hubdev_info);
 		return;
 	}
+	irq_set_handler(SGI_TIO_ERROR, handle_level_irq);
 	sn_set_err_irq_affinity(SGI_TIO_ERROR);
 }
 

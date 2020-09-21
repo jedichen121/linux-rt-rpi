@@ -70,7 +70,6 @@ static const char *version =
 #include <linux/bitops.h>
 #include <linux/jiffies.h>
 
-#include <asm/system.h>
 #include <asm/io.h>
 #include <asm/dma.h>
 
@@ -156,6 +155,7 @@ static int cops_irqlist[] = {
 };
 
 static struct timer_list cops_timer;
+static struct net_device *cops_timer_dev;
 
 /* use 0 for production, 1 for verification, 2 for debug, 3 for verbose debug */
 #ifndef COPS_DEBUG
@@ -188,7 +188,7 @@ static void cops_load (struct net_device *dev);
 static int  cops_nodeid (struct net_device *dev, int nodeid);
 
 static irqreturn_t cops_interrupt (int irq, void *dev_id);
-static void cops_poll (unsigned long ltdev);
+static void cops_poll(struct timer_list *t);
 static void cops_timeout(struct net_device *dev);
 static void cops_rx (struct net_device *dev);
 static netdev_tx_t  cops_send_packet (struct sk_buff *skb,
@@ -425,9 +425,8 @@ static int cops_open(struct net_device *dev)
 		 */
 		if(lp->board==TANGENT)	/* Poll 20 times per second */
 		{
-		    init_timer(&cops_timer);
-		    cops_timer.function = cops_poll;
-		    cops_timer.data 	= (unsigned long)dev;
+		    cops_timer_dev = dev;
+		    timer_setup(&cops_timer, cops_poll, 0);
 		    cops_timer.expires 	= jiffies + HZ/20;
 		    add_timer(&cops_timer);
 		} 
@@ -674,12 +673,11 @@ static int cops_nodeid (struct net_device *dev, int nodeid)
  *	Poll the Tangent type cards to see if we have work.
  */
  
-static void cops_poll(unsigned long ltdev)
+static void cops_poll(struct timer_list *unused)
 {
 	int ioaddr, status;
 	int boguscount = 0;
-
-	struct net_device *dev = (struct net_device *)ltdev;
+	struct net_device *dev = cops_timer_dev;
 
 	del_timer(&cops_timer);
 
@@ -862,7 +860,7 @@ static void cops_timeout(struct net_device *dev)
 	}
 	printk(KERN_WARNING "%s: Transmit timed out.\n", dev->name);
 	cops_jumpstart(dev);	/* Restart the card. */
-	dev->trans_start = jiffies; /* prevent tx timeout */
+	netif_trans_update(dev); /* prevent tx timeout */
 	netif_wake_queue(dev);
 }
 
@@ -937,7 +935,7 @@ static int cops_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 {
         struct cops_local *lp = netdev_priv(dev);
         struct sockaddr_at *sa = (struct sockaddr_at *)&ifr->ifr_addr;
-        struct atalk_addr *aa = (struct atalk_addr *)&lp->node_addr;
+        struct atalk_addr *aa = &lp->node_addr;
 
         switch(cmd)
         {
@@ -987,9 +985,9 @@ static int cops_close(struct net_device *dev)
 static struct net_device *cops_dev;
 
 MODULE_LICENSE("GPL");
-module_param(io, int, 0);
-module_param(irq, int, 0);
-module_param(board_type, int, 0);
+module_param_hw(io, int, ioport, 0);
+module_param_hw(irq, int, irq, 0);
+module_param_hw(board_type, int, other, 0);
 
 static int __init cops_module_init(void)
 {
@@ -997,9 +995,7 @@ static int __init cops_module_init(void)
 		printk(KERN_WARNING "%s: You shouldn't autoprobe with insmod\n",
 			cardname);
 	cops_dev = cops_probe(-1);
-	if (IS_ERR(cops_dev))
-		return PTR_ERR(cops_dev);
-        return 0;
+	return PTR_ERR_OR_ZERO(cops_dev);
 }
 
 static void __exit cops_module_exit(void)

@@ -1,30 +1,5 @@
-/*******************************************************************************
-
-  Intel PRO/10GbE Linux driver
-  Copyright(c) 1999 - 2008 Intel Corporation.
-
-  This program is free software; you can redistribute it and/or modify it
-  under the terms and conditions of the GNU General Public License,
-  version 2, as published by the Free Software Foundation.
-
-  This program is distributed in the hope it will be useful, but WITHOUT
-  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
-  more details.
-
-  You should have received a copy of the GNU General Public License along with
-  this program; if not, write to the Free Software Foundation, Inc.,
-  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
-
-  The full GNU General Public License is included in this distribution in
-  the file called "COPYING".
-
-  Contact Information:
-  Linux NICS <linux.nics@intel.com>
-  e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
-  Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
-
-*******************************************************************************/
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright(c) 1999 - 2008 Intel Corporation. */
 
 /* ixgb_hw.c
  * Shared functions for accessing and configuring the adapter
@@ -32,6 +7,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/pci_ids.h>
 #include "ixgb_hw.h"
 #include "ixgb_ids.h"
 
@@ -96,7 +72,7 @@ static u32 ixgb_mac_reset(struct ixgb_hw *hw)
 	ASSERT(!(ctrl_reg & IXGB_CTRL0_RST));
 #endif
 
-	if (hw->subsystem_vendor_id == SUN_SUBVENDOR_ID) {
+	if (hw->subsystem_vendor_id == PCI_VENDOR_ID_SUN) {
 		ctrl_reg =  /* Enable interrupt from XFP and SerDes */
 			   IXGB_CTRL1_GPI0_EN |
 			   IXGB_CTRL1_SDP6_DIR |
@@ -271,7 +247,7 @@ ixgb_identify_phy(struct ixgb_hw *hw)
 	}
 
 	/* update phy type for sun specific board */
-	if (hw->subsystem_vendor_id == SUN_SUBVENDOR_ID)
+	if (hw->subsystem_vendor_id == PCI_VENDOR_ID_SUN)
 		phy_type = ixgb_phy_type_bcm;
 
 	return phy_type;

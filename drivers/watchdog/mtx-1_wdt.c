@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  *      Driver for the MTX-1 Watchdog.
  *
@@ -6,16 +7,6 @@
  *                              http://www.4g-systems.biz
  *
  *	(C) Copyright 2007 OpenWrt.org, Florian Fainelli <florian@openwrt.org>
- *
- *      This program is free software; you can redistribute it and/or
- *      modify it under the terms of the GNU General Public License
- *      as published by the Free Software Foundation; either version
- *      2 of the License, or (at your option) any later version.
- *
- *      Neither Michael Stickel nor 4G Systems admit liability nor provide
- *      warranty for any of this software. This material is provided
- *      "AS-IS" and at no charge.
- *
  *      (c) Copyright 2005    4G Systems <info@4g-systems.biz>
  *
  *      Release 0.01.
@@ -40,7 +31,6 @@
 #include <linux/errno.h>
 #include <linux/miscdevice.h>
 #include <linux/fs.h>
-#include <linux/init.h>
 #include <linux/ioport.h>
 #include <linux/timer.h>
 #include <linux/completion.h>
@@ -69,7 +59,7 @@ static struct {
 	unsigned int gstate;
 } mtx1_wdt_device;
 
-static void mtx1_wdt_trigger(unsigned long unused)
+static void mtx1_wdt_trigger(struct timer_list *unused)
 {
 	spin_lock(&mtx1_wdt_device.lock);
 	if (mtx1_wdt_device.running)
@@ -204,12 +194,12 @@ static struct miscdevice mtx1_wdt_misc = {
 };
 
 
-static int __devinit mtx1_wdt_probe(struct platform_device *pdev)
+static int mtx1_wdt_probe(struct platform_device *pdev)
 {
 	int ret;
 
 	mtx1_wdt_device.gpio = pdev->resource[0].start;
-	ret = gpio_request_one(mtx1_wdt_device.gpio,
+	ret = devm_gpio_request_one(&pdev->dev, mtx1_wdt_device.gpio,
 				GPIOF_OUT_INIT_HIGH, "mtx1-wdt");
 	if (ret < 0) {
 		dev_err(&pdev->dev, "failed to request gpio");
@@ -220,7 +210,7 @@ static int __devinit mtx1_wdt_probe(struct platform_device *pdev)
 	init_completion(&mtx1_wdt_device.stop);
 	mtx1_wdt_device.queue = 0;
 	clear_bit(0, &mtx1_wdt_device.inuse);
-	setup_timer(&mtx1_wdt_device.timer, mtx1_wdt_trigger, 0L);
+	timer_setup(&mtx1_wdt_device.timer, mtx1_wdt_trigger, 0);
 	mtx1_wdt_device.default_ticks = ticks;
 
 	ret = misc_register(&mtx1_wdt_misc);
@@ -233,7 +223,7 @@ static int __devinit mtx1_wdt_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int __devexit mtx1_wdt_remove(struct platform_device *pdev)
+static int mtx1_wdt_remove(struct platform_device *pdev)
 {
 	/* FIXME: do we need to lock this test ? */
 	if (mtx1_wdt_device.queue) {
@@ -241,33 +231,20 @@ static int __devexit mtx1_wdt_remove(struct platform_device *pdev)
 		wait_for_completion(&mtx1_wdt_device.stop);
 	}
 
-	gpio_free(mtx1_wdt_device.gpio);
 	misc_deregister(&mtx1_wdt_misc);
 	return 0;
 }
 
 static struct platform_driver mtx1_wdt_driver = {
 	.probe = mtx1_wdt_probe,
-	.remove = __devexit_p(mtx1_wdt_remove),
+	.remove = mtx1_wdt_remove,
 	.driver.name = "mtx1-wdt",
 	.driver.owner = THIS_MODULE,
 };
 
-static int __init mtx1_wdt_init(void)
-{
-	return platform_driver_register(&mtx1_wdt_driver);
-}
-
-static void __exit mtx1_wdt_exit(void)
-{
-	platform_driver_unregister(&mtx1_wdt_driver);
-}
-
-module_init(mtx1_wdt_init);
-module_exit(mtx1_wdt_exit);
+module_platform_driver(mtx1_wdt_driver);
 
 MODULE_AUTHOR("Michael Stickel, Florian Fainelli");
 MODULE_DESCRIPTION("Driver for the MTX-1 watchdog");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS_MISCDEV(WATCHDOG_MINOR);
 MODULE_ALIAS("platform:mtx1-wdt");
