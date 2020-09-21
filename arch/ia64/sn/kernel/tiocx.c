@@ -14,7 +14,8 @@
 #include <linux/capability.h>
 #include <linux/device.h>
 #include <linux/delay.h>
-#include <linux/uaccess.h>
+#include <asm/system.h>
+#include <asm/uaccess.h>
 #include <asm/sn/sn_sal.h>
 #include <asm/sn/addrs.h>
 #include <asm/sn/io.h>
@@ -190,7 +191,6 @@ cx_device_register(nasid_t nasid, int part_num, int mfg_num,
 		   struct hubdev_info *hubdev, int bt)
 {
 	struct cx_dev *cx_dev;
-	int r;
 
 	cx_dev = kzalloc(sizeof(struct cx_dev), GFP_KERNEL);
 	DBG("cx_dev= 0x%p\n", cx_dev);
@@ -207,11 +207,7 @@ cx_device_register(nasid_t nasid, int part_num, int mfg_num,
 	cx_dev->dev.bus = &tiocx_bus_type;
 	cx_dev->dev.release = tiocx_bus_release;
 	dev_set_name(&cx_dev->dev, "%d", cx_dev->cx_id.nasid);
-	r = device_register(&cx_dev->dev);
-	if (r) {
-		kfree(cx_dev);
-		return r;
-	}
+	device_register(&cx_dev->dev);
 	get_device(&cx_dev->dev);
 
 	device_create_file(&cx_dev->dev, &dev_attr_cxdev_control);
@@ -490,14 +486,11 @@ static int __init tiocx_init(void)
 {
 	cnodeid_t cnodeid;
 	int found_tiocx_device = 0;
-	int err;
 
 	if (!ia64_platform_is("sn2"))
 		return 0;
 
-	err = bus_register(&tiocx_bus_type);
-	if (err)
-		return err;
+	bus_register(&tiocx_bus_type);
 
 	for (cnodeid = 0; cnodeid < num_cnodes; cnodeid++) {
 		nasid_t nasid;

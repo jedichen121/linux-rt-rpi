@@ -1,7 +1,7 @@
 /*
  * vDSO implementation for Hexagon
  *
- * Copyright (c) 2011, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -21,7 +21,6 @@
 #include <linux/err.h>
 #include <linux/mm.h>
 #include <linux/vmalloc.h>
-#include <linux/binfmts.h>
 
 #include <asm/vdso.h>
 
@@ -65,8 +64,7 @@ int arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp)
 	unsigned long vdso_base;
 	struct mm_struct *mm = current->mm;
 
-	if (down_write_killable(&mm->mmap_sem))
-		return -EINTR;
+	down_write(&mm->mmap_sem);
 
 	/* Try to get it loaded right near ld.so/glibc. */
 	vdso_base = STACK_TOP;
@@ -80,7 +78,8 @@ int arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp)
 	/* MAYWRITE to allow gdb to COW and set breakpoints. */
 	ret = install_special_mapping(mm, vdso_base, PAGE_SIZE,
 				      VM_READ|VM_EXEC|
-				      VM_MAYREAD|VM_MAYWRITE|VM_MAYEXEC,
+				      VM_MAYREAD|VM_MAYWRITE|VM_MAYEXEC|
+				      VM_ALWAYSDUMP,
 				      &vdso_page);
 
 	if (ret)

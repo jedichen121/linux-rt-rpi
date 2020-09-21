@@ -213,6 +213,8 @@ static void rmd128_transform(u32 *state, const __le32 *in)
 	state[2] = state[3] + aa + bbb;
 	state[3] = state[0] + bb + ccc;
 	state[0] = ddd;
+
+	return;
 }
 
 static int rmd128_init(struct shash_desc *desc)
@@ -303,6 +305,7 @@ static struct shash_alg alg = {
 	.descsize	=	sizeof(struct rmd128_ctx),
 	.base		=	{
 		.cra_name	 =	"rmd128",
+		.cra_flags	 =	CRYPTO_ALG_TYPE_SHASH,
 		.cra_blocksize	 =	RMD128_BLOCK_SIZE,
 		.cra_module	 =	THIS_MODULE,
 	}
@@ -324,4 +327,3 @@ module_exit(rmd128_mod_fini);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Adrian-Ken Rueegsegger <ken@codelabs.ch>");
 MODULE_DESCRIPTION("RIPEMD-128 Message Digest");
-MODULE_ALIAS_CRYPTO("rmd128");

@@ -1,9 +1,8 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_TLB_H
 #define __ASM_SH_TLB_H
 
 #ifdef CONFIG_SUPERH64
-# include <asm/tlb_64.h>
+# include "tlb_64.h"
 #endif
 
 #ifndef __ASSEMBLY__
@@ -37,22 +36,18 @@ static inline void init_tlb_gather(struct mmu_gather *tlb)
 }
 
 static inline void
-arch_tlb_gather_mmu(struct mmu_gather *tlb, struct mm_struct *mm,
-		unsigned long start, unsigned long end)
+tlb_gather_mmu(struct mmu_gather *tlb, struct mm_struct *mm, unsigned int full_mm_flush)
 {
 	tlb->mm = mm;
-	tlb->start = start;
-	tlb->end = end;
-	tlb->fullmm = !(start | (end+1));
+	tlb->fullmm = full_mm_flush;
 
 	init_tlb_gather(tlb);
 }
 
 static inline void
-arch_tlb_finish_mmu(struct mmu_gather *tlb,
-		unsigned long start, unsigned long end, bool force)
+tlb_finish_mmu(struct mmu_gather *tlb, unsigned long start, unsigned long end)
 {
-	if (tlb->fullmm || force)
+	if (tlb->fullmm)
 		flush_tlb_mm(tlb->mm);
 
 	/* keep the page table cache within bounds */
@@ -67,9 +62,6 @@ tlb_remove_tlb_entry(struct mmu_gather *tlb, pte_t *ptep, unsigned long address)
 	if (tlb->end < address + PAGE_SIZE)
 		tlb->end = address + PAGE_SIZE;
 }
-
-#define tlb_remove_huge_tlb_entry(h, tlb, ptep, address)	\
-	tlb_remove_tlb_entry(tlb, ptep, address)
 
 /*
  * In the case of tlb vma handling, we can optimise these away in the
@@ -92,14 +84,6 @@ tlb_end_vma(struct mmu_gather *tlb, struct vm_area_struct *vma)
 	}
 }
 
-static inline void tlb_flush_mmu_tlbonly(struct mmu_gather *tlb)
-{
-}
-
-static inline void tlb_flush_mmu_free(struct mmu_gather *tlb)
-{
-}
-
 static inline void tlb_flush_mmu(struct mmu_gather *tlb)
 {
 }
@@ -107,30 +91,12 @@ static inline void tlb_flush_mmu(struct mmu_gather *tlb)
 static inline int __tlb_remove_page(struct mmu_gather *tlb, struct page *page)
 {
 	free_page_and_swap_cache(page);
-	return false; /* avoid calling tlb_flush_mmu */
+	return 1; /* avoid calling tlb_flush_mmu */
 }
 
 static inline void tlb_remove_page(struct mmu_gather *tlb, struct page *page)
 {
 	__tlb_remove_page(tlb, page);
-}
-
-static inline bool __tlb_remove_page_size(struct mmu_gather *tlb,
-					  struct page *page, int page_size)
-{
-	return __tlb_remove_page(tlb, page);
-}
-
-static inline void tlb_remove_page_size(struct mmu_gather *tlb,
-					struct page *page, int page_size)
-{
-	return tlb_remove_page(tlb, page);
-}
-
-#define tlb_remove_check_page_size_change tlb_remove_check_page_size_change
-static inline void tlb_remove_check_page_size_change(struct mmu_gather *tlb,
-						     unsigned int page_size)
-{
 }
 
 #define pte_free_tlb(tlb, ptep, addr)	pte_free((tlb)->mm, ptep)

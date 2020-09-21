@@ -25,8 +25,6 @@
 #include <linux/module.h>
 #include <linux/mISDNif.h>
 #include <linux/mutex.h>
-#include <linux/sched/signal.h>
-
 #include "core.h"
 
 static DEFINE_MUTEX(mISDN_mutex);
@@ -66,6 +64,7 @@ mISDN_open(struct inode *ino, struct file *filep)
 	dev->work = 0;
 	init_waitqueue_head(&dev->wait);
 	filep->private_data = dev;
+	__module_get(THIS_MODULE);
 	return nonseekable_open(ino, filep);
 }
 
@@ -73,28 +72,19 @@ static int
 mISDN_close(struct inode *ino, struct file *filep)
 {
 	struct mISDNtimerdev	*dev = filep->private_data;
-	struct list_head	*list = &dev->pending;
 	struct mISDNtimer	*timer, *next;
 
 	if (*debug & DEBUG_TIMER)
 		printk(KERN_DEBUG "%s(%p,%p)\n", __func__, ino, filep);
-
-	spin_lock_irq(&dev->lock);
-	while (!list_empty(list)) {
-		timer = list_first_entry(list, struct mISDNtimer, list);
-		spin_unlock_irq(&dev->lock);
-		del_timer_sync(&timer->tl);
-		spin_lock_irq(&dev->lock);
-		/* it might have been moved to ->expired */
-		list_del(&timer->list);
+	list_for_each_entry_safe(timer, next, &dev->pending, list) {
+		del_timer(&timer->tl);
 		kfree(timer);
 	}
-	spin_unlock_irq(&dev->lock);
-
 	list_for_each_entry_safe(timer, next, &dev->expired, list) {
 		kfree(timer);
 	}
 	kfree(dev);
+	module_put(THIS_MODULE);
 	return 0;
 }
 
@@ -102,50 +92,45 @@ static ssize_t
 mISDN_read(struct file *filep, char __user *buf, size_t count, loff_t *off)
 {
 	struct mISDNtimerdev	*dev = filep->private_data;
-	struct list_head *list = &dev->expired;
 	struct mISDNtimer	*timer;
+	u_long	flags;
 	int	ret = 0;
 
 	if (*debug & DEBUG_TIMER)
 		printk(KERN_DEBUG "%s(%p, %p, %d, %p)\n", __func__,
-		       filep, buf, (int)count, off);
+			filep, buf, (int)count, off);
 
-	if (count < sizeof(int))
-		return -ENOSPC;
-
-	spin_lock_irq(&dev->lock);
-	while (list_empty(list) && (dev->work == 0)) {
-		spin_unlock_irq(&dev->lock);
+	if (list_empty(&dev->expired) && (dev->work == 0)) {
 		if (filep->f_flags & O_NONBLOCK)
 			return -EAGAIN;
 		wait_event_interruptible(dev->wait, (dev->work ||
-						     !list_empty(list)));
+		    !list_empty(&dev->expired)));
 		if (signal_pending(current))
 			return -ERESTARTSYS;
-		spin_lock_irq(&dev->lock);
 	}
+	if (count < sizeof(int))
+		return -ENOSPC;
 	if (dev->work)
 		dev->work = 0;
-	if (!list_empty(list)) {
-		timer = list_first_entry(list, struct mISDNtimer, list);
+	if (!list_empty(&dev->expired)) {
+		spin_lock_irqsave(&dev->lock, flags);
+		timer = (struct mISDNtimer *)dev->expired.next;
 		list_del(&timer->list);
-		spin_unlock_irq(&dev->lock);
+		spin_unlock_irqrestore(&dev->lock, flags);
 		if (put_user(timer->id, (int __user *)buf))
 			ret = -EFAULT;
 		else
 			ret = sizeof(int);
 		kfree(timer);
-	} else {
-		spin_unlock_irq(&dev->lock);
 	}
 	return ret;
 }
 
-static __poll_t
+static unsigned int
 mISDN_poll(struct file *filep, poll_table *wait)
 {
 	struct mISDNtimerdev	*dev = filep->private_data;
-	__poll_t		mask = EPOLLERR;
+	unsigned int		mask = POLLERR;
 
 	if (*debug & DEBUG_TIMER)
 		printk(KERN_DEBUG "%s(%p, %p)\n", __func__, filep, wait);
@@ -153,31 +138,31 @@ mISDN_poll(struct file *filep, poll_table *wait)
 		poll_wait(filep, &dev->wait, wait);
 		mask = 0;
 		if (dev->work || !list_empty(&dev->expired))
-			mask |= (EPOLLIN | EPOLLRDNORM);
+			mask |= (POLLIN | POLLRDNORM);
 		if (*debug & DEBUG_TIMER)
 			printk(KERN_DEBUG "%s work(%d) empty(%d)\n", __func__,
-			       dev->work, list_empty(&dev->expired));
+				dev->work, list_empty(&dev->expired));
 	}
 	return mask;
 }
 
 static void
-dev_expire_timer(struct timer_list *t)
+dev_expire_timer(unsigned long data)
 {
-	struct mISDNtimer *timer = from_timer(timer, t, tl);
+	struct mISDNtimer *timer = (void *)data;
 	u_long			flags;
 
 	spin_lock_irqsave(&timer->dev->lock, flags);
-	if (timer->id >= 0)
-		list_move_tail(&timer->list, &timer->dev->expired);
-	wake_up_interruptible(&timer->dev->wait);
+	list_move_tail(&timer->list, &timer->dev->expired);
 	spin_unlock_irqrestore(&timer->dev->lock, flags);
+	wake_up_interruptible(&timer->dev->wait);
 }
 
 static int
 misdn_add_timer(struct mISDNtimerdev *dev, int timeout)
 {
-	int			id;
+	int 			id;
+	u_long			flags;
 	struct mISDNtimer	*timer;
 
 	if (!timeout) {
@@ -188,16 +173,19 @@ misdn_add_timer(struct mISDNtimerdev *dev, int timeout)
 		timer = kzalloc(sizeof(struct mISDNtimer), GFP_KERNEL);
 		if (!timer)
 			return -ENOMEM;
-		timer->dev = dev;
-		timer_setup(&timer->tl, dev_expire_timer, 0);
-		spin_lock_irq(&dev->lock);
-		id = timer->id = dev->next_id++;
+		spin_lock_irqsave(&dev->lock, flags);
+		timer->id = dev->next_id++;
 		if (dev->next_id < 0)
 			dev->next_id = 1;
 		list_add_tail(&timer->list, &dev->pending);
+		spin_unlock_irqrestore(&dev->lock, flags);
+		timer->dev = dev;
+		timer->tl.data = (long)timer;
+		timer->tl.function = dev_expire_timer;
+		init_timer(&timer->tl);
 		timer->tl.expires = jiffies + ((HZ * (u_long)timeout) / 1000);
 		add_timer(&timer->tl);
-		spin_unlock_irq(&dev->lock);
+		id = timer->id;
 	}
 	return id;
 }
@@ -205,21 +193,26 @@ misdn_add_timer(struct mISDNtimerdev *dev, int timeout)
 static int
 misdn_del_timer(struct mISDNtimerdev *dev, int id)
 {
+	u_long			flags;
 	struct mISDNtimer	*timer;
+	int			ret = 0;
 
-	spin_lock_irq(&dev->lock);
+	spin_lock_irqsave(&dev->lock, flags);
 	list_for_each_entry(timer, &dev->pending, list) {
 		if (timer->id == id) {
 			list_del_init(&timer->list);
-			timer->id = -1;
-			spin_unlock_irq(&dev->lock);
-			del_timer_sync(&timer->tl);
+			/* RED-PEN AK: race -- timer can be still running on
+			 * other CPU. Needs reference count I think
+			 */
+			del_timer(&timer->tl);
+			ret = timer->id;
 			kfree(timer);
-			return id;
+			goto unlock;
 		}
 	}
-	spin_unlock_irq(&dev->lock);
-	return 0;
+unlock:
+	spin_unlock_irqrestore(&dev->lock, flags);
+	return ret;
 }
 
 static long
@@ -231,7 +224,7 @@ mISDN_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 
 	if (*debug & DEBUG_TIMER)
 		printk(KERN_DEBUG "%s(%p, %x, %lx)\n", __func__,
-		       filep, cmd, arg);
+		    filep, cmd, arg);
 	mutex_lock(&mISDN_mutex);
 	switch (cmd) {
 	case IMADDTIMER:
@@ -242,7 +235,7 @@ mISDN_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 		id = misdn_add_timer(dev, tout);
 		if (*debug & DEBUG_TIMER)
 			printk(KERN_DEBUG "%s add %d id %d\n", __func__,
-			       tout, id);
+			    tout, id);
 		if (id < 0) {
 			ret = id;
 			break;
@@ -269,7 +262,6 @@ mISDN_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 }
 
 static const struct file_operations mISDN_fops = {
-	.owner		= THIS_MODULE,
 	.read		= mISDN_read,
 	.poll		= mISDN_poll,
 	.unlocked_ioctl	= mISDN_ioctl,

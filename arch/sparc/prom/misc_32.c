@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * misc.c:  Miscellaneous prom functions that don't belong
  *          anywhere else.
@@ -14,6 +13,7 @@
 #include <asm/openprom.h>
 #include <asm/oplib.h>
 #include <asm/auxio.h>
+#include <asm/system.h>
 
 extern void restore_current(void);
 

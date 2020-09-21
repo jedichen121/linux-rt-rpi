@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _S3C_ADC_BATTERY_H
 #define _S3C_ADC_BATTERY_H
 
@@ -25,10 +24,6 @@ struct s3c_adc_bat_pdata {
 	const unsigned int volt_channel;
 	const unsigned int current_channel;
 	const unsigned int backup_volt_channel;
-
-	const unsigned int volt_samples;
-	const unsigned int current_samples;
-	const unsigned int backup_volt_samples;
 
 	const unsigned int volt_mult;
 	const unsigned int current_mult;

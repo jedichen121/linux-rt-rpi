@@ -22,29 +22,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <errno.h>
 
 #include "../perf.h"
-#include "debug.h"
 #include "util.h"
 #include "trace-event.h"
 
 struct scripting_context *scripting_context;
-
-static int flush_script_unsupported(void)
-{
-	return 0;
-}
 
 static int stop_script_unsupported(void)
 {
 	return 0;
 }
 
-static void process_event_unsupported(union perf_event *event __maybe_unused,
-				      struct perf_sample *sample __maybe_unused,
-				      struct perf_evsel *evsel __maybe_unused,
-				      struct addr_location *al __maybe_unused)
+static void process_event_unsupported(union perf_event *event __unused,
+				      struct perf_sample *sample __unused,
+				      struct perf_evsel *evsel __unused,
+				      struct machine *machine __unused,
+				      struct thread *thread __unused)
 {
 }
 
@@ -57,19 +53,16 @@ static void print_python_unsupported_msg(void)
 		"\n  etc.\n");
 }
 
-static int python_start_script_unsupported(const char *script __maybe_unused,
-					   int argc __maybe_unused,
-					   const char **argv __maybe_unused)
+static int python_start_script_unsupported(const char *script __unused,
+					   int argc __unused,
+					   const char **argv __unused)
 {
 	print_python_unsupported_msg();
 
 	return -1;
 }
 
-static int python_generate_script_unsupported(struct tep_handle *pevent
-					      __maybe_unused,
-					      const char *outfile
-					      __maybe_unused)
+static int python_generate_script_unsupported(const char *outfile __unused)
 {
 	print_python_unsupported_msg();
 
@@ -79,7 +72,6 @@ static int python_generate_script_unsupported(struct tep_handle *pevent
 struct scripting_ops python_scripting_unsupported_ops = {
 	.name = "Python",
 	.start_script = python_start_script_unsupported,
-	.flush_script = flush_script_unsupported,
 	.stop_script = stop_script_unsupported,
 	.process_event = process_event_unsupported,
 	.generate_script = python_generate_script_unsupported,
@@ -87,18 +79,19 @@ struct scripting_ops python_scripting_unsupported_ops = {
 
 static void register_python_scripting(struct scripting_ops *scripting_ops)
 {
-	if (scripting_context == NULL)
-		scripting_context = malloc(sizeof(*scripting_context));
+	int err;
+	err = script_spec_register("Python", scripting_ops);
+	if (err)
+		die("error registering Python script extension");
 
-       if (scripting_context == NULL ||
-	   script_spec_register("Python", scripting_ops) ||
-	   script_spec_register("py", scripting_ops)) {
-		pr_err("Error registering Python script extension: disabling it\n");
-		zfree(&scripting_context);
-	}
+	err = script_spec_register("py", scripting_ops);
+	if (err)
+		die("error registering py script extension");
+
+	scripting_context = malloc(sizeof(struct scripting_context));
 }
 
-#ifndef HAVE_LIBPYTHON_SUPPORT
+#ifdef NO_LIBPYTHON
 void setup_python_scripting(void)
 {
 	register_python_scripting(&python_scripting_unsupported_ops);
@@ -121,18 +114,16 @@ static void print_perl_unsupported_msg(void)
 		"\n  etc.\n");
 }
 
-static int perl_start_script_unsupported(const char *script __maybe_unused,
-					 int argc __maybe_unused,
-					 const char **argv __maybe_unused)
+static int perl_start_script_unsupported(const char *script __unused,
+					 int argc __unused,
+					 const char **argv __unused)
 {
 	print_perl_unsupported_msg();
 
 	return -1;
 }
 
-static int perl_generate_script_unsupported(struct tep_handle *pevent
-					    __maybe_unused,
-					    const char *outfile __maybe_unused)
+static int perl_generate_script_unsupported(const char *outfile __unused)
 {
 	print_perl_unsupported_msg();
 
@@ -142,7 +133,6 @@ static int perl_generate_script_unsupported(struct tep_handle *pevent
 struct scripting_ops perl_scripting_unsupported_ops = {
 	.name = "Perl",
 	.start_script = perl_start_script_unsupported,
-	.flush_script = flush_script_unsupported,
 	.stop_script = stop_script_unsupported,
 	.process_event = process_event_unsupported,
 	.generate_script = perl_generate_script_unsupported,
@@ -150,18 +140,19 @@ struct scripting_ops perl_scripting_unsupported_ops = {
 
 static void register_perl_scripting(struct scripting_ops *scripting_ops)
 {
-	if (scripting_context == NULL)
-		scripting_context = malloc(sizeof(*scripting_context));
+	int err;
+	err = script_spec_register("Perl", scripting_ops);
+	if (err)
+		die("error registering Perl script extension");
 
-       if (scripting_context == NULL ||
-	   script_spec_register("Perl", scripting_ops) ||
-	   script_spec_register("pl", scripting_ops)) {
-		pr_err("Error registering Perl script extension: disabling it\n");
-		zfree(&scripting_context);
-	}
+	err = script_spec_register("pl", scripting_ops);
+	if (err)
+		die("error registering pl script extension");
+
+	scripting_context = malloc(sizeof(struct scripting_context));
 }
 
-#ifndef HAVE_LIBPERL_SUPPORT
+#ifdef NO_LIBPERL
 void setup_perl_scripting(void)
 {
 	register_perl_scripting(&perl_scripting_unsupported_ops);

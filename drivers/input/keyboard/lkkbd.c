@@ -65,6 +65,7 @@
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/interrupt.h>
+#include <linux/init.h>
 #include <linux/input.h>
 #include <linux/serio.h>
 #include <linux/workqueue.h>
@@ -707,7 +708,7 @@ static void lkkbd_disconnect(struct serio *serio)
 	kfree(lk);
 }
 
-static const struct serio_device_id lkkbd_serio_ids[] = {
+static struct serio_device_id lkkbd_serio_ids[] = {
 	{
 		.type	= SERIO_RS232,
 		.proto	= SERIO_LKKBD,
@@ -730,4 +731,19 @@ static struct serio_driver lkkbd_drv = {
 	.interrupt	= lkkbd_interrupt,
 };
 
-module_serio_driver(lkkbd_drv);
+/*
+ * The functions for insering/removing us as a module.
+ */
+static int __init lkkbd_init(void)
+{
+	return serio_register_driver(&lkkbd_drv);
+}
+
+static void __exit lkkbd_exit(void)
+{
+	serio_unregister_driver(&lkkbd_drv);
+}
+
+module_init(lkkbd_init);
+module_exit(lkkbd_exit);
+

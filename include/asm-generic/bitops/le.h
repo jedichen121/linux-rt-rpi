@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_GENERIC_BITOPS_LE_H_
 #define _ASM_GENERIC_BITOPS_LE_H_
 
@@ -53,16 +52,6 @@ extern unsigned long find_next_bit_le(const void *addr,
 static inline int test_bit_le(int nr, const void *addr)
 {
 	return test_bit(nr ^ BITOP_LE_SWIZZLE, addr);
-}
-
-static inline void set_bit_le(int nr, void *addr)
-{
-	set_bit(nr ^ BITOP_LE_SWIZZLE, addr);
-}
-
-static inline void clear_bit_le(int nr, void *addr)
-{
-	clear_bit(nr ^ BITOP_LE_SWIZZLE, addr);
 }
 
 static inline void __set_bit_le(int nr, void *addr)

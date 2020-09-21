@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Atmel AT93C46 serial eeprom driver
  *
@@ -8,6 +7,8 @@
 #include <linux/kernel.h>
 #include <linux/delay.h>
 #include <asm/lasat/lasat.h>
+#include <linux/module.h>
+#include <linux/init.h>
 
 #include "at93c.h"
 

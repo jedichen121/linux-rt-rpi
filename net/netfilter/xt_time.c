@@ -9,9 +9,6 @@
  *	This file is distributed under the terms of the GNU General Public
  *	License (GPL). Copies of the GPL can be obtained from gnu.org/gpl.
  */
-
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/skbuff.h>
@@ -45,7 +42,6 @@ static const u_int16_t days_since_leapyear[] = {
  */
 enum {
 	DSE_FIRST = 2039,
-	SECONDS_PER_DAY = 86400,
 };
 static const u_int16_t days_since_epoch[] = {
 	/* 2039 - 2030 */
@@ -82,7 +78,7 @@ static inline unsigned int localtime_1(struct xtm *r, time_t time)
 	unsigned int v, w;
 
 	/* Each day has 86400s, so finding the hour/minute is actually easy. */
-	v         = time % SECONDS_PER_DAY;
+	v         = time % 86400;
 	r->second = v % 60;
 	w         = v / 60;
 	r->minute = w % 60;
@@ -171,7 +167,7 @@ time_mt(const struct sk_buff *skb, struct xt_action_param *par)
 	 * may happen that the same packet matches both rules if
 	 * it arrived at the right moment before 13:00.
 	 */
-	if (skb->tstamp == 0)
+	if (skb->tstamp.tv64 == 0)
 		__net_timestamp((struct sk_buff *)skb);
 
 	stamp = ktime_to_ns(skb->tstamp);
@@ -203,18 +199,6 @@ time_mt(const struct sk_buff *skb, struct xt_action_param *par)
 		if (packet_time < info->daytime_start &&
 		    packet_time > info->daytime_stop)
 			return false;
-
-		/** if user asked to ignore 'next day', then e.g.
-		 *  '1 PM Wed, August 1st' should be treated
-		 *  like 'Tue 1 PM July 31st'.
-		 *
-		 * This also causes
-		 * 'Monday, "23:00 to 01:00", to match for 2 hours, starting
-		 * Monday 23:00 to Tuesday 01:00.
-		 */
-		if ((info->flags & XT_TIME_CONTIGUOUS) &&
-		     packet_time <= info->daytime_stop)
-			stamp -= SECONDS_PER_DAY;
 	}
 
 	localtime_2(&current_time, stamp);
@@ -238,19 +222,10 @@ static int time_mt_check(const struct xt_mtchk_param *par)
 
 	if (info->daytime_start > XT_TIME_MAX_DAYTIME ||
 	    info->daytime_stop > XT_TIME_MAX_DAYTIME) {
-		pr_info_ratelimited("invalid argument - start or stop time greater than 23:59:59\n");
+		pr_info("invalid argument - start or "
+			"stop time greater than 23:59:59\n");
 		return -EDOM;
 	}
-
-	if (info->flags & ~XT_TIME_ALL_FLAGS) {
-		pr_info_ratelimited("unknown flags 0x%x\n",
-				    info->flags & ~XT_TIME_ALL_FLAGS);
-		return -EINVAL;
-	}
-
-	if ((info->flags & XT_TIME_CONTIGUOUS) &&
-	     info->daytime_start < info->daytime_stop)
-		return -EINVAL;
 
 	return 0;
 }
@@ -269,11 +244,13 @@ static int __init time_mt_init(void)
 	int minutes = sys_tz.tz_minuteswest;
 
 	if (minutes < 0) /* east of Greenwich */
-		pr_info("kernel timezone is +%02d%02d\n",
-			-minutes / 60, -minutes % 60);
+		printk(KERN_INFO KBUILD_MODNAME
+		       ": kernel timezone is +%02d%02d\n",
+		       -minutes / 60, -minutes % 60);
 	else /* west of Greenwich */
-		pr_info("kernel timezone is -%02d%02d\n",
-			minutes / 60, minutes % 60);
+		printk(KERN_INFO KBUILD_MODNAME
+		       ": kernel timezone is -%02d%02d\n",
+		       minutes / 60, minutes % 60);
 
 	return xt_register_match(&xt_time_mt_reg);
 }

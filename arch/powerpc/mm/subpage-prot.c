@@ -13,10 +13,10 @@
 #include <linux/types.h>
 #include <linux/mm.h>
 #include <linux/hugetlb.h>
-#include <linux/syscalls.h>
 
 #include <asm/pgtable.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
+#include <asm/tlbflush.h>
 
 /*
  * Free all pages allocated for subpage protection maps and pointers.
@@ -36,7 +36,7 @@ void subpage_prot_free(struct mm_struct *mm)
 		}
 	}
 	addr = 0;
-	for (i = 0; i < (TASK_SIZE_USER64 >> 43); ++i) {
+	for (i = 0; i < 2; ++i) {
 		p = spt->protptrs[i];
 		if (!p)
 			continue;
@@ -78,7 +78,7 @@ static void hpte_flush_range(struct mm_struct *mm, unsigned long addr,
 	pte = pte_offset_map_lock(mm, pmd, addr, &ptl);
 	arch_enter_lazy_mmu_mode();
 	for (; npages > 0; --npages) {
-		pte_update(mm, addr, pte, 0, 0, 0);
+		pte_update(mm, addr, pte, 0, 0);
 		addr += PAGE_SIZE;
 		++pte;
 	}
@@ -95,8 +95,7 @@ static void subpage_prot_clear(unsigned long addr, unsigned long len)
 	struct mm_struct *mm = current->mm;
 	struct subpage_prot_table *spt = &mm->context.spt;
 	u32 **spm, *spp;
-	unsigned long i;
-	size_t nw;
+	int i, nw;
 	unsigned long next, limit;
 
 	down_write(&mm->mmap_sem);
@@ -105,7 +104,7 @@ static void subpage_prot_clear(unsigned long addr, unsigned long len)
 		limit = spt->maxaddr;
 	for (; addr < limit; addr = next) {
 		next = pmd_addr_end(addr, limit);
-		if (addr < 0x100000000UL) {
+		if (addr < 0x100000000) {
 			spm = spt->low_prot;
 		} else {
 			spm = spt->protptrs[addr >> SBP_L3_SHIFT];
@@ -130,51 +129,6 @@ static void subpage_prot_clear(unsigned long addr, unsigned long len)
 	up_write(&mm->mmap_sem);
 }
 
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
-static int subpage_walk_pmd_entry(pmd_t *pmd, unsigned long addr,
-				  unsigned long end, struct mm_walk *walk)
-{
-	struct vm_area_struct *vma = walk->vma;
-	split_huge_pmd(vma, pmd, addr);
-	return 0;
-}
-
-static void subpage_mark_vma_nohuge(struct mm_struct *mm, unsigned long addr,
-				    unsigned long len)
-{
-	struct vm_area_struct *vma;
-	struct mm_walk subpage_proto_walk = {
-		.mm = mm,
-		.pmd_entry = subpage_walk_pmd_entry,
-	};
-
-	/*
-	 * We don't try too hard, we just mark all the vma in that range
-	 * VM_NOHUGEPAGE and split them.
-	 */
-	vma = find_vma(mm, addr);
-	/*
-	 * If the range is in unmapped range, just return
-	 */
-	if (vma && ((addr + len) <= vma->vm_start))
-		return;
-
-	while (vma) {
-		if (vma->vm_start >= (addr + len))
-			break;
-		vma->vm_flags |= VM_NOHUGEPAGE;
-		walk_page_vma(vma, &subpage_proto_walk);
-		vma = vma->vm_next;
-	}
-}
-#else
-static void subpage_mark_vma_nohuge(struct mm_struct *mm, unsigned long addr,
-				    unsigned long len)
-{
-	return;
-}
-#endif
-
 /*
  * Copy in a subpage protection map for an address range.
  * The map has 2 bits per 4k subpage, so 32 bits per 64k page.
@@ -185,24 +139,18 @@ static void subpage_mark_vma_nohuge(struct mm_struct *mm, unsigned long addr,
  * in a 2-bit field won't allow writes to a page that is otherwise
  * write-protected.
  */
-SYSCALL_DEFINE3(subpage_prot, unsigned long, addr,
-		unsigned long, len, u32 __user *, map)
+long sys_subpage_prot(unsigned long addr, unsigned long len, u32 __user *map)
 {
 	struct mm_struct *mm = current->mm;
 	struct subpage_prot_table *spt = &mm->context.spt;
 	u32 **spm, *spp;
-	unsigned long i;
-	size_t nw;
+	int i, nw;
 	unsigned long next, limit;
 	int err;
 
-	if (radix_enabled())
-		return -ENOENT;
-
 	/* Check parameters */
 	if ((addr & ~PAGE_MASK) || (len & ~PAGE_MASK) ||
-	    addr >= mm->task_size || len >= mm->task_size ||
-	    addr + len > mm->task_size)
+	    addr >= TASK_SIZE || len >= TASK_SIZE || addr + len > TASK_SIZE)
 		return -EINVAL;
 
 	if (is_hugepage_only_range(mm, addr, len))
@@ -218,11 +166,10 @@ SYSCALL_DEFINE3(subpage_prot, unsigned long, addr,
 		return -EFAULT;
 
 	down_write(&mm->mmap_sem);
-	subpage_mark_vma_nohuge(mm, addr, len);
 	for (limit = addr + len; addr < limit; addr = next) {
 		next = pmd_addr_end(addr, limit);
 		err = -ENOMEM;
-		if (addr < 0x100000000UL) {
+		if (addr < 0x100000000) {
 			spm = spt->low_prot;
 		} else {
 			spm = spt->protptrs[addr >> SBP_L3_SHIFT];
@@ -253,8 +200,9 @@ SYSCALL_DEFINE3(subpage_prot, unsigned long, addr,
 			nw = (next - addr) >> PAGE_SHIFT;
 
 		up_write(&mm->mmap_sem);
+		err = -EFAULT;
 		if (__copy_from_user(spp, map, nw * sizeof(u32)))
-			return -EFAULT;
+			goto out2;
 		map += nw;
 		down_write(&mm->mmap_sem);
 
@@ -266,5 +214,6 @@ SYSCALL_DEFINE3(subpage_prot, unsigned long, addr,
 	err = 0;
  out:
 	up_write(&mm->mmap_sem);
+ out2:
 	return err;
 }

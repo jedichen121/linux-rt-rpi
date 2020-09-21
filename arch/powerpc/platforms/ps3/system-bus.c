@@ -471,13 +471,11 @@ static ssize_t modalias_show(struct device *_dev, struct device_attribute *a,
 
 	return (len >= PAGE_SIZE) ? (PAGE_SIZE - 1) : len;
 }
-static DEVICE_ATTR_RO(modalias);
 
-static struct attribute *ps3_system_bus_dev_attrs[] = {
-	&dev_attr_modalias.attr,
-	NULL,
+static struct device_attribute ps3_system_bus_dev_attrs[] = {
+	__ATTR_RO(modalias),
+	__ATTR_NULL,
 };
-ATTRIBUTE_GROUPS(ps3_system_bus_dev);
 
 struct bus_type ps3_system_bus_type = {
 	.name = "ps3_system_bus",
@@ -486,7 +484,7 @@ struct bus_type ps3_system_bus_type = {
 	.probe = ps3_system_bus_probe,
 	.remove = ps3_system_bus_remove,
 	.shutdown = ps3_system_bus_shutdown,
-	.dev_groups = ps3_system_bus_dev_groups,
+	.dev_attrs = ps3_system_bus_dev_attrs,
 };
 
 static int __init ps3_system_bus_init(void)
@@ -517,8 +515,7 @@ core_initcall(ps3_system_bus_init);
  * to the dma address (mapping) of the first page.
  */
 static void * ps3_alloc_coherent(struct device *_dev, size_t size,
-				 dma_addr_t *dma_handle, gfp_t flag,
-				 unsigned long attrs)
+				      dma_addr_t *dma_handle, gfp_t flag)
 {
 	int result;
 	struct ps3_system_bus_device *dev = ps3_dev_to_system_bus_dev(_dev);
@@ -555,7 +552,7 @@ clean_none:
 }
 
 static void ps3_free_coherent(struct device *_dev, size_t size, void *vaddr,
-			      dma_addr_t dma_handle, unsigned long attrs)
+	dma_addr_t dma_handle)
 {
 	struct ps3_system_bus_device *dev = ps3_dev_to_system_bus_dev(_dev);
 
@@ -571,7 +568,7 @@ static void ps3_free_coherent(struct device *_dev, size_t size, void *vaddr,
 
 static dma_addr_t ps3_sb_map_page(struct device *_dev, struct page *page,
 	unsigned long offset, size_t size, enum dma_data_direction direction,
-	unsigned long attrs)
+	struct dma_attrs *attrs)
 {
 	struct ps3_system_bus_device *dev = ps3_dev_to_system_bus_dev(_dev);
 	int result;
@@ -594,7 +591,7 @@ static dma_addr_t ps3_sb_map_page(struct device *_dev, struct page *page,
 static dma_addr_t ps3_ioc0_map_page(struct device *_dev, struct page *page,
 				    unsigned long offset, size_t size,
 				    enum dma_data_direction direction,
-				    unsigned long attrs)
+				    struct dma_attrs *attrs)
 {
 	struct ps3_system_bus_device *dev = ps3_dev_to_system_bus_dev(_dev);
 	int result;
@@ -628,7 +625,7 @@ static dma_addr_t ps3_ioc0_map_page(struct device *_dev, struct page *page,
 }
 
 static void ps3_unmap_page(struct device *_dev, dma_addr_t dma_addr,
-	size_t size, enum dma_data_direction direction, unsigned long attrs)
+	size_t size, enum dma_data_direction direction, struct dma_attrs *attrs)
 {
 	struct ps3_system_bus_device *dev = ps3_dev_to_system_bus_dev(_dev);
 	int result;
@@ -642,7 +639,7 @@ static void ps3_unmap_page(struct device *_dev, dma_addr_t dma_addr,
 }
 
 static int ps3_sb_map_sg(struct device *_dev, struct scatterlist *sgl,
-	int nents, enum dma_data_direction direction, unsigned long attrs)
+	int nents, enum dma_data_direction direction, struct dma_attrs *attrs)
 {
 #if defined(CONFIG_PS3_DYNAMIC_DMA)
 	BUG_ON("do");
@@ -672,14 +669,14 @@ static int ps3_sb_map_sg(struct device *_dev, struct scatterlist *sgl,
 static int ps3_ioc0_map_sg(struct device *_dev, struct scatterlist *sg,
 			   int nents,
 			   enum dma_data_direction direction,
-			   unsigned long attrs)
+			   struct dma_attrs *attrs)
 {
 	BUG();
 	return 0;
 }
 
 static void ps3_sb_unmap_sg(struct device *_dev, struct scatterlist *sg,
-	int nents, enum dma_data_direction direction, unsigned long attrs)
+	int nents, enum dma_data_direction direction, struct dma_attrs *attrs)
 {
 #if defined(CONFIG_PS3_DYNAMIC_DMA)
 	BUG_ON("do");
@@ -688,7 +685,7 @@ static void ps3_sb_unmap_sg(struct device *_dev, struct scatterlist *sg,
 
 static void ps3_ioc0_unmap_sg(struct device *_dev, struct scatterlist *sg,
 			    int nents, enum dma_data_direction direction,
-			    unsigned long attrs)
+			    struct dma_attrs *attrs)
 {
 	BUG();
 }
@@ -703,9 +700,9 @@ static u64 ps3_dma_get_required_mask(struct device *_dev)
 	return DMA_BIT_MASK(32);
 }
 
-static const struct dma_map_ops ps3_sb_dma_ops = {
-	.alloc = ps3_alloc_coherent,
-	.free = ps3_free_coherent,
+static struct dma_map_ops ps3_sb_dma_ops = {
+	.alloc_coherent = ps3_alloc_coherent,
+	.free_coherent = ps3_free_coherent,
 	.map_sg = ps3_sb_map_sg,
 	.unmap_sg = ps3_sb_unmap_sg,
 	.dma_supported = ps3_dma_supported,
@@ -714,9 +711,9 @@ static const struct dma_map_ops ps3_sb_dma_ops = {
 	.unmap_page = ps3_unmap_page,
 };
 
-static const struct dma_map_ops ps3_ioc0_dma_ops = {
-	.alloc = ps3_alloc_coherent,
-	.free = ps3_free_coherent,
+static struct dma_map_ops ps3_ioc0_dma_ops = {
+	.alloc_coherent = ps3_alloc_coherent,
+	.free_coherent = ps3_free_coherent,
 	.map_sg = ps3_ioc0_map_sg,
 	.unmap_sg = ps3_ioc0_unmap_sg,
 	.dma_supported = ps3_dma_supported,
@@ -758,11 +755,11 @@ int ps3_system_bus_device_register(struct ps3_system_bus_device *dev)
 
 	switch (dev->dev_type) {
 	case PS3_DEVICE_TYPE_IOC0:
-		dev->core.dma_ops = &ps3_ioc0_dma_ops;
+		dev->core.archdata.dma_ops = &ps3_ioc0_dma_ops;
 		dev_set_name(&dev->core, "ioc0_%02x", ++dev_ioc0_count);
 		break;
 	case PS3_DEVICE_TYPE_SB:
-		dev->core.dma_ops = &ps3_sb_dma_ops;
+		dev->core.archdata.dma_ops = &ps3_sb_dma_ops;
 		dev_set_name(&dev->core, "sb_%02x", ++dev_sb_count);
 
 		break;

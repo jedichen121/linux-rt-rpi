@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_PROCESSOR_H
 #define __ASM_SH_PROCESSOR_H
 
@@ -16,11 +15,10 @@
  */
 enum cpu_type {
 	/* SH-2 types */
-	CPU_SH7619, CPU_J2,
+	CPU_SH7619,
 
 	/* SH-2A types */
-	CPU_SH7201, CPU_SH7203, CPU_SH7206, CPU_SH7263, CPU_SH7264, CPU_SH7269,
-	CPU_MXG,
+	CPU_SH7201, CPU_SH7203, CPU_SH7206, CPU_SH7263, CPU_MXG,
 
 	/* SH-3 types */
 	CPU_SH7705, CPU_SH7706, CPU_SH7707,
@@ -34,7 +32,7 @@ enum cpu_type {
 
 	/* SH-4A types */
 	CPU_SH7763, CPU_SH7770, CPU_SH7780, CPU_SH7781, CPU_SH7785, CPU_SH7786,
-	CPU_SH7723, CPU_SH7724, CPU_SH7757, CPU_SH7734, CPU_SHX3,
+	CPU_SH7723, CPU_SH7724, CPU_SH7757, CPU_SHX3,
 
 	/* SH4AL-DSP types */
 	CPU_SH7343, CPU_SH7722, CPU_SH7366, CPU_SH7372,
@@ -87,6 +85,10 @@ struct sh_cpuinfo {
 	struct tlb_info itlb;
 	struct tlb_info dtlb;
 
+#ifdef CONFIG_SMP
+	struct task_struct *idle;
+#endif
+
 	unsigned int phys_bits;
 	unsigned long flags;
 } __attribute__ ((aligned(L1_CACHE_BYTES)));
@@ -98,9 +100,6 @@ extern struct sh_cpuinfo cpu_data[];
 
 #define cpu_sleep()	__asm__ __volatile__ ("sleep" : : : "memory")
 #define cpu_relax()	barrier()
-
-void default_idle(void);
-void stop_this_cpu(void *);
 
 /* Forward decl */
 struct seq_operations;
@@ -162,23 +161,12 @@ int vsyscall_init(void);
 #define vsyscall_init() do { } while (0)
 #endif
 
-/*
- * SH-2A has both 16 and 32-bit opcodes, do lame encoding checks.
- */
-#ifdef CONFIG_CPU_SH2A
-extern unsigned int instruction_size(unsigned int insn);
-#elif defined(CONFIG_SUPERH32)
-#define instruction_size(insn)	(2)
-#else
-#define instruction_size(insn)	(4)
-#endif
-
 #endif /* __ASSEMBLY__ */
 
 #ifdef CONFIG_SUPERH32
-# include <asm/processor_32.h>
+# include "processor_32.h"
 #else
-# include <asm/processor_64.h>
+# include "processor_64.h"
 #endif
 
 #endif /* __ASM_SH_PROCESSOR_H */

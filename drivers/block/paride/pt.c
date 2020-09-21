@@ -61,7 +61,7 @@
                         the slower the port i/o.  In some cases, setting
                         this to zero will speed up the device. (default -1)
 
-	    major	You may use this parameter to override the
+	    major	You may use this parameter to overide the
 			default major number (96) that this driver
 			will use.  Be sure to change the device
 			name as well.
@@ -109,8 +109,6 @@
 #define PT_NAME		"pt"
 #define PT_UNITS	4
 
-#include <linux/types.h>
-
 /* Here are things one can override from the insmod command.
    Most are autoprobed by paride unless set here.  Verbose is on
    by default.
@@ -150,9 +148,9 @@ static int (*drives[4])[6] = {&drive0, &drive1, &drive2, &drive3};
 #include <linux/sched.h>	/* current, TASK_*, schedule_timeout() */
 #include <linux/mutex.h>
 
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 
-module_param(verbose, int, 0);
+module_param(verbose, bool, 0);
 module_param(major, int, 0);
 module_param(name, charp, 0);
 module_param_array(drive0, int, NULL, 0);
@@ -232,7 +230,6 @@ static int pt_identify(struct pt_unit *tape);
 static struct pt_unit pt[PT_UNITS];
 
 static char pt_scratch[512];	/* scratch block buffer */
-static void *par_drv;		/* reference of parport driver */
 
 /* kernel glue structures */
 
@@ -606,12 +603,6 @@ static int pt_detect(void)
 
 	printk("%s: %s version %s, major %d\n", name, name, PT_VERSION, major);
 
-	par_drv = pi_register_driver(name);
-	if (!par_drv) {
-		pr_err("failed to register %s driver\n", name);
-		return -1;
-	}
-
 	specified = 0;
 	for (unit = 0; unit < PT_UNITS; unit++) {
 		struct pt_unit *tape = &pt[unit];
@@ -651,7 +642,6 @@ static int pt_detect(void)
 	if (found)
 		return 0;
 
-	pi_unregister_driver(par_drv);
 	printk("%s: No ATAPI tape drive detected\n", name);
 	return -1;
 }

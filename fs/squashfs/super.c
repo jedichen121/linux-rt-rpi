@@ -27,8 +27,6 @@
  * the filesystem.
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/fs.h>
 #include <linux/vfs.h>
 #include <linux/slab.h>
@@ -80,6 +78,7 @@ static int squashfs_fill_super(struct super_block *sb, void *data, int silent)
 {
 	struct squashfs_sb_info *msblk;
 	struct squashfs_super_block *sblk = NULL;
+	char b[BDEVNAME_SIZE];
 	struct inode *root;
 	long long root_inode;
 	unsigned short flags;
@@ -99,6 +98,7 @@ static int squashfs_fill_super(struct super_block *sb, void *data, int silent)
 	msblk->devblksize = sb_min_blocksize(sb, SQUASHFS_DEVBLK_SIZE);
 	msblk->devblksize_log2 = ffz(~msblk->devblksize);
 
+	mutex_init(&msblk->read_data_mutex);
 	mutex_init(&msblk->meta_index_mutex);
 
 	/*
@@ -123,8 +123,8 @@ static int squashfs_fill_super(struct super_block *sb, void *data, int silent)
 	sb->s_magic = le32_to_cpu(sblk->s_magic);
 	if (sb->s_magic != SQUASHFS_MAGIC) {
 		if (!silent)
-			ERROR("Can't find a SQUASHFS superblock on %pg\n",
-						sb->s_bdev);
+			ERROR("Can't find a SQUASHFS superblock on %s\n",
+						bdevname(sb->s_bdev, b));
 		goto failed_mount;
 	}
 
@@ -152,19 +152,14 @@ static int squashfs_fill_super(struct super_block *sb, void *data, int silent)
 	 * Check the system page size is not larger than the filesystem
 	 * block size (by default 128K).  This is currently not supported.
 	 */
-	if (PAGE_SIZE > msblk->block_size) {
+	if (PAGE_CACHE_SIZE > msblk->block_size) {
 		ERROR("Page size > filesystem block size (%d).  This is "
 			"currently not supported!\n", msblk->block_size);
 		goto failed_mount;
 	}
 
-	/* Check block log for sanity */
 	msblk->block_log = le16_to_cpu(sblk->block_log);
 	if (msblk->block_log > SQUASHFS_FILE_MAX_LOG)
-		goto failed_mount;
-
-	/* Check that block_size and block_log match */
-	if (msblk->block_size != (1 << msblk->block_log))
 		goto failed_mount;
 
 	/* Check the root inode for sanity */
@@ -175,10 +170,9 @@ static int squashfs_fill_super(struct super_block *sb, void *data, int silent)
 	msblk->inode_table = le64_to_cpu(sblk->inode_table_start);
 	msblk->directory_table = le64_to_cpu(sblk->directory_table_start);
 	msblk->inodes = le32_to_cpu(sblk->inodes);
-	msblk->fragments = le32_to_cpu(sblk->fragments);
 	flags = le16_to_cpu(sblk->flags);
 
-	TRACE("Found valid superblock on %pg\n", sb->s_bdev);
+	TRACE("Found valid superblock on %s\n", bdevname(sb->s_bdev, b));
 	TRACE("Inodes are %scompressed\n", SQUASHFS_UNCOMPRESSED_INODES(flags)
 				? "un" : "");
 	TRACE("Data is %scompressed\n", SQUASHFS_UNCOMPRESSED_DATA(flags)
@@ -186,7 +180,7 @@ static int squashfs_fill_super(struct super_block *sb, void *data, int silent)
 	TRACE("Filesystem size %lld bytes\n", msblk->bytes_used);
 	TRACE("Block size %d\n", msblk->block_size);
 	TRACE("Number of inodes %d\n", msblk->inodes);
-	TRACE("Number of fragments %d\n", msblk->fragments);
+	TRACE("Number of fragments %d\n", le32_to_cpu(sblk->fragments));
 	TRACE("Number of ids %d\n", le16_to_cpu(sblk->no_ids));
 	TRACE("sblk->inode_table_start %llx\n", msblk->inode_table);
 	TRACE("sblk->directory_table_start %llx\n", msblk->directory_table);
@@ -196,7 +190,7 @@ static int squashfs_fill_super(struct super_block *sb, void *data, int silent)
 		(u64) le64_to_cpu(sblk->id_table_start));
 
 	sb->s_maxbytes = MAX_LFS_FILESIZE;
-	sb->s_flags |= SB_RDONLY;
+	sb->s_flags |= MS_RDONLY;
 	sb->s_op = &squashfs_super_ops;
 
 	err = -ENOMEM;
@@ -207,14 +201,13 @@ static int squashfs_fill_super(struct super_block *sb, void *data, int silent)
 		goto failed_mount;
 
 	/* Allocate read_page block */
-	msblk->read_page = squashfs_cache_init("data",
-		squashfs_max_decompressors(), msblk->block_size);
+	msblk->read_page = squashfs_cache_init("data", 1, msblk->block_size);
 	if (msblk->read_page == NULL) {
 		ERROR("Failed to allocate read_page block\n");
 		goto failed_mount;
 	}
 
-	msblk->stream = squashfs_decompressor_setup(sb, flags);
+	msblk->stream = squashfs_decompressor_init(sb, flags);
 	if (IS_ERR(msblk->stream)) {
 		err = PTR_ERR(msblk->stream);
 		msblk->stream = NULL;
@@ -273,7 +266,7 @@ allocate_id_index_table:
 	sb->s_export_op = &squashfs_export_ops;
 
 handle_fragments:
-	fragments = msblk->fragments;
+	fragments = le32_to_cpu(sblk->fragments);
 	if (fragments == 0)
 		goto check_directory_table;
 
@@ -297,7 +290,7 @@ handle_fragments:
 
 check_directory_table:
 	/* Sanity check directory_table */
-	if (msblk->directory_table > next_table) {
+	if (msblk->directory_table >= next_table) {
 		err = -EINVAL;
 		goto failed_mount;
 	}
@@ -323,10 +316,11 @@ check_directory_table:
 	}
 	insert_inode_hash(root);
 
-	sb->s_root = d_make_root(root);
+	sb->s_root = d_alloc_root(root);
 	if (sb->s_root == NULL) {
 		ERROR("Root inode create failed\n");
 		err = -ENOMEM;
+		iput(root);
 		goto failed_mount;
 	}
 
@@ -338,7 +332,7 @@ failed_mount:
 	squashfs_cache_delete(msblk->block_cache);
 	squashfs_cache_delete(msblk->fragment_cache);
 	squashfs_cache_delete(msblk->read_page);
-	squashfs_decompressor_destroy(msblk);
+	squashfs_decompressor_free(msblk, msblk->stream);
 	kfree(msblk->inode_lookup_table);
 	kfree(msblk->fragment_index);
 	kfree(msblk->id_table);
@@ -373,8 +367,7 @@ static int squashfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 
 static int squashfs_remount(struct super_block *sb, int *flags, char *data)
 {
-	sync_filesystem(sb);
-	*flags |= SB_RDONLY;
+	*flags |= MS_RDONLY;
 	return 0;
 }
 
@@ -386,7 +379,7 @@ static void squashfs_put_super(struct super_block *sb)
 		squashfs_cache_delete(sbi->block_cache);
 		squashfs_cache_delete(sbi->fragment_cache);
 		squashfs_cache_delete(sbi->read_page);
-		squashfs_decompressor_destroy(sbi);
+		squashfs_decompressor_free(sbi, sbi->stream);
 		kfree(sbi->id_table);
 		kfree(sbi->fragment_index);
 		kfree(sbi->meta_index);
@@ -420,8 +413,7 @@ static int __init init_inodecache(void)
 {
 	squashfs_inode_cachep = kmem_cache_create("squashfs_inode_cache",
 		sizeof(struct squashfs_inode_info), 0,
-		SLAB_HWCACHE_ALIGN|SLAB_RECLAIM_ACCOUNT|SLAB_ACCOUNT,
-		init_once);
+		SLAB_HWCACHE_ALIGN|SLAB_RECLAIM_ACCOUNT, init_once);
 
 	return squashfs_inode_cachep ? 0 : -ENOMEM;
 }
@@ -429,11 +421,6 @@ static int __init init_inodecache(void)
 
 static void destroy_inodecache(void)
 {
-	/*
-	 * Make sure all delayed rcu free inodes are flushed before we
-	 * destroy cache.
-	 */
-	rcu_barrier();
 	kmem_cache_destroy(squashfs_inode_cachep);
 }
 
@@ -451,7 +438,8 @@ static int __init init_squashfs_fs(void)
 		return err;
 	}
 
-	pr_info("version 4.0 (2009/01/31) Phillip Lougher\n");
+	printk(KERN_INFO "squashfs: version 4.0 (2009/01/31) "
+		"Phillip Lougher\n");
 
 	return 0;
 }
@@ -476,6 +464,7 @@ static struct inode *squashfs_alloc_inode(struct super_block *sb)
 static void squashfs_i_callback(struct rcu_head *head)
 {
 	struct inode *inode = container_of(head, struct inode, i_rcu);
+	INIT_LIST_HEAD(&inode->i_dentry);
 	kmem_cache_free(squashfs_inode_cachep, squashfs_i(inode));
 }
 
@@ -492,7 +481,6 @@ static struct file_system_type squashfs_fs_type = {
 	.kill_sb = kill_block_super,
 	.fs_flags = FS_REQUIRES_DEV
 };
-MODULE_ALIAS_FS("squashfs");
 
 static const struct super_operations squashfs_super_ops = {
 	.alloc_inode = squashfs_alloc_inode,

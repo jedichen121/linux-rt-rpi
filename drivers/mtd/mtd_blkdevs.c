@@ -30,8 +30,10 @@
 #include <linux/blkpg.h>
 #include <linux/spinlock.h>
 #include <linux/hdreg.h>
+#include <linux/init.h>
 #include <linux/mutex.h>
-#include <linux/uaccess.h>
+#include <linux/kthread.h>
+#include <asm/uaccess.h>
 
 #include "mtdcore.h"
 
@@ -73,7 +75,7 @@ static void blktrans_dev_put(struct mtd_blktrans_dev *dev)
 }
 
 
-static blk_status_t do_blktrans_request(struct mtd_blktrans_ops *tr,
+static int do_blktrans_request(struct mtd_blktrans_ops *tr,
 			       struct mtd_blktrans_dev *dev,
 			       struct request *req)
 {
@@ -83,61 +85,52 @@ static blk_status_t do_blktrans_request(struct mtd_blktrans_ops *tr,
 	block = blk_rq_pos(req) << 9 >> tr->blkshift;
 	nsect = blk_rq_cur_bytes(req) >> tr->blkshift;
 
-	if (req_op(req) == REQ_OP_FLUSH) {
-		if (tr->flush(dev))
-			return BLK_STS_IOERR;
-		return BLK_STS_OK;
-	}
+	buf = req->buffer;
+
+	if (req->cmd_type != REQ_TYPE_FS)
+		return -EIO;
 
 	if (blk_rq_pos(req) + blk_rq_cur_sectors(req) >
 	    get_capacity(req->rq_disk))
-		return BLK_STS_IOERR;
+		return -EIO;
 
-	switch (req_op(req)) {
-	case REQ_OP_DISCARD:
-		if (tr->discard(dev, block, nsect))
-			return BLK_STS_IOERR;
-		return BLK_STS_OK;
-	case REQ_OP_READ:
-		buf = kmap(bio_page(req->bio)) + bio_offset(req->bio);
-		for (; nsect > 0; nsect--, block++, buf += tr->blksize) {
-			if (tr->readsect(dev, block, buf)) {
-				kunmap(bio_page(req->bio));
-				return BLK_STS_IOERR;
-			}
-		}
-		kunmap(bio_page(req->bio));
+	if (req->cmd_flags & REQ_DISCARD)
+		return tr->discard(dev, block, nsect);
+
+	switch(rq_data_dir(req)) {
+	case READ:
+		for (; nsect > 0; nsect--, block++, buf += tr->blksize)
+			if (tr->readsect(dev, block, buf))
+				return -EIO;
 		rq_flush_dcache_pages(req);
-		return BLK_STS_OK;
-	case REQ_OP_WRITE:
+		return 0;
+	case WRITE:
 		if (!tr->writesect)
-			return BLK_STS_IOERR;
+			return -EIO;
 
 		rq_flush_dcache_pages(req);
-		buf = kmap(bio_page(req->bio)) + bio_offset(req->bio);
-		for (; nsect > 0; nsect--, block++, buf += tr->blksize) {
-			if (tr->writesect(dev, block, buf)) {
-				kunmap(bio_page(req->bio));
-				return BLK_STS_IOERR;
-			}
-		}
-		kunmap(bio_page(req->bio));
-		return BLK_STS_OK;
+		for (; nsect > 0; nsect--, block++, buf += tr->blksize)
+			if (tr->writesect(dev, block, buf))
+				return -EIO;
+		return 0;
 	default:
-		return BLK_STS_IOERR;
+		printk(KERN_NOTICE "Unknown request %u\n", rq_data_dir(req));
+		return -EIO;
 	}
 }
 
 int mtd_blktrans_cease_background(struct mtd_blktrans_dev *dev)
 {
+	if (kthread_should_stop())
+		return 1;
+
 	return dev->bg_stop;
 }
 EXPORT_SYMBOL_GPL(mtd_blktrans_cease_background);
 
-static void mtd_blktrans_work(struct work_struct *work)
+static int mtd_blktrans_thread(void *arg)
 {
-	struct mtd_blktrans_dev *dev =
-		container_of(work, struct mtd_blktrans_dev, work);
+	struct mtd_blktrans_dev *dev = arg;
 	struct mtd_blktrans_ops *tr = dev->tr;
 	struct request_queue *rq = dev->rq;
 	struct request *req = NULL;
@@ -145,8 +138,8 @@ static void mtd_blktrans_work(struct work_struct *work)
 
 	spin_lock_irq(rq->queue_lock);
 
-	while (1) {
-		blk_status_t res;
+	while (!kthread_should_stop()) {
+		int res;
 
 		dev->bg_stop = false;
 		if (!req && !(req = blk_fetch_request(rq))) {
@@ -163,7 +156,15 @@ static void mtd_blktrans_work(struct work_struct *work)
 				background_done = !dev->bg_stop;
 				continue;
 			}
-			break;
+			set_current_state(TASK_INTERRUPTIBLE);
+
+			if (kthread_should_stop())
+				set_current_state(TASK_RUNNING);
+
+			spin_unlock_irq(rq->queue_lock);
+			schedule();
+			spin_lock_irq(rq->queue_lock);
+			continue;
 		}
 
 		spin_unlock_irq(rq->queue_lock);
@@ -180,7 +181,12 @@ static void mtd_blktrans_work(struct work_struct *work)
 		background_done = 0;
 	}
 
+	if (req)
+		__blk_end_request_all(req, -EIO);
+
 	spin_unlock_irq(rq->queue_lock);
+
+	return 0;
 }
 
 static void mtd_blktrans_request(struct request_queue *rq)
@@ -192,9 +198,11 @@ static void mtd_blktrans_request(struct request_queue *rq)
 
 	if (!dev)
 		while ((req = blk_fetch_request(rq)) != NULL)
-			__blk_end_request_all(req, BLK_STS_IOERR);
-	else
-		queue_work(dev->wq, &dev->work);
+			__blk_end_request_all(req, -ENODEV);
+	else {
+		dev->bg_stop = true;
+		wake_up_process(dev->thread);
+	}
 }
 
 static int blktrans_open(struct block_device *bdev, fmode_t mode)
@@ -205,10 +213,9 @@ static int blktrans_open(struct block_device *bdev, fmode_t mode)
 	if (!dev)
 		return -ERESTARTSYS; /* FIXME: busy loop! -arnd*/
 
-	mutex_lock(&mtd_table_mutex);
 	mutex_lock(&dev->lock);
 
-	if (dev->open)
+	if (dev->open++)
 		goto unlock;
 
 	kref_get(&dev->ref);
@@ -226,12 +233,9 @@ static int blktrans_open(struct block_device *bdev, fmode_t mode)
 	ret = __get_mtd_device(dev->mtd);
 	if (ret)
 		goto error_release;
-	dev->file_mode = mode;
 
 unlock:
-	dev->open++;
 	mutex_unlock(&dev->lock);
-	mutex_unlock(&mtd_table_mutex);
 	blktrans_dev_put(dev);
 	return ret;
 
@@ -242,19 +246,18 @@ error_put:
 	module_put(dev->tr->owner);
 	kref_put(&dev->ref, blktrans_dev_release);
 	mutex_unlock(&dev->lock);
-	mutex_unlock(&mtd_table_mutex);
 	blktrans_dev_put(dev);
 	return ret;
 }
 
-static void blktrans_release(struct gendisk *disk, fmode_t mode)
+static int blktrans_release(struct gendisk *disk, fmode_t mode)
 {
 	struct mtd_blktrans_dev *dev = blktrans_dev_get(disk);
+	int ret = 0;
 
 	if (!dev)
-		return;
+		return ret;
 
-	mutex_lock(&mtd_table_mutex);
 	mutex_lock(&dev->lock);
 
 	if (--dev->open)
@@ -264,14 +267,13 @@ static void blktrans_release(struct gendisk *disk, fmode_t mode)
 	module_put(dev->tr->owner);
 
 	if (dev->mtd) {
-		if (dev->tr->release)
-			dev->tr->release(dev);
+		ret = dev->tr->release ? dev->tr->release(dev) : 0;
 		__put_mtd_device(dev->mtd);
 	}
 unlock:
 	mutex_unlock(&dev->lock);
-	mutex_unlock(&mtd_table_mutex);
 	blktrans_dev_put(dev);
+	return ret;
 }
 
 static int blktrans_getgeo(struct block_device *bdev, struct hd_geometry *geo)
@@ -287,7 +289,7 @@ static int blktrans_getgeo(struct block_device *bdev, struct hd_geometry *geo)
 	if (!dev->mtd)
 		goto unlock;
 
-	ret = dev->tr->getgeo ? dev->tr->getgeo(dev, geo) : -ENOTTY;
+	ret = dev->tr->getgeo ? dev->tr->getgeo(dev, geo) : 0;
 unlock:
 	mutex_unlock(&dev->lock);
 	blktrans_dev_put(dev);
@@ -321,7 +323,7 @@ unlock:
 	return ret;
 }
 
-static const struct block_device_operations mtd_block_ops = {
+static const struct block_device_operations mtd_blktrans_ops = {
 	.owner		= THIS_MODULE,
 	.open		= blktrans_open,
 	.release	= blktrans_release,
@@ -397,7 +399,7 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 	gd->private_data = new;
 	gd->major = tr->major;
 	gd->first_minor = (new->devnum) << tr->part_bits;
-	gd->fops = &mtd_block_ops;
+	gd->fops = &mtd_blktrans_ops;
 
 	if (tr->part_bits)
 		if (new->devnum < 26)
@@ -412,7 +414,7 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 		snprintf(gd->disk_name, sizeof(gd->disk_name),
 			 "%s%d", tr->name, new->devnum);
 
-	set_capacity(gd, ((u64)new->size * tr->blksize) >> 9);
+	set_capacity(gd, (new->size * tr->blksize) >> 9);
 
 	/* Create the request queue */
 	spin_lock_init(&new->queue_lock);
@@ -421,33 +423,32 @@ int add_mtd_blktrans_dev(struct mtd_blktrans_dev *new)
 	if (!new->rq)
 		goto error3;
 
-	if (tr->flush)
-		blk_queue_write_cache(new->rq, true, false);
-
 	new->rq->queuedata = new;
 	blk_queue_logical_block_size(new->rq, tr->blksize);
 
-	blk_queue_flag_set(QUEUE_FLAG_NONROT, new->rq);
-	blk_queue_flag_clear(QUEUE_FLAG_ADD_RANDOM, new->rq);
+	queue_flag_set_unlocked(QUEUE_FLAG_NONROT, new->rq);
 
 	if (tr->discard) {
-		blk_queue_flag_set(QUEUE_FLAG_DISCARD, new->rq);
-		blk_queue_max_discard_sectors(new->rq, UINT_MAX);
+		queue_flag_set_unlocked(QUEUE_FLAG_DISCARD, new->rq);
+		new->rq->limits.max_discard_sectors = UINT_MAX;
 	}
 
 	gd->queue = new->rq;
 
-	/* Create processing workqueue */
-	new->wq = alloc_workqueue("%s%d", 0, 0,
-				  tr->name, new->mtd->index);
-	if (!new->wq)
+	/* Create processing thread */
+	/* TODO: workqueue ? */
+	new->thread = kthread_run(mtd_blktrans_thread, new,
+			"%s%d", tr->name, new->mtd->index);
+	if (IS_ERR(new->thread)) {
+		ret = PTR_ERR(new->thread);
 		goto error4;
-	INIT_WORK(&new->work, mtd_blktrans_work);
+	}
+	gd->driverfs_dev = &new->mtd->dev;
 
 	if (new->readonly)
 		set_disk_ro(gd, 1);
 
-	device_add_disk(&new->mtd->dev, gd);
+	add_disk(gd);
 
 	if (new->disk_attributes) {
 		ret = sysfs_create_group(&disk_to_dev(gd)->kobj,
@@ -481,8 +482,9 @@ int del_mtd_blktrans_dev(struct mtd_blktrans_dev *old)
 	/* Stop new requests to arrive */
 	del_gendisk(old->disk);
 
-	/* Stop workqueue. This will perform any pending request. */
-	destroy_workqueue(old->wq);
+
+	/* Stop the thread */
+	kthread_stop(old->thread);
 
 	/* Kill current requests */
 	spin_lock_irqsave(&old->queue_lock, flags);

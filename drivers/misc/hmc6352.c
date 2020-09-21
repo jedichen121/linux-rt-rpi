@@ -22,12 +22,12 @@
  */
 
 #include <linux/module.h>
+#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/i2c.h>
 #include <linux/err.h>
 #include <linux/delay.h>
 #include <linux/sysfs.h>
-#include <linux/nospec.h>
 
 static DEFINE_MUTEX(compass_mutex);
 
@@ -46,12 +46,10 @@ static int compass_store(struct device *dev, const char *buf, size_t count,
 	int ret;
 	unsigned long val;
 
-	ret = kstrtoul(buf, 10, &val);
-	if (ret)
-		return ret;
+	if (strict_strtoul(buf, 10, &val))
+		return -EINVAL;
 	if (val >= strlen(map))
 		return -EINVAL;
-	val = array_index_nospec(val, strlen(map));
 	mutex_lock(&compass_mutex);
 	ret = compass_command(c, map[val]);
 	mutex_unlock(&compass_mutex);
@@ -134,7 +132,7 @@ static int hmc6352_remove(struct i2c_client *client)
 	return 0;
 }
 
-static const struct i2c_device_id hmc6352_id[] = {
+static struct i2c_device_id hmc6352_id[] = {
 	{ "hmc6352", 0 },
 	{ }
 };
@@ -150,7 +148,18 @@ static struct i2c_driver hmc6352_driver = {
 	.id_table = hmc6352_id,
 };
 
-module_i2c_driver(hmc6352_driver);
+static int __init sensor_hmc6352_init(void)
+{
+	return i2c_add_driver(&hmc6352_driver);
+}
+
+static void  __exit sensor_hmc6352_exit(void)
+{
+	i2c_del_driver(&hmc6352_driver);
+}
+
+module_init(sensor_hmc6352_init);
+module_exit(sensor_hmc6352_exit);
 
 MODULE_AUTHOR("Kalhan Trisal <kalhan.trisal@intel.com");
 MODULE_DESCRIPTION("hmc6352 Compass Driver");

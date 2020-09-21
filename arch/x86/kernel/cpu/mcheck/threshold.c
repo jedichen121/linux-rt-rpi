@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Common corrected MCE threshold handler code:
  */
@@ -6,25 +5,25 @@
 #include <linux/kernel.h>
 
 #include <asm/irq_vectors.h>
-#include <asm/traps.h>
 #include <asm/apic.h>
+#include <asm/idle.h>
 #include <asm/mce.h>
-#include <asm/trace/irq_vectors.h>
 
 static void default_threshold_interrupt(void)
 {
-	pr_err("Unexpected threshold interrupt at vector %x\n",
-		THRESHOLD_APIC_VECTOR);
+	printk(KERN_ERR "Unexpected threshold interrupt at vector %x\n",
+			 THRESHOLD_APIC_VECTOR);
 }
 
 void (*mce_threshold_vector)(void) = default_threshold_interrupt;
 
-asmlinkage __visible void __irq_entry smp_threshold_interrupt(struct pt_regs *regs)
+asmlinkage void smp_threshold_interrupt(void)
 {
-	entering_irq();
-	trace_threshold_apic_entry(THRESHOLD_APIC_VECTOR);
+	irq_enter();
+	exit_idle();
 	inc_irq_stat(irq_threshold_count);
 	mce_threshold_vector();
-	trace_threshold_apic_exit(THRESHOLD_APIC_VECTOR);
-	exiting_ack_irq();
+	irq_exit();
+	/* Ack only at the end to avoid potential reentry */
+	ack_APIC_irq();
 }

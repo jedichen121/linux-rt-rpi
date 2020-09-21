@@ -26,16 +26,6 @@
 #include <sound/initval.h>
 #include <sound/soc.h>
 
-static const struct snd_soc_dapm_widget wm8782_dapm_widgets[] = {
-SND_SOC_DAPM_INPUT("AINL"),
-SND_SOC_DAPM_INPUT("AINR"),
-};
-
-static const struct snd_soc_dapm_route wm8782_dapm_routes[] = {
-	{ "Capture", NULL, "AINL" },
-	{ "Capture", NULL, "AINR" },
-};
-
 static struct snd_soc_dai_driver wm8782_dai = {
 	.name = "wm8782",
 	.capture = {
@@ -50,40 +40,40 @@ static struct snd_soc_dai_driver wm8782_dai = {
 	},
 };
 
-static const struct snd_soc_component_driver soc_component_dev_wm8782 = {
-	.dapm_widgets		= wm8782_dapm_widgets,
-	.num_dapm_widgets	= ARRAY_SIZE(wm8782_dapm_widgets),
-	.dapm_routes		= wm8782_dapm_routes,
-	.num_dapm_routes	= ARRAY_SIZE(wm8782_dapm_routes),
-	.idle_bias_on		= 1,
-	.use_pmdown_time	= 1,
-	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
-};
+static struct snd_soc_codec_driver soc_codec_dev_wm8782;
 
-static int wm8782_probe(struct platform_device *pdev)
+static __devinit int wm8782_probe(struct platform_device *pdev)
 {
-	return devm_snd_soc_register_component(&pdev->dev,
-			&soc_component_dev_wm8782, &wm8782_dai, 1);
+	return snd_soc_register_codec(&pdev->dev,
+			&soc_codec_dev_wm8782, &wm8782_dai, 1);
 }
 
-#ifdef CONFIG_OF
-static const struct of_device_id wm8782_of_match[] = {
-	{ .compatible = "wlf,wm8782", },
-	{ }
-};
-MODULE_DEVICE_TABLE(of, wm8782_of_match);
-#endif
+static int __devexit wm8782_remove(struct platform_device *pdev)
+{
+	snd_soc_unregister_codec(&pdev->dev);
+	return 0;
+}
 
 static struct platform_driver wm8782_codec_driver = {
 	.driver = {
 		.name = "wm8782",
-		.of_match_table = of_match_ptr(wm8782_of_match),
+		.owner = THIS_MODULE,
 	},
 	.probe = wm8782_probe,
+	.remove = __devexit_p(wm8782_remove),
 };
 
-module_platform_driver(wm8782_codec_driver);
+static int __init wm8782_init(void)
+{
+	return platform_driver_register(&wm8782_codec_driver);
+}
+module_init(wm8782_init);
+
+static void __exit wm8782_exit(void)
+{
+	platform_driver_unregister(&wm8782_codec_driver);
+}
+module_exit(wm8782_exit);
 
 MODULE_DESCRIPTION("ASoC WM8782 driver");
 MODULE_AUTHOR("Johannes Stezenbach <js@sig21.net>");

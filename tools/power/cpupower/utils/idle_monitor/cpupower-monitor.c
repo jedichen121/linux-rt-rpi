@@ -39,7 +39,6 @@ static int mode;
 static int interval = 1;
 static char *show_monitors_param;
 static struct cpupower_topology cpu_top;
-static unsigned int wake_cpus;
 
 /* ToDo: Document this in the manpage */
 static char range_abbr[RANGE_MAX] = { 'T', 'C', 'P', 'M', };
@@ -70,43 +69,37 @@ void print_n_spaces(int n)
 		printf(" ");
 }
 
-/*s is filled with left and right spaces
- *to make its length atleast n+1
- */
+/* size of s must be at least n + 1 */
 int fill_string_with_spaces(char *s, int n)
 {
-	char *temp;
 	int len = strlen(s);
-
-	if (len >= n)
+	if (len > n)
 		return -1;
-
-	temp = malloc(sizeof(char) * (n+1));
 	for (; len < n; len++)
 		s[len] = ' ';
 	s[len] = '\0';
-	snprintf(temp, n+1, " %s", s);
-	strcpy(s, temp);
-	free(temp);
 	return 0;
 }
 
-#define MAX_COL_WIDTH 6
 void print_header(int topology_depth)
 {
 	int unsigned mon;
-	int state, need_len;
+	int state, need_len, pr_mon_len;
 	cstate_t s;
 	char buf[128] = "";
+	int percent_width = 4;
 
 	fill_string_with_spaces(buf, topology_depth * 5 - 1);
 	printf("%s|", buf);
 
 	for (mon = 0; mon < avail_monitors; mon++) {
-		need_len = monitors[mon]->hw_states_num * (MAX_COL_WIDTH + 1)
+		pr_mon_len = 0;
+		need_len = monitors[mon]->hw_states_num * (percent_width + 3)
 			- 1;
-		if (mon != 0)
-			printf("||");
+		if (mon != 0) {
+			printf("|| ");
+			need_len--;
+		}
 		sprintf(buf, "%s", monitors[mon]->name);
 		fill_string_with_spaces(buf, need_len);
 		printf("%s", buf);
@@ -114,21 +107,23 @@ void print_header(int topology_depth)
 	printf("\n");
 
 	if (topology_depth > 2)
-		printf(" PKG|");
+		printf("PKG |");
 	if (topology_depth > 1)
 		printf("CORE|");
 	if (topology_depth > 0)
-		printf(" CPU|");
+		printf("CPU |");
 
 	for (mon = 0; mon < avail_monitors; mon++) {
 		if (mon != 0)
-			printf("||");
+			printf("|| ");
+		else
+			printf(" ");
 		for (state = 0; state < monitors[mon]->hw_states_num; state++) {
 			if (state != 0)
-				printf("|");
+				printf(" | ");
 			s = monitors[mon]->hw_states[state];
 			sprintf(buf, "%s", s.name);
-			fill_string_with_spaces(buf, MAX_COL_WIDTH);
+			fill_string_with_spaces(buf, percent_width);
 			printf("%s", buf);
 		}
 		printf(" ");
@@ -147,9 +142,6 @@ void print_results(int topology_depth, int cpu)
 
 	/* Be careful CPUs may got resorted for pkg value do not just use cpu */
 	if (!bitmask_isbitset(cpus_chosen, cpu_top.core_info[cpu].cpu))
-		return;
-	if (!cpu_top.core_info[cpu].is_online &&
-	    cpu_top.core_info[cpu].pkg == -1)
 		return;
 
 	if (topology_depth > 2)
@@ -199,8 +191,7 @@ void print_results(int topology_depth, int cpu)
 	 * It's up to the monitor plug-in to check .is_online, this one
 	 * is just for additional info.
 	 */
-	if (!cpu_top.core_info[cpu].is_online &&
-	    cpu_top.core_info[cpu].pkg != -1) {
+	if (!cpu_top.core_info[cpu].is_online) {
 		printf(_(" *is offline\n"));
 		return;
 	} else
@@ -324,27 +315,15 @@ int fork_it(char **argv)
 int do_interval_measure(int i)
 {
 	unsigned int num;
-	int cpu;
-
-	if (wake_cpus)
-		for (cpu = 0; cpu < cpu_count; cpu++)
-			bind_cpu(cpu);
 
 	for (num = 0; num < avail_monitors; num++) {
 		dprint("HW C-state residency monitor: %s - States: %d\n",
 		       monitors[num]->name, monitors[num]->hw_states_num);
 		monitors[num]->start();
 	}
-
 	sleep(i);
-
-	if (wake_cpus)
-		for (cpu = 0; cpu < cpu_count; cpu++)
-			bind_cpu(cpu);
-
 	for (num = 0; num < avail_monitors; num++)
 		monitors[num]->stop();
-
 
 	return 0;
 }
@@ -354,7 +333,7 @@ static void cmdline(int argc, char *argv[])
 	int opt;
 	progname = basename(argv[0]);
 
-	while ((opt = getopt(argc, argv, "+lci:m:")) != -1) {
+	while ((opt = getopt(argc, argv, "+li:m:")) != -1) {
 		switch (opt) {
 		case 'l':
 			if (mode)
@@ -372,9 +351,6 @@ static void cmdline(int argc, char *argv[])
 				print_wrong_arg_exit();
 			mode = show;
 			show_monitors_param = optarg;
-			break;
-		case 'c':
-			wake_cpus = 1;
 			break;
 		default:
 			print_wrong_arg_exit();
@@ -396,9 +372,6 @@ int cmd_monitor(int argc, char **argv)
 		printf(_("Cannot read number of available processors\n"));
 		return EXIT_FAILURE;
 	}
-
-	if (!cpu_top.core_info[0].is_online)
-		printf("WARNING: at least one cpu is offline\n");
 
 	/* Default is: monitor all CPUs */
 	if (bitmask_isallclear(cpus_chosen))

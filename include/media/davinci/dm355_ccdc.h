@@ -10,6 +10,10 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 #ifndef _DM355_CCDC_H
 #define _DM355_CCDC_H
@@ -34,7 +38,7 @@ enum ccdc_sample_line {
 	CCDC_SAMPLE_16LINES
 };
 
-/* enum for Alaw gamma width */
+/* enum for Alaw gama width */
 enum ccdc_gamma_width {
 	CCDC_GAMMA_BITS_13_4,
 	CCDC_GAMMA_BITS_12_3,
@@ -93,8 +97,8 @@ enum ccdc_mfilt2 {
 struct ccdc_a_law {
 	/* Enable/disable A-Law */
 	unsigned char enable;
-	/* Gamma Width Input */
-	enum ccdc_gamma_width gamma_wd;
+	/* Gama Width Input */
+	enum ccdc_gamma_width gama_wd;
 };
 
 /* structure for Black Clamping */

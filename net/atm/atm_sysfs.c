@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /* ATM driver model support. */
 
 #include <linux/kernel.h>
@@ -15,45 +14,49 @@ static ssize_t show_type(struct device *cdev,
 			 struct device_attribute *attr, char *buf)
 {
 	struct atm_dev *adev = to_atm_dev(cdev);
-
-	return scnprintf(buf, PAGE_SIZE, "%s\n", adev->type);
+	return sprintf(buf, "%s\n", adev->type);
 }
 
 static ssize_t show_address(struct device *cdev,
 			    struct device_attribute *attr, char *buf)
 {
+	char *pos = buf;
 	struct atm_dev *adev = to_atm_dev(cdev);
+	int i;
 
-	return scnprintf(buf, PAGE_SIZE, "%pM\n", adev->esi);
+	for (i = 0; i < (ESI_LEN - 1); i++)
+		pos += sprintf(pos, "%02x:", adev->esi[i]);
+	pos += sprintf(pos, "%02x\n", adev->esi[i]);
+
+	return pos - buf;
 }
 
 static ssize_t show_atmaddress(struct device *cdev,
 			       struct device_attribute *attr, char *buf)
 {
 	unsigned long flags;
+	char *pos = buf;
 	struct atm_dev *adev = to_atm_dev(cdev);
 	struct atm_dev_addr *aaddr;
 	int bin[] = { 1, 2, 10, 6, 1 }, *fmt = bin;
-	int i, j, count = 0;
+	int i, j;
 
 	spin_lock_irqsave(&adev->lock, flags);
 	list_for_each_entry(aaddr, &adev->local, entry) {
 		for (i = 0, j = 0; i < ATM_ESA_LEN; ++i, ++j) {
 			if (j == *fmt) {
-				count += scnprintf(buf + count,
-						   PAGE_SIZE - count, ".");
+				pos += sprintf(pos, ".");
 				++fmt;
 				j = 0;
 			}
-			count += scnprintf(buf + count,
-					   PAGE_SIZE - count, "%02x",
-					   aaddr->addr.sas_addr.prv[i]);
+			pos += sprintf(pos, "%02x",
+				       aaddr->addr.sas_addr.prv[i]);
 		}
-		count += scnprintf(buf + count, PAGE_SIZE - count, "\n");
+		pos += sprintf(pos, "\n");
 	}
 	spin_unlock_irqrestore(&adev->lock, flags);
 
-	return count;
+	return pos - buf;
 }
 
 static ssize_t show_atmindex(struct device *cdev,
@@ -61,21 +64,25 @@ static ssize_t show_atmindex(struct device *cdev,
 {
 	struct atm_dev *adev = to_atm_dev(cdev);
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n", adev->number);
+	return sprintf(buf, "%d\n", adev->number);
 }
 
 static ssize_t show_carrier(struct device *cdev,
 			    struct device_attribute *attr, char *buf)
 {
+	char *pos = buf;
 	struct atm_dev *adev = to_atm_dev(cdev);
 
-	return scnprintf(buf, PAGE_SIZE, "%d\n",
-			 adev->signal == ATM_PHY_SIG_LOST ? 0 : 1);
+	pos += sprintf(pos, "%d\n",
+		       adev->signal == ATM_PHY_SIG_LOST ? 0 : 1);
+
+	return pos - buf;
 }
 
 static ssize_t show_link_rate(struct device *cdev,
 			      struct device_attribute *attr, char *buf)
 {
+	char *pos = buf;
 	struct atm_dev *adev = to_atm_dev(cdev);
 	int link_rate;
 
@@ -93,15 +100,17 @@ static ssize_t show_link_rate(struct device *cdev,
 	default:
 		link_rate = adev->link_rate * 8 * 53;
 	}
-	return scnprintf(buf, PAGE_SIZE, "%d\n", link_rate);
+	pos += sprintf(pos, "%d\n", link_rate);
+
+	return pos - buf;
 }
 
-static DEVICE_ATTR(address, 0444, show_address, NULL);
-static DEVICE_ATTR(atmaddress, 0444, show_atmaddress, NULL);
-static DEVICE_ATTR(atmindex, 0444, show_atmindex, NULL);
-static DEVICE_ATTR(carrier, 0444, show_carrier, NULL);
-static DEVICE_ATTR(type, 0444, show_type, NULL);
-static DEVICE_ATTR(link_rate, 0444, show_link_rate, NULL);
+static DEVICE_ATTR(address, S_IRUGO, show_address, NULL);
+static DEVICE_ATTR(atmaddress, S_IRUGO, show_atmaddress, NULL);
+static DEVICE_ATTR(atmindex, S_IRUGO, show_atmindex, NULL);
+static DEVICE_ATTR(carrier, S_IRUGO, show_carrier, NULL);
+static DEVICE_ATTR(type, S_IRUGO, show_type, NULL);
+static DEVICE_ATTR(link_rate, S_IRUGO, show_link_rate, NULL);
 
 static struct device_attribute *atm_attrs[] = {
 	&dev_attr_atmaddress,

@@ -1,12 +1,16 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/*
+/* linux/arch/arm/mach-s3c6400/include/mach/map.h
+ *
  * Copyright 2008 Openmoko, Inc.
  * Copyright 2008 Simtec Electronics
  *	http://armlinux.simtec.co.uk/
  *	Ben Dooks <ben@simtec.co.uk>
  *
  * S3C64XX - Memory map definitions
- */
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+*/
 
 #ifndef __ASM_ARCH_MAP_H
 #define __ASM_ARCH_MAP_H __FILE__
@@ -95,7 +99,7 @@
 
 #define S3C64XX_PA_USB_HSPHY	(0x7C100000)
 
-/* compatibility defines. */
+/* compatibiltiy defines. */
 #define S3C_PA_TIMER		S3C64XX_PA_TIMER
 #define S3C_PA_HSMMC0		S3C64XX_PA_HSMMC0
 #define S3C_PA_HSMMC1		S3C64XX_PA_HSMMC1
@@ -111,12 +115,9 @@
 #define S3C_PA_USB_HSOTG	S3C64XX_PA_USB_HSOTG
 #define S3C_PA_RTC		S3C64XX_PA_RTC
 #define S3C_PA_WDT		S3C64XX_PA_WATCHDOG
-#define S3C_PA_SPI0		S3C64XX_PA_SPI0
-#define S3C_PA_SPI1		S3C64XX_PA_SPI1
 
 #define SAMSUNG_PA_ADC		S3C64XX_PA_ADC
 #define SAMSUNG_PA_CFCON	S3C64XX_PA_CFCON
 #define SAMSUNG_PA_KEYPAD	S3C64XX_PA_KEYPAD
-#define SAMSUNG_PA_TIMER	S3C64XX_PA_TIMER
 
 #endif /* __ASM_ARCH_6400_MAP_H */

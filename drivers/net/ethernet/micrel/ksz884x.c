@@ -1,5 +1,5 @@
 /**
- * drivers/net/ethernet/micrel/ksx884x.c - Micrel KSZ8841/2 PCI Ethernet driver
+ * drivers/net/ksx884x.c - Micrel KSZ8841/2 PCI Ethernet driver
  *
  * Copyright (c) 2009-2010 Micrel, Inc.
  * 	Tristram Ha <Tristram.Ha@micrel.com>
@@ -746,7 +746,7 @@
 #define MAC_ADDR_ORDER(i)		(ETH_ALEN - 1 - (i))
 
 #define MAX_ETHERNET_BODY_SIZE		1500
-#define ETHERNET_HEADER_SIZE		(14 + VLAN_HLEN)
+#define ETHERNET_HEADER_SIZE		14
 
 #define MAX_ETHERNET_PACKET_SIZE	\
 	(MAX_ETHERNET_BODY_SIZE + ETHERNET_HEADER_SIZE)
@@ -1251,10 +1251,10 @@ struct ksz_port_info {
  * @tx_size:		Transmit data size.  Used for TX optimization.
  * 			The maximum is defined by MAX_TX_HELD_SIZE.
  * @perm_addr:		Permanent MAC address.
- * @override_addr:	Overridden MAC address.
+ * @override_addr:	Overrided MAC address.
  * @address:		Additional MAC address entries.
  * @addr_list_size:	Additional MAC address list size.
- * @mac_override:	Indication of MAC address overridden.
+ * @mac_override:	Indication of MAC address overrided.
  * @promiscuous:	Counter to keep track of promiscuous mode set.
  * @all_multi:		Counter to keep track of all multicast mode set.
  * @multi_list:		Multicast address entries.
@@ -1487,7 +1487,7 @@ struct dev_priv {
 #define DRV_VERSION		"1.0.0"
 #define DRV_RELDATE		"Feb 8, 2010"
 
-static char version[] =
+static char version[] __devinitdata =
 	"Micrel " DEVICE_NAME " " DRV_VERSION " (" DRV_RELDATE ")";
 
 static u8 DEFAULT_MAC_ADDRESS[] = { 0x00, 0x10, 0xA1, 0x88, 0x42, 0x01 };
@@ -2302,6 +2302,12 @@ static inline int port_chk_force_flow_ctrl(struct ksz_hw *hw, int p)
 }
 
 /* Spanning Tree */
+
+static inline void port_cfg_dis_learn(struct ksz_hw *hw, int p, int set)
+{
+	port_cfg(hw, p,
+		KS8842_PORT_CTRL_2_OFFSET, PORT_LEARN_DISABLE, set);
+}
 
 static inline void port_cfg_rx(struct ksz_hw *hw, int p, int set)
 {
@@ -3373,6 +3379,7 @@ static void port_get_link_speed(struct ksz_port *port)
  */
 static void port_set_link_speed(struct ksz_port *port)
 {
+	struct ksz_port_info *info;
 	struct ksz_hw *hw = port->hw;
 	u16 data;
 	u16 cfg;
@@ -3381,6 +3388,8 @@ static void port_set_link_speed(struct ksz_port *port)
 	int p;
 
 	for (i = 0, p = port->first_port; i < port->port_cnt; i++, p++) {
+		info = &hw->port_info[p];
+
 		port_r16(hw, p, KS884X_PORT_CTRL_4_OFFSET, &data);
 		port_r8(hw, p, KS884X_PORT_STATUS_OFFSET, &status);
 
@@ -3904,7 +3913,7 @@ static void hw_start_rx(struct ksz_hw *hw)
 		hw->rx_stop = 2;
 }
 
-/**
+/*
  * hw_stop_rx - stop receiving
  * @hw: 	The hardware instance.
  *
@@ -4039,7 +4048,7 @@ static int empty_addr(u8 *addr)
  * @hw: 	The hardware instance.
  *
  * This routine programs the MAC address of the hardware when the address is
- * overridden.
+ * overrided.
  */
 static void hw_set_addr(struct ksz_hw *hw)
 {
@@ -4119,10 +4128,10 @@ static int hw_add_addr(struct ksz_hw *hw, u8 *mac_addr)
 	int i;
 	int j = ADDITIONAL_ENTRIES;
 
-	if (ether_addr_equal(hw->override_addr, mac_addr))
+	if (!memcmp(hw->override_addr, mac_addr, ETH_ALEN))
 		return 0;
 	for (i = 0; i < hw->addr_list_size; i++) {
-		if (ether_addr_equal(hw->address[i], mac_addr))
+		if (!memcmp(hw->address[i], mac_addr, ETH_ALEN))
 			return 0;
 		if (ADDITIONAL_ENTRIES == j && empty_addr(hw->address[i]))
 			j = i;
@@ -4140,8 +4149,8 @@ static int hw_del_addr(struct ksz_hw *hw, u8 *mac_addr)
 	int i;
 
 	for (i = 0; i < hw->addr_list_size; i++) {
-		if (ether_addr_equal(hw->address[i], mac_addr)) {
-			eth_zero_addr(hw->address[i]);
+		if (!memcmp(hw->address[i], mac_addr, ETH_ALEN)) {
+			memset(hw->address[i], 0, ETH_ALEN);
 			writel(0, hw->io + ADD_ADDR_INCR * i +
 				KS_ADD_ADDR_0_HI);
 			return 0;
@@ -4335,11 +4344,13 @@ static void ksz_stop_timer(struct ksz_timer_info *info)
 }
 
 static void ksz_init_timer(struct ksz_timer_info *info, int period,
-	void (*function)(struct timer_list *))
+	void (*function)(unsigned long), void *data)
 {
 	info->max = 0;
 	info->period = period;
-	timer_setup(&info->timer, function, 0);
+	init_timer(&info->timer);
+	info->timer.function = function;
+	info->timer.data = (unsigned long) data;
 }
 
 static void ksz_update_timer(struct ksz_timer_info *info)
@@ -4369,7 +4380,7 @@ static void ksz_update_timer(struct ksz_timer_info *info)
  */
 static int ksz_alloc_soft_desc(struct ksz_desc_info *desc_info, int transmit)
 {
-	desc_info->ring = kcalloc(desc_info->alloc, sizeof(struct ksz_desc),
+	desc_info->ring = kzalloc(sizeof(struct ksz_desc) * desc_info->alloc,
 				  GFP_KERNEL);
 	if (!desc_info->ring)
 		return 1;
@@ -4398,13 +4409,14 @@ static int ksz_alloc_desc(struct dev_info *adapter)
 		DESC_ALIGNMENT;
 
 	adapter->desc_pool.alloc_virt =
-		pci_zalloc_consistent(adapter->pdev,
-				      adapter->desc_pool.alloc_size,
-				      &adapter->desc_pool.dma_addr);
+		pci_alloc_consistent(
+			adapter->pdev, adapter->desc_pool.alloc_size,
+			&adapter->desc_pool.dma_addr);
 	if (adapter->desc_pool.alloc_virt == NULL) {
 		adapter->desc_pool.alloc_size = 0;
 		return 1;
 	}
+	memset(adapter->desc_pool.alloc_virt, 0, adapter->desc_pool.alloc_size);
 
 	/* Align to the next cache line boundary. */
 	offset = (((ulong) adapter->desc_pool.alloc_virt % DESC_ALIGNMENT) ?
@@ -4468,12 +4480,14 @@ static void ksz_init_rx_buffers(struct dev_info *adapter)
 		dma_buf->len = adapter->mtu;
 		if (!dma_buf->skb)
 			dma_buf->skb = alloc_skb(dma_buf->len, GFP_ATOMIC);
-		if (dma_buf->skb && !dma_buf->dma)
+		if (dma_buf->skb && !dma_buf->dma) {
+			dma_buf->skb->dev = adapter->dev;
 			dma_buf->dma = pci_map_single(
 				adapter->pdev,
 				skb_tail_pointer(dma_buf->skb),
 				dma_buf->len,
 				PCI_DMA_FROMDEVICE);
+		}
 
 		/* Set descriptor. */
 		set_rx_buf(desc, dma_buf->dma);
@@ -4749,7 +4763,7 @@ static void transmit_cleanup(struct dev_info *hw_priv, int normal)
 	struct ksz_dma_buf *dma_buf;
 	struct net_device *dev = NULL;
 
-	spin_lock_irq(&hw_priv->hwlock);
+	spin_lock(&hw_priv->hwlock);
 	last = info->last;
 
 	while (info->avail < info->alloc) {
@@ -4783,11 +4797,11 @@ static void transmit_cleanup(struct dev_info *hw_priv, int normal)
 		info->avail++;
 	}
 	info->last = last;
-	spin_unlock_irq(&hw_priv->hwlock);
+	spin_unlock(&hw_priv->hwlock);
 
 	/* Notify the network subsystem that the packet has been sent. */
 	if (dev)
-		netif_trans_update(dev);
+		dev->trans_start = jiffies;
 }
 
 /**
@@ -4820,7 +4834,7 @@ static inline void copy_old_skb(struct sk_buff *old, struct sk_buff *skb)
 	skb->csum = old->csum;
 	skb_set_network_header(skb, ETH_HLEN);
 
-	dev_consume_skb_any(old);
+	dev_kfree_skb(old);
 }
 
 /**
@@ -4849,7 +4863,7 @@ static netdev_tx_t netdev_tx(struct sk_buff *skb, struct net_device *dev)
 				memset(&skb->data[skb->len], 0, 50 - skb->len);
 				skb->len = 50;
 			} else {
-				skb = netdev_alloc_skb(dev, 50);
+				skb = dev_alloc_skb(50);
 				if (!skb)
 					return NETDEV_TX_BUSY;
 				memcpy(skb->data, org_skb->data, org_skb->len);
@@ -4867,11 +4881,11 @@ static netdev_tx_t netdev_tx(struct sk_buff *skb, struct net_device *dev)
 	left = hw_alloc_pkt(hw, skb->len, num);
 	if (left) {
 		if (left < num ||
-		    (CHECKSUM_PARTIAL == skb->ip_summed &&
-		     skb->protocol == htons(ETH_P_IPV6))) {
+				((CHECKSUM_PARTIAL == skb->ip_summed) &&
+				(ETH_P_IPV6 == htons(skb->protocol)))) {
 			struct sk_buff *org_skb = skb;
 
-			skb = netdev_alloc_skb(dev, org_skb->len);
+			skb = dev_alloc_skb(org_skb->len);
 			if (!skb) {
 				rc = NETDEV_TX_BUSY;
 				goto unlock;
@@ -4918,7 +4932,7 @@ static void netdev_tx_timeout(struct net_device *dev)
 		 * Only reset the hardware if time between calls is long
 		 * enough.
 		 */
-		if (time_before_eq(jiffies, last_reset + dev->watchdog_timeo))
+		if (jiffies - last_reset <= dev->watchdog_timeo)
 			hw_priv = NULL;
 	}
 
@@ -4962,7 +4976,7 @@ static void netdev_tx_timeout(struct net_device *dev)
 		hw_ena_intr(hw);
 	}
 
-	netif_trans_update(dev);
+	dev->trans_start = jiffies;
 	netif_wake_queue(dev);
 }
 
@@ -5005,7 +5019,7 @@ static inline int rx_proc(struct net_device *dev, struct ksz_hw* hw,
 
 	do {
 		/* skb->data != skb->head */
-		skb = netdev_alloc_skb(dev, packet_len + 2);
+		skb = dev_alloc_skb(packet_len + 2);
 		if (!skb) {
 			dev->stats.rx_dropped++;
 			return -ENOMEM;
@@ -5017,7 +5031,8 @@ static inline int rx_proc(struct net_device *dev, struct ksz_hw* hw,
 		 */
 		skb_reserve(skb, 2);
 
-		skb_put_data(skb, dma_buf->skb->data, packet_len);
+		memcpy(skb_put(skb, packet_len),
+			dma_buf->skb->data, packet_len);
 	} while (0);
 
 	skb->protocol = eth_type_trans(skb, dev);
@@ -5246,15 +5261,11 @@ static irqreturn_t netdev_intr(int irq, void *dev_id)
 	struct dev_info *hw_priv = priv->adapter;
 	struct ksz_hw *hw = &hw_priv->hw;
 
-	spin_lock(&hw_priv->hwlock);
-
 	hw_read_intr(hw, &int_enable);
 
 	/* Not our interrupt! */
-	if (!int_enable) {
-		spin_unlock(&hw_priv->hwlock);
+	if (!int_enable)
 		return IRQ_NONE;
-	}
 
 	do {
 		hw_ack_intr(hw, int_enable);
@@ -5300,8 +5311,6 @@ static irqreturn_t netdev_intr(int irq, void *dev_id)
 	} while (0);
 
 	hw_ena_intr(hw);
-
-	spin_unlock(&hw_priv->hwlock);
 
 	return IRQ_HANDLED;
 }
@@ -5400,8 +5409,8 @@ static int netdev_close(struct net_device *dev)
 		/* Delay for receive task to stop scheduling itself. */
 		msleep(2000 / HZ);
 
-		tasklet_kill(&hw_priv->rx_tasklet);
-		tasklet_kill(&hw_priv->tx_tasklet);
+		tasklet_disable(&hw_priv->rx_tasklet);
+		tasklet_disable(&hw_priv->tx_tasklet);
 		free_irq(dev->irq, hw_priv->dev);
 
 		transmit_cleanup(hw_priv, 0);
@@ -5452,10 +5461,8 @@ static int prepare_hardware(struct net_device *dev)
 	rc = request_irq(dev->irq, netdev_intr, IRQF_SHARED, dev->name, dev);
 	if (rc)
 		return rc;
-	tasklet_init(&hw_priv->rx_tasklet, rx_proc_task,
-		     (unsigned long) hw_priv);
-	tasklet_init(&hw_priv->tx_tasklet, tx_proc_task,
-		     (unsigned long) hw_priv);
+	tasklet_enable(&hw_priv->rx_tasklet);
+	tasklet_enable(&hw_priv->tx_tasklet);
 
 	hw->promiscuous = 0;
 	hw->all_multi = 0;
@@ -5668,7 +5675,7 @@ static int netdev_set_mac_address(struct net_device *dev, void *addr)
 		memcpy(hw->override_addr, mac->sa_data, ETH_ALEN);
 	}
 
-	memcpy(dev->dev_addr, mac->sa_data, ETH_ALEN);
+	memcpy(dev->dev_addr, mac->sa_data, MAX_ADDR_LEN);
 
 	interrupt = hw_block_intr(hw);
 
@@ -5803,19 +5810,24 @@ static int netdev_change_mtu(struct net_device *dev, int new_mtu)
 	if (hw->dev_count > 1)
 		if (dev != hw_priv->dev)
 			return 0;
+	if (new_mtu < 60)
+		return -EINVAL;
 
-	hw_mtu = new_mtu + ETHERNET_HEADER_SIZE + 4;
-	if (hw_mtu > REGULAR_RX_BUF_SIZE) {
-		hw->features |= RX_HUGE_FRAME;
-		hw_mtu = MAX_RX_BUF_SIZE;
-	} else {
-		hw->features &= ~RX_HUGE_FRAME;
-		hw_mtu = REGULAR_RX_BUF_SIZE;
+	if (dev->mtu != new_mtu) {
+		hw_mtu = new_mtu + ETHERNET_HEADER_SIZE + 4;
+		if (hw_mtu > MAX_RX_BUF_SIZE)
+			return -EINVAL;
+		if (hw_mtu > REGULAR_RX_BUF_SIZE) {
+			hw->features |= RX_HUGE_FRAME;
+			hw_mtu = MAX_RX_BUF_SIZE;
+		} else {
+			hw->features &= ~RX_HUGE_FRAME;
+			hw_mtu = REGULAR_RX_BUF_SIZE;
+		}
+		hw_mtu = (hw_mtu + 3) & ~3;
+		hw_priv->mtu = hw_mtu;
+		dev->mtu = new_mtu;
 	}
-	hw_mtu = (hw_mtu + 3) & ~3;
-	hw_priv->mtu = hw_mtu;
-	dev->mtu = new_mtu;
-
 	return 0;
 }
 
@@ -5835,12 +5847,15 @@ static int netdev_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 	struct dev_info *hw_priv = priv->adapter;
 	struct ksz_hw *hw = &hw_priv->hw;
 	struct ksz_port *port = &priv->port;
+	int rc;
 	int result = 0;
 	struct mii_ioctl_data *data = if_mii(ifr);
 
 	if (down_interruptible(&priv->proc_sem))
 		return -ERESTARTSYS;
 
+	/* assume success */
+	rc = 0;
 	switch (cmd) {
 	/* Get address of MII PHY in use. */
 	case SIOCGMIIPHY:
@@ -5940,7 +5955,7 @@ static u16 eeprom_data[EEPROM_SIZE] = { 0 };
 /* These functions use the MII functions in mii.c. */
 
 /**
- * netdev_get_link_ksettings - get network device settings
+ * netdev_get_settings - get network device settings
  * @dev:	Network device.
  * @cmd:	Ethtool command.
  *
@@ -5948,26 +5963,23 @@ static u16 eeprom_data[EEPROM_SIZE] = { 0 };
  *
  * Return 0 if successful; otherwise an error code.
  */
-static int netdev_get_link_ksettings(struct net_device *dev,
-				     struct ethtool_link_ksettings *cmd)
+static int netdev_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 {
 	struct dev_priv *priv = netdev_priv(dev);
 	struct dev_info *hw_priv = priv->adapter;
 
 	mutex_lock(&hw_priv->lock);
-	mii_ethtool_get_link_ksettings(&priv->mii_if, cmd);
-	ethtool_link_ksettings_add_link_mode(cmd, advertising, TP);
+	mii_ethtool_gset(&priv->mii_if, cmd);
+	cmd->advertising |= SUPPORTED_TP;
 	mutex_unlock(&hw_priv->lock);
 
 	/* Save advertised settings for workaround in next function. */
-	ethtool_convert_link_mode_to_legacy_u32(&priv->advertising,
-						cmd->link_modes.advertising);
-
+	priv->advertising = cmd->advertising;
 	return 0;
 }
 
 /**
- * netdev_set_link_ksettings - set network device settings
+ * netdev_set_settings - set network device settings
  * @dev:	Network device.
  * @cmd:	Ethtool command.
  *
@@ -5975,65 +5987,54 @@ static int netdev_get_link_ksettings(struct net_device *dev,
  *
  * Return 0 if successful; otherwise an error code.
  */
-static int netdev_set_link_ksettings(struct net_device *dev,
-				     const struct ethtool_link_ksettings *cmd)
+static int netdev_set_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 {
 	struct dev_priv *priv = netdev_priv(dev);
 	struct dev_info *hw_priv = priv->adapter;
 	struct ksz_port *port = &priv->port;
-	struct ethtool_link_ksettings copy_cmd;
-	u32 speed = cmd->base.speed;
-	u32 advertising;
+	u32 speed = ethtool_cmd_speed(cmd);
 	int rc;
-
-	ethtool_convert_link_mode_to_legacy_u32(&advertising,
-						cmd->link_modes.advertising);
 
 	/*
 	 * ethtool utility does not change advertised setting if auto
 	 * negotiation is not specified explicitly.
 	 */
-	if (cmd->base.autoneg && priv->advertising == advertising) {
-		advertising |= ADVERTISED_ALL;
+	if (cmd->autoneg && priv->advertising == cmd->advertising) {
+		cmd->advertising |= ADVERTISED_ALL;
 		if (10 == speed)
-			advertising &=
+			cmd->advertising &=
 				~(ADVERTISED_100baseT_Full |
 				ADVERTISED_100baseT_Half);
 		else if (100 == speed)
-			advertising &=
+			cmd->advertising &=
 				~(ADVERTISED_10baseT_Full |
 				ADVERTISED_10baseT_Half);
-		if (0 == cmd->base.duplex)
-			advertising &=
+		if (0 == cmd->duplex)
+			cmd->advertising &=
 				~(ADVERTISED_100baseT_Full |
 				ADVERTISED_10baseT_Full);
-		else if (1 == cmd->base.duplex)
-			advertising &=
+		else if (1 == cmd->duplex)
+			cmd->advertising &=
 				~(ADVERTISED_100baseT_Half |
 				ADVERTISED_10baseT_Half);
 	}
 	mutex_lock(&hw_priv->lock);
-	if (cmd->base.autoneg &&
-	    (advertising & ADVERTISED_ALL) == ADVERTISED_ALL) {
+	if (cmd->autoneg &&
+			(cmd->advertising & ADVERTISED_ALL) ==
+			ADVERTISED_ALL) {
 		port->duplex = 0;
 		port->speed = 0;
 		port->force_link = 0;
 	} else {
-		port->duplex = cmd->base.duplex + 1;
+		port->duplex = cmd->duplex + 1;
 		if (1000 != speed)
 			port->speed = speed;
-		if (cmd->base.autoneg)
+		if (cmd->autoneg)
 			port->force_link = 0;
 		else
 			port->force_link = 1;
 	}
-
-	memcpy(&copy_cmd, cmd, sizeof(copy_cmd));
-	ethtool_convert_legacy_u32_to_link_mode(copy_cmd.link_modes.advertising,
-						advertising);
-	rc = mii_ethtool_set_link_ksettings(
-		&priv->mii_if,
-		(const struct ethtool_link_ksettings *)&copy_cmd);
+	rc = mii_ethtool_sset(&priv->mii_if, cmd);
 	mutex_unlock(&hw_priv->lock);
 	return rc;
 }
@@ -6607,6 +6608,8 @@ static int netdev_set_features(struct net_device *dev,
 }
 
 static const struct ethtool_ops netdev_ethtool_ops = {
+	.get_settings		= netdev_get_settings,
+	.set_settings		= netdev_set_settings,
 	.nway_reset		= netdev_nway_reset,
 	.get_link		= netdev_get_link,
 	.get_drvinfo		= netdev_get_drvinfo,
@@ -6625,8 +6628,6 @@ static const struct ethtool_ops netdev_ethtool_ops = {
 	.get_strings		= netdev_get_strings,
 	.get_sset_count		= netdev_get_sset_count,
 	.get_ethtool_stats	= netdev_get_ethtool_stats,
-	.get_link_ksettings	= netdev_get_link_ksettings,
-	.set_link_ksettings	= netdev_set_link_ksettings,
 };
 
 /*
@@ -6669,7 +6670,7 @@ static void mib_read_work(struct work_struct *work)
 				wake_up_interruptible(
 					&hw_priv->counter[i].counter);
 			}
-		} else if (time_after_eq(jiffies, hw_priv->counter[i].time)) {
+		} else if (jiffies >= hw_priv->counter[i].time) {
 			/* Only read MIB counters when the port is connected. */
 			if (media_connected == mib->state)
 				hw_priv->counter[i].read = 1;
@@ -6686,15 +6687,15 @@ static void mib_read_work(struct work_struct *work)
 	}
 }
 
-static void mib_monitor(struct timer_list *t)
+static void mib_monitor(unsigned long ptr)
 {
-	struct dev_info *hw_priv = from_timer(hw_priv, t, mib_timer_info.timer);
+	struct dev_info *hw_priv = (struct dev_info *) ptr;
 
 	mib_read_work(&hw_priv->mib_read);
 
 	/* This is used to verify Wake-on-LAN is working. */
 	if (hw_priv->pme_wait) {
-		if (time_is_before_eq_jiffies(hw_priv->pme_wait)) {
+		if (hw_priv->pme_wait <= jiffies) {
 			hw_clr_wol_pme_status(&hw_priv->hw);
 			hw_priv->pme_wait = 0;
 		}
@@ -6713,10 +6714,10 @@ static void mib_monitor(struct timer_list *t)
  *
  * This routine is run in a kernel timer to monitor the network device.
  */
-static void dev_monitor(struct timer_list *t)
+static void dev_monitor(unsigned long ptr)
 {
-	struct dev_priv *priv = from_timer(priv, t, monitor_timer_info.timer);
-	struct net_device *dev = priv->mii_if.dev;
+	struct net_device *dev = (struct net_device *) ptr;
+	struct dev_priv *priv = netdev_priv(dev);
 	struct dev_info *hw_priv = priv->adapter;
 	struct ksz_hw *hw = &hw_priv->hw;
 	struct ksz_port *port = &priv->port;
@@ -6768,7 +6769,7 @@ static int stp;
 /*
  * This enables fast aging in the KSZ8842 switch.  Not sure what situation
  * needs that.  However, fast aging is used to flush the dynamic MAC table when
- * STP support is enabled.
+ * STP suport is enabled.
  */
 static int fast_aging;
 
@@ -6786,7 +6787,7 @@ static int __init netdev_init(struct net_device *dev)
 
 	/* 500 ms timeout */
 	ksz_init_timer(&priv->monitor_timer_info, 500 * HZ / 1000,
-		dev_monitor);
+		dev_monitor, dev);
 
 	/* 500 ms timeout */
 	dev->watchdog_timeo = HZ / 2;
@@ -6918,7 +6919,8 @@ static void read_other_addr(struct ksz_hw *hw)
 #define PCI_VENDOR_ID_MICREL_KS		0x16c6
 #endif
 
-static int pcidev_init(struct pci_dev *pdev, const struct pci_device_id *id)
+static int __devinit pcidev_init(struct pci_dev *pdev,
+	const struct pci_device_id *id)
 {
 	struct net_device *dev;
 	struct dev_priv *priv;
@@ -7033,13 +7035,23 @@ static int pcidev_init(struct pci_dev *pdev, const struct pci_device_id *id)
 	spin_lock_init(&hw_priv->hwlock);
 	mutex_init(&hw_priv->lock);
 
+	/* tasklet is enabled. */
+	tasklet_init(&hw_priv->rx_tasklet, rx_proc_task,
+		(unsigned long) hw_priv);
+	tasklet_init(&hw_priv->tx_tasklet, tx_proc_task,
+		(unsigned long) hw_priv);
+
+	/* tasklet_enable will decrement the atomic counter. */
+	tasklet_disable(&hw_priv->rx_tasklet);
+	tasklet_disable(&hw_priv->tx_tasklet);
+
 	for (i = 0; i < TOTAL_PORT_NUM; i++)
 		init_waitqueue_head(&hw_priv->counter[i].counter);
 
 	if (macaddr[0] != ':')
 		get_mac_addr(hw_priv, macaddr, MAIN_PORT);
 
-	/* Read MAC address and initialize override address if not overridden. */
+	/* Read MAC address and initialize override address if not overrided. */
 	hw_read_addr(hw);
 
 	/* Multiple device interfaces mode requires a second MAC address. */
@@ -7062,13 +7074,12 @@ static int pcidev_init(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	/* 500 ms timeout */
 	ksz_init_timer(&hw_priv->mib_timer_info, 500 * HZ / 1000,
-		mib_monitor);
+		mib_monitor, hw_priv);
 
 	for (i = 0; i < hw->dev_count; i++) {
 		dev = alloc_etherdev(sizeof(struct dev_priv));
 		if (!dev)
 			goto pcidev_init_reg_err;
-		SET_NETDEV_DEV(dev, &pdev->dev);
 		info->netdev[i] = dev;
 
 		priv = netdev_priv(dev);
@@ -7098,18 +7109,13 @@ static int pcidev_init(struct pci_dev *pdev, const struct pci_device_id *id)
 			       ETH_ALEN);
 		else {
 			memcpy(dev->dev_addr, sw->other_addr, ETH_ALEN);
-			if (ether_addr_equal(sw->other_addr, hw->override_addr))
+			if (!memcmp(sw->other_addr, hw->override_addr,
+				    ETH_ALEN))
 				dev->dev_addr[5] += port->first_port;
 		}
 
 		dev->netdev_ops = &netdev_ops;
-		dev->ethtool_ops = &netdev_ethtool_ops;
-
-		/* MTU range: 60 - 1894 */
-		dev->min_mtu = ETH_ZLEN;
-		dev->max_mtu = MAX_RX_BUF_SIZE -
-			       (ETH_HLEN + ETH_FCS_LEN + VLAN_HLEN);
-
+		SET_ETHTOOL_OPS(dev, &netdev_ethtool_ops);
 		if (register_netdev(dev))
 			goto pcidev_init_reg_err;
 		port_set_power_saving(port, true);
@@ -7148,6 +7154,8 @@ static void pcidev_exit(struct pci_dev *pdev)
 	int i;
 	struct platform_info *info = pci_get_drvdata(pdev);
 	struct dev_info *hw_priv = &info->dev_info;
+
+	pci_set_drvdata(pdev, NULL);
 
 	release_mem_region(pci_resource_start(pdev, 0),
 		pci_resource_len(pdev, 0));
@@ -7224,7 +7232,7 @@ static int pcidev_suspend(struct pci_dev *pdev, pm_message_t state)
 
 static char pcidev_name[] = "ksz884xp";
 
-static const struct pci_device_id pcidev_table[] = {
+static struct pci_device_id pcidev_table[] = {
 	{ PCI_VENDOR_ID_MICREL_KS, 0x8841,
 		PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
 	{ PCI_VENDOR_ID_MICREL_KS, 0x8842,
@@ -7245,7 +7253,18 @@ static struct pci_driver pci_device_driver = {
 	.remove		= pcidev_exit
 };
 
-module_pci_driver(pci_device_driver);
+static int __init ksz884x_init_module(void)
+{
+	return pci_register_driver(&pci_device_driver);
+}
+
+static void __exit ksz884x_cleanup_module(void)
+{
+	pci_unregister_driver(&pci_device_driver);
+}
+
+module_init(ksz884x_init_module);
+module_exit(ksz884x_cleanup_module);
 
 MODULE_DESCRIPTION("KSZ8841/2 PCI network driver");
 MODULE_AUTHOR("Tristram Ha <Tristram.Ha@micrel.com>");

@@ -15,6 +15,7 @@
 #include <linux/poll.h>
 #include <linux/module.h>
 #include <linux/serio.h>
+#include <linux/init.h>
 #include <linux/major.h>
 #include <linux/device.h>
 #include <linux/miscdevice.h>
@@ -163,39 +164,29 @@ static ssize_t serio_raw_read(struct file *file, char __user *buffer,
 	struct serio_raw_client *client = file->private_data;
 	struct serio_raw *serio_raw = client->serio_raw;
 	char uninitialized_var(c);
-	ssize_t read = 0;
-	int error;
+	ssize_t retval = 0;
 
-	for (;;) {
-		if (serio_raw->dead)
-			return -ENODEV;
+	if (serio_raw->dead)
+		return -ENODEV;
 
-		if (serio_raw->head == serio_raw->tail &&
-		    (file->f_flags & O_NONBLOCK))
-			return -EAGAIN;
+	if (serio_raw->head == serio_raw->tail && (file->f_flags & O_NONBLOCK))
+		return -EAGAIN;
 
-		if (count == 0)
-			break;
+	retval = wait_event_interruptible(serio_raw->wait,
+			serio_raw->head != serio_raw->tail || serio_raw->dead);
+	if (retval)
+		return retval;
 
-		while (read < count && serio_raw_fetch_byte(serio_raw, &c)) {
-			if (put_user(c, buffer++))
-				return -EFAULT;
-			read++;
-		}
+	if (serio_raw->dead)
+		return -ENODEV;
 
-		if (read)
-			break;
-
-		if (!(file->f_flags & O_NONBLOCK)) {
-			error = wait_event_interruptible(serio_raw->wait,
-					serio_raw->head != serio_raw->tail ||
-					serio_raw->dead);
-			if (error)
-				return error;
-		}
+	while (retval < count && serio_raw_fetch_byte(serio_raw, &c)) {
+		if (put_user(c, buffer++))
+			return -EFAULT;
+		retval++;
 	}
 
-	return read;
+	return retval;
 }
 
 static ssize_t serio_raw_write(struct file *file, const char __user *buffer,
@@ -203,7 +194,8 @@ static ssize_t serio_raw_write(struct file *file, const char __user *buffer,
 {
 	struct serio_raw_client *client = file->private_data;
 	struct serio_raw *serio_raw = client->serio_raw;
-	int retval = 0;
+	ssize_t written = 0;
+	int retval;
 	unsigned char c;
 
 	retval = mutex_lock_interruptible(&serio_raw_mutex);
@@ -223,35 +215,31 @@ static ssize_t serio_raw_write(struct file *file, const char __user *buffer,
 			retval = -EFAULT;
 			goto out;
 		}
-
 		if (serio_write(serio_raw->serio, c)) {
-			/* Either signal error or partial write */
-			if (retval == 0)
-				retval = -EIO;
+			retval = -EIO;
 			goto out;
 		}
-
-		retval++;
-	}
+		written++;
+	};
 
 out:
 	mutex_unlock(&serio_raw_mutex);
-	return retval;
+	return written;
 }
 
-static __poll_t serio_raw_poll(struct file *file, poll_table *wait)
+static unsigned int serio_raw_poll(struct file *file, poll_table *wait)
 {
 	struct serio_raw_client *client = file->private_data;
 	struct serio_raw *serio_raw = client->serio_raw;
-	__poll_t mask;
+	unsigned int mask;
 
 	poll_wait(file, &serio_raw->wait, wait);
 
-	mask = serio_raw->dead ? EPOLLHUP | EPOLLERR : EPOLLOUT | EPOLLWRNORM;
+	mask = serio_raw->dead ? POLLHUP | POLLERR : POLLOUT | POLLWRNORM;
 	if (serio_raw->head != serio_raw->tail)
-		mask |= EPOLLIN | EPOLLRDNORM;
+		return POLLIN | POLLRDNORM;
 
-	return mask;
+	return 0;
 }
 
 static const struct file_operations serio_raw_fops = {
@@ -292,7 +280,7 @@ static irqreturn_t serio_raw_interrupt(struct serio *serio, unsigned char data,
 
 static int serio_raw_connect(struct serio *serio, struct serio_driver *drv)
 {
-	static atomic_t serio_raw_no = ATOMIC_INIT(-1);
+	static atomic_t serio_raw_no = ATOMIC_INIT(0);
 	struct serio_raw *serio_raw;
 	int err;
 
@@ -303,7 +291,7 @@ static int serio_raw_connect(struct serio *serio, struct serio_driver *drv)
 	}
 
 	snprintf(serio_raw->name, sizeof(serio_raw->name),
-		 "serio_raw%ld", (long)atomic_inc_return(&serio_raw_no));
+		 "serio_raw%ld", (long)atomic_inc_return(&serio_raw_no) - 1);
 	kref_init(&serio_raw->kref);
 	INIT_LIST_HEAD(&serio_raw->client_list);
 	init_waitqueue_head(&serio_raw->wait);
@@ -410,7 +398,7 @@ static void serio_raw_disconnect(struct serio *serio)
 	serio_set_drvdata(serio, NULL);
 }
 
-static const struct serio_device_id serio_raw_serio_ids[] = {
+static struct serio_device_id serio_raw_serio_ids[] = {
 	{
 		.type	= SERIO_8042,
 		.proto	= SERIO_ANY,
@@ -441,4 +429,15 @@ static struct serio_driver serio_raw_drv = {
 	.manual_bind	= true,
 };
 
-module_serio_driver(serio_raw_drv);
+static int __init serio_raw_init(void)
+{
+	return serio_register_driver(&serio_raw_drv);
+}
+
+static void __exit serio_raw_exit(void)
+{
+	serio_unregister_driver(&serio_raw_drv);
+}
+
+module_init(serio_raw_init);
+module_exit(serio_raw_exit);

@@ -1,12 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * security/tomoyo/realpath.c
  *
  * Copyright (C) 2005-2011  NTT DATA CORPORATION
  */
 
-#include "common.h"
+#include <linux/types.h>
+#include <linux/mount.h>
+#include <linux/mnt_namespace.h>
+#include <linux/fs_struct.h>
 #include <linux/magic.h>
+#include <linux/slab.h>
+#include <net/sock.h>
+#include "common.h"
+#include "../../fs/internal.h"
 
 /**
  * tomoyo_encode2 - Encode binary string to ascii string.
@@ -90,7 +96,7 @@ char *tomoyo_encode(const char *str)
  *
  * If dentry is a directory, trailing '/' is appended.
  */
-static char *tomoyo_get_absolute_path(const struct path *path, char * const buffer,
+static char *tomoyo_get_absolute_path(struct path *path, char * const buffer,
 				      const int buflen)
 {
 	char *pos = ERR_PTR(-ENOMEM);
@@ -98,7 +104,7 @@ static char *tomoyo_get_absolute_path(const struct path *path, char * const buff
 		/* go to whatever namespace root we are under */
 		pos = d_absolute_path(path, buffer, buflen - 1);
 		if (!IS_ERR(pos) && *pos == '/' && pos[1]) {
-			struct inode *inode = d_backing_inode(path->dentry);
+			struct inode *inode = path->dentry->d_inode;
 			if (inode && S_ISDIR(inode->i_mode)) {
 				buffer[buflen - 2] = '/';
 				buffer[buflen - 1] = '\0';
@@ -126,7 +132,7 @@ static char *tomoyo_get_dentry_path(struct dentry *dentry, char * const buffer,
 	if (buflen >= 256) {
 		pos = dentry_path_raw(dentry, buffer, buflen - 1);
 		if (!IS_ERR(pos) && *pos == '/' && pos[1]) {
-			struct inode *inode = d_backing_inode(dentry);
+			struct inode *inode = dentry->d_inode;
 			if (inode && S_ISDIR(inode->i_mode)) {
 				buffer[buflen - 2] = '/';
 				buffer[buflen - 1] = '\0';
@@ -169,12 +175,12 @@ static char *tomoyo_get_local_path(struct dentry *dentry, char * const buffer,
 	if (!MAJOR(sb->s_dev))
 		goto prepend_filesystem_name;
 	{
-		struct inode *inode = d_backing_inode(sb->s_root);
+		struct inode *inode = sb->s_root->d_inode;
 		/*
 		 * Use filesystem name if filesystem does not support rename()
 		 * operation.
 		 */
-		if (!inode->i_op->rename)
+		if (inode->i_op && !inode->i_op->rename)
 			goto prepend_filesystem_name;
 	}
 	/* Prepend device name. */
@@ -217,10 +223,10 @@ out:
  *
  * Returns the buffer.
  */
-static char *tomoyo_get_socket_name(const struct path *path, char * const buffer,
+static char *tomoyo_get_socket_name(struct path *path, char * const buffer,
 				    const int buflen)
 {
-	struct inode *inode = d_backing_inode(path->dentry);
+	struct inode *inode = path->dentry->d_inode;
 	struct socket *sock = inode ? SOCKET_I(inode) : NULL;
 	struct sock *sk = sock ? sock->sk : NULL;
 	if (sk) {
@@ -248,7 +254,7 @@ static char *tomoyo_get_socket_name(const struct path *path, char * const buffer
  * These functions use kzalloc(), so the caller must call kfree()
  * if these functions didn't return NULL.
  */
-char *tomoyo_realpath_from_path(const struct path *path)
+char *tomoyo_realpath_from_path(struct path *path)
 {
 	char *buf = NULL;
 	char *name = NULL;
@@ -278,13 +284,12 @@ char *tomoyo_realpath_from_path(const struct path *path)
 			pos = dentry->d_op->d_dname(dentry, buf, buf_len - 1);
 			goto encode;
 		}
-		inode = d_backing_inode(sb->s_root);
+		inode = sb->s_root->d_inode;
 		/*
 		 * Get local name for filesystems without rename() operation
 		 * or dentry without vfsmount.
 		 */
-		if (!path->mnt ||
-		    (!inode->i_op->rename))
+		if (!path->mnt || (inode->i_op && !inode->i_op->rename))
 			pos = tomoyo_get_local_path(path->dentry, buf,
 						    buf_len - 1);
 		/* Get absolute name for the rest. */

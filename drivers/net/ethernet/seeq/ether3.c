@@ -64,10 +64,11 @@
 #include <linux/delay.h>
 #include <linux/bitops.h>
 
+#include <asm/system.h>
 #include <asm/ecard.h>
 #include <asm/io.h>
 
-static char version[] = "ether3 ethernet driver (c) 1995-2000 R.M.King v1.17\n";
+static char version[] __devinitdata = "ether3 ethernet driver (c) 1995-2000 R.M.King v1.17\n";
 
 #include "ether3.h"
 
@@ -77,8 +78,7 @@ static void	ether3_setmulticastlist(struct net_device *dev);
 static int	ether3_rx(struct net_device *dev, unsigned int maxcnt);
 static void	ether3_tx(struct net_device *dev);
 static int	ether3_open (struct net_device *dev);
-static netdev_tx_t	ether3_sendpacket(struct sk_buff *skb,
-					  struct net_device *dev);
+static int	ether3_sendpacket (struct sk_buff *skb, struct net_device *dev);
 static irqreturn_t ether3_interrupt (int irq, void *dev_id);
 static int	ether3_close (struct net_device *dev);
 static void	ether3_setmulticastlist (struct net_device *dev);
@@ -100,13 +100,13 @@ typedef enum {
  * The SEEQ8005 doesn't like us writing to its registers
  * too quickly.
  */
-static inline void ether3_outb(int v, void __iomem *r)
+static inline void ether3_outb(int v, const void __iomem *r)
 {
 	writeb(v, r);
 	udelay(1);
 }
 
-static inline void ether3_outw(int v, void __iomem *r)
+static inline void ether3_outw(int v, const void __iomem *r)
 {
 	writew(v, r);
 	udelay(1);
@@ -171,11 +171,9 @@ ether3_setbuffer(struct net_device *dev, buffer_rw_t read, int start)
 /*
  * Switch LED off...
  */
-static void ether3_ledoff(struct timer_list *t)
+static void ether3_ledoff(unsigned long data)
 {
-	struct dev_priv *private = from_timer(private, t, timer);
-	struct net_device *dev = private->dev;
-
+	struct net_device *dev = (struct net_device *)data;
 	ether3_outw(priv(dev)->regs.config2 |= CFG2_CTRLO, REG_CONFIG2);
 }
 
@@ -186,6 +184,8 @@ static inline void ether3_ledon(struct net_device *dev)
 {
 	del_timer(&priv(dev)->timer);
 	priv(dev)->timer.expires = jiffies + HZ / 50; /* leave on for 1/50th second */
+	priv(dev)->timer.data = (unsigned long)dev;
+	priv(dev)->timer.function = ether3_ledoff;
 	add_timer(&priv(dev)->timer);
 	if (priv(dev)->regs.config2 & CFG2_CTRLO)
 		ether3_outw(priv(dev)->regs.config2 &= ~CFG2_CTRLO, REG_CONFIG2);
@@ -195,7 +195,7 @@ static inline void ether3_ledon(struct net_device *dev)
  * Read the ethernet address string from the on board rom.
  * This is an ascii string!!!
  */
-static int
+static int __devinit
 ether3_addr(char *addr, struct expansion_card *ec)
 {
 	struct in_chunk_dir cd;
@@ -220,7 +220,7 @@ ether3_addr(char *addr, struct expansion_card *ec)
 
 /* --------------------------------------------------------------------------- */
 
-static int
+static int __devinit
 ether3_ramtest(struct net_device *dev, unsigned char byte)
 {
 	unsigned char *buffer = kmalloc(RX_END, GFP_KERNEL);
@@ -269,7 +269,7 @@ ether3_ramtest(struct net_device *dev, unsigned char byte)
 
 /* ------------------------------------------------------------------------------- */
 
-static int ether3_init_2(struct net_device *dev)
+static int __devinit ether3_init_2(struct net_device *dev)
 {
 	int i;
 
@@ -400,6 +400,12 @@ ether3_probe_bus_16(struct net_device *dev, int val)
 static int
 ether3_open(struct net_device *dev)
 {
+	if (!is_valid_ether_addr(dev->dev_addr)) {
+		printk(KERN_WARNING "%s: invalid ethernet MAC address\n",
+			dev->name);
+		return -EINVAL;
+	}
+
 	if (request_irq(dev->irq, ether3_interrupt, 0, "ether3", dev))
 		return -EAGAIN;
 
@@ -482,7 +488,7 @@ static void ether3_timeout(struct net_device *dev)
 /*
  * Transmit a packet
  */
-static netdev_tx_t
+static int
 ether3_sendpacket(struct sk_buff *skb, struct net_device *dev)
 {
 	unsigned long flags;
@@ -637,7 +643,7 @@ if (next_ptr < RX_START || next_ptr >= RX_END) {
 			if (next_ptr <= this_ptr)
 				length += RX_END - RX_START;
 
-			skb = netdev_alloc_skb(dev, length + 2);
+			skb = dev_alloc_skb(length + 2);
 			if (skb) {
 				unsigned char *buf;
 
@@ -652,11 +658,8 @@ if (next_ptr < RX_START || next_ptr >= RX_END) {
 				skb->protocol = eth_type_trans(skb, dev);
 				netif_rx(skb);
 				received ++;
-			} else {
-				ether3_outw(next_ptr >> 8, REG_RECVEND);
-				dev->stats.rx_dropped++;
-				goto done;
-			}
+			} else
+				goto dropping;
 		} else {
 			struct net_device_stats *stats = &dev->stats;
 			ether3_outw(next_ptr >> 8, REG_RECVEND);
@@ -683,6 +686,21 @@ done:
 	}
 
 	return maxcnt;
+
+dropping:{
+	static unsigned long last_warned;
+
+	ether3_outw(next_ptr >> 8, REG_RECVEND);
+	/*
+	 * Don't print this message too many times...
+	 */
+	if (time_after(jiffies, last_warned + 10 * HZ)) {
+		last_warned = jiffies;
+		printk("%s: memory squeeze, dropping packet.\n", dev->name);
+	}
+	dev->stats.rx_dropped++;
+	goto done;
+	}
 }
 
 /*
@@ -731,7 +749,7 @@ static void ether3_tx(struct net_device *dev)
 	}
 }
 
-static void ether3_banner(void)
+static void __devinit ether3_banner(void)
 {
 	static unsigned version_printed = 0;
 
@@ -746,10 +764,11 @@ static const struct net_device_ops ether3_netdev_ops = {
 	.ndo_set_rx_mode	= ether3_setmulticastlist,
 	.ndo_tx_timeout		= ether3_timeout,
 	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_set_mac_address	= eth_mac_addr,
 };
 
-static int
+static int __devinit
 ether3_probe(struct expansion_card *ec, const struct ecard_id *id)
 {
 	const struct ether3_data *data = id->data;
@@ -784,8 +803,7 @@ ether3_probe(struct expansion_card *ec, const struct ecard_id *id)
 
 	ether3_addr(dev->dev_addr, ec);
 
-	priv(dev)->dev = dev;
-	timer_setup(&priv(dev)->timer, ether3_ledoff, 0);
+	init_timer(&priv(dev)->timer);
 
 	/* Reset card...
 	 */
@@ -847,7 +865,7 @@ ether3_probe(struct expansion_card *ec, const struct ecard_id *id)
 	return ret;
 }
 
-static void ether3_remove(struct expansion_card *ec)
+static void __devexit ether3_remove(struct expansion_card *ec)
 {
 	struct net_device *dev = ecard_get_drvdata(ec);
 
@@ -877,7 +895,7 @@ static const struct ecard_id ether3_ids[] = {
 
 static struct ecard_driver ether3_driver = {
 	.probe		= ether3_probe,
-	.remove		= ether3_remove,
+	.remove		= __devexit_p(ether3_remove),
 	.id_table	= ether3_ids,
 	.drv = {
 		.name	= "ether3",

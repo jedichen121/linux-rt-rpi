@@ -17,23 +17,23 @@
  *
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/module.h>		/* For module specific items */
 #include <linux/moduleparam.h>		/* For new moduleparam's */
 #include <linux/types.h>		/* For standard types (like size_t) */
 #include <linux/errno.h>		/* For the -ENODEV/... values */
 #include <linux/kernel.h>		/* For printk/panic/... */
 #include <linux/fs.h>			/* For file operations */
-#include <linux/miscdevice.h>		/* For struct miscdevice */
+#include <linux/miscdevice.h>		/* For MODULE_ALIAS_MISCDEV
+							(WATCHDOG_MINOR) */
 #include <linux/watchdog.h>		/* For the watchdog specific items */
 #include <linux/init.h>			/* For __init/__exit/... */
 #include <linux/platform_device.h>	/* For platform_driver framework */
 #include <linux/spinlock.h>		/* For spin_lock/spin_unlock/... */
 #include <linux/uaccess.h>		/* For copy_to_user/put_user/... */
-#include <linux/io.h>			/* For devm_ioremap_nocache */
 
 #include <asm/mach-rc32434/integ.h>	/* For the Watchdog registers */
+
+#define PFX KBUILD_MODNAME ": "
 
 #define VERSION "1.0"
 
@@ -64,8 +64,8 @@ module_param(timeout, int, 0);
 MODULE_PARM_DESC(timeout, "Watchdog timeout value, in seconds (default="
 		__MODULE_STRING(WATCHDOG_TIMEOUT) ")");
 
-static bool nowayout = WATCHDOG_NOWAYOUT;
-module_param(nowayout, bool, 0);
+static int nowayout = WATCHDOG_NOWAYOUT;
+module_param(nowayout, int, 0);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
 	__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
@@ -78,7 +78,8 @@ static int rc32434_wdt_set(int new_timeout)
 	int max_to = WTCOMP2SEC((u32)-1);
 
 	if (new_timeout < 0 || new_timeout > max_to) {
-		pr_err("timeout value must be between 0 and %d\n", max_to);
+		printk(KERN_ERR PFX "timeout value must be between 0 and %d",
+			max_to);
 		return -EINVAL;
 	}
 	timeout = new_timeout;
@@ -118,7 +119,7 @@ static void rc32434_wdt_start(void)
 	SET_BITS(wdt_reg->wtc, or, nand);
 
 	spin_unlock(&rc32434_wdt_device.io_lock);
-	pr_info("Started watchdog timer\n");
+	printk(KERN_INFO PFX "Started watchdog timer.\n");
 }
 
 static void rc32434_wdt_stop(void)
@@ -129,7 +130,7 @@ static void rc32434_wdt_stop(void)
 	SET_BITS(wdt_reg->wtc, 0, 1 << RC32434_WTC_EN);
 
 	spin_unlock(&rc32434_wdt_device.io_lock);
-	pr_info("Stopped watchdog timer\n");
+	printk(KERN_INFO PFX "Stopped watchdog timer.\n");
 }
 
 static void rc32434_wdt_ping(void)
@@ -159,7 +160,8 @@ static int rc32434_wdt_release(struct inode *inode, struct file *file)
 		rc32434_wdt_stop();
 		module_put(THIS_MODULE);
 	} else {
-		pr_crit("device closed unexpectedly. WDT will not stop!\n");
+		printk(KERN_CRIT PFX
+			"device closed unexpectedly. WDT will not stop!\n");
 		rc32434_wdt_ping();
 	}
 	clear_bit(0, &rc32434_wdt_device.inuse);
@@ -237,7 +239,7 @@ static long rc32434_wdt_ioctl(struct file *file, unsigned int cmd,
 			return -EINVAL;
 		/* Fall through */
 	case WDIOC_GETTIMEOUT:
-		return copy_to_user(argp, &timeout, sizeof(int)) ? -EFAULT : 0;
+		return copy_to_user(argp, &timeout, sizeof(int));
 	default:
 		return -ENOTTY;
 	}
@@ -260,20 +262,23 @@ static struct miscdevice rc32434_wdt_miscdev = {
 	.fops	= &rc32434_wdt_fops,
 };
 
-static int rc32434_wdt_probe(struct platform_device *pdev)
+static char banner[] __devinitdata = KERN_INFO PFX
+		"Watchdog Timer version " VERSION ", timer margin: %d sec\n";
+
+static int __devinit rc32434_wdt_probe(struct platform_device *pdev)
 {
 	int ret;
 	struct resource *r;
 
 	r = platform_get_resource_byname(pdev, IORESOURCE_MEM, "rb532_wdt_res");
 	if (!r) {
-		pr_err("failed to retrieve resources\n");
+		printk(KERN_ERR PFX "failed to retrieve resources\n");
 		return -ENODEV;
 	}
 
-	wdt_reg = devm_ioremap_nocache(&pdev->dev, r->start, resource_size(r));
+	wdt_reg = ioremap_nocache(r->start, resource_size(r));
 	if (!wdt_reg) {
-		pr_err("failed to remap I/O resources\n");
+		printk(KERN_ERR PFX "failed to remap I/O resources\n");
 		return -ENXIO;
 	}
 
@@ -286,25 +291,30 @@ static int rc32434_wdt_probe(struct platform_device *pdev)
 	 * if not reset to the default */
 	if (rc32434_wdt_set(timeout)) {
 		rc32434_wdt_set(WATCHDOG_TIMEOUT);
-		pr_info("timeout value must be between 0 and %d\n",
+		printk(KERN_INFO PFX
+			"timeout value must be between 0 and %d\n",
 			WTCOMP2SEC((u32)-1));
 	}
 
 	ret = misc_register(&rc32434_wdt_miscdev);
 	if (ret < 0) {
-		pr_err("failed to register watchdog device\n");
-		return ret;
+		printk(KERN_ERR PFX "failed to register watchdog device\n");
+		goto unmap;
 	}
 
-	pr_info("Watchdog Timer version " VERSION ", timer margin: %d sec\n",
-		timeout);
+	printk(banner, timeout);
 
 	return 0;
+
+unmap:
+	iounmap(wdt_reg);
+	return ret;
 }
 
-static int rc32434_wdt_remove(struct platform_device *pdev)
+static int __devexit rc32434_wdt_remove(struct platform_device *pdev)
 {
 	misc_deregister(&rc32434_wdt_miscdev);
+	iounmap(wdt_reg);
 	return 0;
 }
 
@@ -315,16 +325,28 @@ static void rc32434_wdt_shutdown(struct platform_device *pdev)
 
 static struct platform_driver rc32434_wdt_driver = {
 	.probe		= rc32434_wdt_probe,
-	.remove		= rc32434_wdt_remove,
+	.remove		= __devexit_p(rc32434_wdt_remove),
 	.shutdown	= rc32434_wdt_shutdown,
 	.driver		= {
 			.name = "rc32434_wdt",
 	}
 };
 
-module_platform_driver(rc32434_wdt_driver);
+static int __init rc32434_wdt_init(void)
+{
+	return platform_driver_register(&rc32434_wdt_driver);
+}
+
+static void __exit rc32434_wdt_exit(void)
+{
+	platform_driver_unregister(&rc32434_wdt_driver);
+}
+
+module_init(rc32434_wdt_init);
+module_exit(rc32434_wdt_exit);
 
 MODULE_AUTHOR("Ondrej Zajicek <santiago@crfreenet.org>,"
 		"Florian Fainelli <florian@openwrt.org>");
 MODULE_DESCRIPTION("Driver for the IDT RC32434 SoC watchdog");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS_MISCDEV(WATCHDOG_MINOR);

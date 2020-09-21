@@ -23,9 +23,11 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 #include <linux/kernel.h>
-#include <linux/export.h>
+#include <linux/module.h>
+#include <linux/interrupt.h>
 #include <linux/llist.h>
 
+#include <asm/system.h>
 
 /**
  * llist_add_batch - add several linked entries in batch
@@ -38,13 +40,18 @@
 bool llist_add_batch(struct llist_node *new_first, struct llist_node *new_last,
 		     struct llist_head *head)
 {
-	struct llist_node *first;
+	struct llist_node *entry, *old_entry;
 
-	do {
-		new_last->next = first = READ_ONCE(head->first);
-	} while (cmpxchg(&head->first, first, new_first) != first);
+	entry = head->first;
+	for (;;) {
+		old_entry = entry;
+		new_last->next = entry;
+		entry = cmpxchg(&head->first, old_entry, new_first);
+		if (entry == old_entry)
+			break;
+	}
 
-	return !first;
+	return old_entry == NULL;
 }
 EXPORT_SYMBOL_GPL(llist_add_batch);
 
@@ -66,12 +73,12 @@ struct llist_node *llist_del_first(struct llist_head *head)
 {
 	struct llist_node *entry, *old_entry, *next;
 
-	entry = smp_load_acquire(&head->first);
+	entry = head->first;
 	for (;;) {
 		if (entry == NULL)
 			return NULL;
 		old_entry = entry;
-		next = READ_ONCE(entry->next);
+		next = entry->next;
 		entry = cmpxchg(&head->first, old_entry, next);
 		if (entry == old_entry)
 			break;
@@ -80,25 +87,3 @@ struct llist_node *llist_del_first(struct llist_head *head)
 	return entry;
 }
 EXPORT_SYMBOL_GPL(llist_del_first);
-
-/**
- * llist_reverse_order - reverse order of a llist chain
- * @head:	first item of the list to be reversed
- *
- * Reverse the order of a chain of llist entries and return the
- * new first entry.
- */
-struct llist_node *llist_reverse_order(struct llist_node *head)
-{
-	struct llist_node *new_head = NULL;
-
-	while (head) {
-		struct llist_node *tmp = head;
-		head = head->next;
-		tmp->next = new_head;
-		new_head = tmp;
-	}
-
-	return new_head;
-}
-EXPORT_SYMBOL_GPL(llist_reverse_order);

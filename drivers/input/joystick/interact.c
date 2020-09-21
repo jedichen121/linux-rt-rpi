@@ -23,12 +23,17 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ *
+ * Should you need to contact me, the author, you can do so either by
+ * e-mail - mail your message to <vojtech@ucw.cz>, or by paper mail:
+ * Vojtech Pavlik, Simunkova 1594, Prague 8, 182 00 Czech Republic
  */
 
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/delay.h>
+#include <linux/init.h>
 #include <linux/gameport.h>
 #include <linux/input.h>
 #include <linux/jiffies.h>
@@ -306,4 +311,15 @@ static struct gameport_driver interact_drv = {
 	.disconnect	= interact_disconnect,
 };
 
-module_gameport_driver(interact_drv);
+static int __init interact_init(void)
+{
+	return gameport_register_driver(&interact_drv);
+}
+
+static void __exit interact_exit(void)
+{
+	gameport_unregister_driver(&interact_drv);
+}
+
+module_init(interact_init);
+module_exit(interact_exit);

@@ -91,9 +91,9 @@ static int nothing_to_commit(struct ubifs_info *c)
 	if (c->nroot && test_bit(DIRTY_CNODE, &c->nroot->flags))
 		return 0;
 
-	ubifs_assert(c, atomic_long_read(&c->dirty_zn_cnt) == 0);
-	ubifs_assert(c, c->dirty_pn_cnt == 0);
-	ubifs_assert(c, c->dirty_nn_cnt == 0);
+	ubifs_assert(atomic_long_read(&c->dirty_zn_cnt) == 0);
+	ubifs_assert(c->dirty_pn_cnt == 0);
+	ubifs_assert(c->dirty_nn_cnt == 0);
 
 	return 1;
 }
@@ -113,7 +113,7 @@ static int do_commit(struct ubifs_info *c)
 	struct ubifs_lp_stats lst;
 
 	dbg_cmt("start");
-	ubifs_assert(c, !c->ro_media && !c->ro_mount);
+	ubifs_assert(!c->ro_media && !c->ro_mount);
 
 	if (c->ro_error) {
 		err = -EROFS;
@@ -166,10 +166,15 @@ static int do_commit(struct ubifs_info *c)
 	err = ubifs_orphan_end_commit(c);
 	if (err)
 		goto out;
+	old_ltail_lnum = c->ltail_lnum;
+	err = ubifs_log_end_commit(c, new_ltail_lnum);
+	if (err)
+		goto out;
 	err = dbg_check_old_index(c, &zroot);
 	if (err)
 		goto out;
 
+	mutex_lock(&c->mst_mutex);
 	c->mst_node->cmt_no      = cpu_to_le64(c->cmt_no);
 	c->mst_node->log_lnum    = cpu_to_le32(new_ltail_lnum);
 	c->mst_node->root_lnum   = cpu_to_le32(zroot.lnum);
@@ -198,9 +203,8 @@ static int do_commit(struct ubifs_info *c)
 		c->mst_node->flags |= cpu_to_le32(UBIFS_MST_NO_ORPHS);
 	else
 		c->mst_node->flags &= ~cpu_to_le32(UBIFS_MST_NO_ORPHS);
-
-	old_ltail_lnum = c->ltail_lnum;
-	err = ubifs_log_end_commit(c, new_ltail_lnum);
+	err = ubifs_write_master(c);
+	mutex_unlock(&c->mst_mutex);
 	if (err)
 		goto out;
 
@@ -225,7 +229,7 @@ out_cancel:
 out_up:
 	up_write(&c->commit_sem);
 out:
-	ubifs_err(c, "commit failed, error %d", err);
+	ubifs_err("commit failed, error %d", err);
 	spin_lock(&c->cs_lock);
 	c->cmt_state = COMMIT_BROKEN;
 	wake_up(&c->cmt_wq);
@@ -289,8 +293,8 @@ int ubifs_bg_thread(void *info)
 	int err;
 	struct ubifs_info *c = info;
 
-	ubifs_msg(c, "background thread \"%s\" started, PID %d",
-		  c->bgt_name, current->pid);
+	dbg_msg("background thread \"%s\" started, PID %d",
+		c->bgt_name, current->pid);
 	set_freezable();
 
 	while (1) {
@@ -324,7 +328,7 @@ int ubifs_bg_thread(void *info)
 		cond_resched();
 	}
 
-	ubifs_msg(c, "background thread \"%s\" stops", c->bgt_name);
+	dbg_msg("background thread \"%s\" stops", c->bgt_name);
 	return 0;
 }
 
@@ -492,9 +496,7 @@ int ubifs_gc_should_commit(struct ubifs_info *c)
 	return ret;
 }
 
-/*
- * Everything below is related to debugging.
- */
+#ifdef CONFIG_UBIFS_FS_DEBUG
 
 /**
  * struct idx_node - hold index nodes during index tree traversal.
@@ -510,7 +512,7 @@ struct idx_node {
 	struct list_head list;
 	int iip;
 	union ubifs_key upper_key;
-	struct ubifs_idx_node idx __aligned(8);
+	struct ubifs_idx_node idx __attribute__((aligned(8)));
 };
 
 /**
@@ -712,14 +714,14 @@ out:
 	return 0;
 
 out_dump:
-	ubifs_err(c, "dumping index node (iip=%d)", i->iip);
-	ubifs_dump_node(c, idx);
+	dbg_err("dumping index node (iip=%d)", i->iip);
+	dbg_dump_node(c, idx);
 	list_del(&i->list);
 	kfree(i);
 	if (!list_empty(&list)) {
 		i = list_entry(list.prev, struct idx_node, list);
-		ubifs_err(c, "dumping parent index node");
-		ubifs_dump_node(c, &i->idx);
+		dbg_err("dumping parent index node");
+		dbg_dump_node(c, &i->idx);
 	}
 out_free:
 	while (!list_empty(&list)) {
@@ -727,8 +729,10 @@ out_free:
 		list_del(&i->list);
 		kfree(i);
 	}
-	ubifs_err(c, "failed, error %d", err);
+	ubifs_err("failed, error %d", err);
 	if (err > 0)
 		err = -EINVAL;
 	return err;
 }
+
+#endif /* CONFIG_UBIFS_FS_DEBUG */

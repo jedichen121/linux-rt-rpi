@@ -147,6 +147,25 @@ DPRINTK(KERN_DEBUG "frob_control mask %02x, value %02x\n",mask,val);
 	return old;
 }
 
+#if 0 /* currently unused */
+static unsigned char status_pc_to_mfc3(unsigned char status)
+{
+	unsigned char ret = 1;
+
+	if (status & PARPORT_STATUS_BUSY) /* Busy */
+		ret &= ~1;
+	if (status & PARPORT_STATUS_ACK) /* Ack */
+		ret |= 8;
+	if (status & PARPORT_STATUS_PAPEROUT) /* PaperOut */
+		ret |= 2;
+	if (status & PARPORT_STATUS_SELECT) /* select */
+		ret |= 4;
+	if (status & PARPORT_STATUS_ERROR) /* error */
+		ret |= 16;
+	return ret;
+}
+#endif
+
 static unsigned char status_mfc3_to_pc(unsigned char status)
 {
 	unsigned char ret = PARPORT_STATUS_BUSY;
@@ -165,6 +184,14 @@ static unsigned char status_mfc3_to_pc(unsigned char status)
 	return ret;
 }
 
+#if 0 /* currently unused */
+static void mfc3_write_status( struct parport *p, unsigned char status)
+{
+DPRINTK(KERN_DEBUG "write_status %02x\n",status);
+	pia(p)->ppra = (pia(p)->ppra & 0xe0) | status_pc_to_mfc3(status);
+}
+#endif
+
 static unsigned char mfc3_read_status(struct parport *p)
 {
 	unsigned char status;
@@ -174,7 +201,15 @@ DPRINTK(KERN_DEBUG "read_status %02x\n", status);
 	return status;
 }
 
-static int use_cnt;
+#if 0 /* currently unused */
+static void mfc3_change_mode( struct parport *p, int m)
+{
+	/* XXX: This port only has one mode, and I am
+	not sure about the corresponding PC-style mode*/
+}
+#endif
+
+static int use_cnt = 0;
 
 static irqreturn_t mfc3_interrupt(int irq, void *dev_id)
 {
@@ -300,7 +335,7 @@ static int __init parport_mfc3_init(void)
 		if (!request_mem_region(piabase, sizeof(struct pia), "PIA"))
 			continue;
 
-		pp = ZTWO_VADDR(piabase);
+		pp = (struct pia *)ZTWO_VADDR(piabase);
 		pp->crb = 0;
 		pp->pddrb = 255; /* all data pins output */
 		pp->crb = PIA_DDR|32|8;
@@ -362,7 +397,7 @@ static void __exit parport_mfc3_exit(void)
 
 
 MODULE_AUTHOR("Joerg Dorchain <joerg@dorchain.net>");
-MODULE_DESCRIPTION("Parport Driver for Multiface 3 expansion cards Parallel Port");
+MODULE_DESCRIPTION("Parport Driver for Multiface 3 expansion cards Paralllel Port");
 MODULE_SUPPORTED_DEVICE("Multiface 3 Parallel Port");
 MODULE_LICENSE("GPL");
 

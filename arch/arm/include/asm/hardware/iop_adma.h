@@ -49,6 +49,7 @@ struct iop_adma_device {
 /**
  * struct iop_adma_chan - internal representation of an ADMA device
  * @pending: allows batching of hardware operations
+ * @completed_cookie: identifier for the most recently completed operation
  * @lock: serializes enqueue/dequeue operations to the slot pool
  * @mmr_base: memory mapped register base
  * @chain: device chain view of the descriptors
@@ -61,6 +62,7 @@ struct iop_adma_device {
  */
 struct iop_adma_chan {
 	int pending;
+	dma_cookie_t completed_cookie;
 	spinlock_t lock; /* protects the descriptor slot pool */
 	void __iomem *mmr_base;
 	struct list_head chain;
@@ -82,6 +84,8 @@ struct iop_adma_chan {
  * @slot_cnt: total slots used in an transaction (group of operations)
  * @slots_per_op: number of slots per operation
  * @idx: pool index
+ * @unmap_src_cnt: number of xor sources
+ * @unmap_len: transaction bytecount
  * @tx_list: list of descriptors that are associated with one operation
  * @async_tx: support for the async_tx api
  * @group_list: list of slots that make up a multi-descriptor transaction
@@ -97,6 +101,8 @@ struct iop_adma_desc_slot {
 	u16 slot_cnt;
 	u16 slots_per_op;
 	u16 idx;
+	u16 unmap_src_cnt;
+	size_t unmap_len;
 	struct list_head tx_list;
 	struct dma_async_tx_descriptor async_tx;
 	union {

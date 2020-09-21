@@ -17,15 +17,15 @@
 #include <linux/bitops.h>
 #include <linux/slab.h>
 #include <linux/mtd/nand_ecc.h>
-#include "nand/raw/sm_common.h"
+#include "nand/sm_common.h"
 #include "sm_ftl.h"
 
 
 
-static struct workqueue_struct *cache_flush_workqueue;
+struct workqueue_struct *cache_flush_workqueue;
 
 static int cache_timeout = 1000;
-module_param(cache_timeout, int, S_IRUGO);
+module_param(cache_timeout, bool, S_IRUGO);
 MODULE_PARM_DESC(cache_timeout,
 	"Timeout (in ms) for cache flush (1000 ms default");
 
@@ -41,7 +41,7 @@ struct sm_sysfs_attribute {
 	int len;
 };
 
-static ssize_t sm_attr_show(struct device *dev, struct device_attribute *attr,
+ssize_t sm_attr_show(struct device *dev, struct device_attribute *attr,
 		     char *buf)
 {
 	struct sm_sysfs_attribute *sm_attr =
@@ -54,17 +54,20 @@ static ssize_t sm_attr_show(struct device *dev, struct device_attribute *attr,
 
 #define NUM_ATTRIBUTES 1
 #define SM_CIS_VENDOR_OFFSET 0x59
-static struct attribute_group *sm_create_sysfs_attributes(struct sm_ftl *ftl)
+struct attribute_group *sm_create_sysfs_attributes(struct sm_ftl *ftl)
 {
 	struct attribute_group *attr_group;
 	struct attribute **attributes;
 	struct sm_sysfs_attribute *vendor_attribute;
-	char *vendor;
 
-	vendor = kstrndup(ftl->cis_buffer + SM_CIS_VENDOR_OFFSET,
-			  SM_SMALL_PAGE - SM_CIS_VENDOR_OFFSET, GFP_KERNEL);
+	int vendor_len = strnlen(ftl->cis_buffer + SM_CIS_VENDOR_OFFSET,
+					SM_SMALL_PAGE - SM_CIS_VENDOR_OFFSET);
+
+	char *vendor = kmalloc(vendor_len, GFP_KERNEL);
 	if (!vendor)
 		goto error1;
+	memcpy(vendor, ftl->cis_buffer + SM_CIS_VENDOR_OFFSET, vendor_len);
+	vendor[vendor_len] = 0;
 
 	/* Initialize sysfs attributes */
 	vendor_attribute =
@@ -75,14 +78,14 @@ static struct attribute_group *sm_create_sysfs_attributes(struct sm_ftl *ftl)
 	sysfs_attr_init(&vendor_attribute->dev_attr.attr);
 
 	vendor_attribute->data = vendor;
-	vendor_attribute->len = strlen(vendor);
+	vendor_attribute->len = vendor_len;
 	vendor_attribute->dev_attr.attr.name = "vendor";
 	vendor_attribute->dev_attr.attr.mode = S_IRUGO;
 	vendor_attribute->dev_attr.show = sm_attr_show;
 
 
 	/* Create array of pointers to the attributes */
-	attributes = kcalloc(NUM_ATTRIBUTES + 1, sizeof(struct attribute *),
+	attributes = kzalloc(sizeof(struct attribute *) * (NUM_ATTRIBUTES + 1),
 								GFP_KERNEL);
 	if (!attributes)
 		goto error3;
@@ -104,7 +107,7 @@ error1:
 	return NULL;
 }
 
-static void sm_delete_sysfs_attributes(struct sm_ftl *ftl)
+void sm_delete_sysfs_attributes(struct sm_ftl *ftl)
 {
 	struct attribute **attributes = ftl->disk_attributes->attrs;
 	int i;
@@ -206,10 +209,9 @@ static loff_t sm_mkoffset(struct sm_ftl *ftl, int zone, int block, int boffset)
 }
 
 /* Breaks offset into parts */
-static void sm_break_offset(struct sm_ftl *ftl, loff_t loffset,
+static void sm_break_offset(struct sm_ftl *ftl, loff_t offset,
 			    int *zone, int *block, int *boffset)
 {
-	u64 offset = loffset;
 	*boffset = do_div(offset, ftl->block_size);
 	*block = do_div(offset, ftl->max_lba);
 	*zone = offset >= ftl->zone_count ? -1 : offset;
@@ -276,7 +278,7 @@ again:
 
 	/* Unfortunately, oob read will _always_ succeed,
 		despite card removal..... */
-	ret = mtd_read_oob(mtd, sm_mkoffset(ftl, zone, block, boffset), &ops);
+	ret = mtd->read_oob(mtd, sm_mkoffset(ftl, zone, block, boffset), &ops);
 
 	/* Test for unknown errors */
 	if (ret != 0 && !mtd_is_bitflip_or_eccerr(ret)) {
@@ -341,9 +343,10 @@ static int sm_write_sector(struct sm_ftl *ftl,
 	ops.ooblen = SM_OOB_SIZE;
 	ops.oobbuf = (void *)oob;
 
-	ret = mtd_write_oob(mtd, sm_mkoffset(ftl, zone, block, boffset), &ops);
+	ret = mtd->write_oob(mtd, sm_mkoffset(ftl, zone, block, boffset), &ops);
 
 	/* Now we assume that hardware will catch write bitflip errors */
+	/* If you are paranoid, use CONFIG_MTD_NAND_VERIFY_WRITE */
 
 	if (ret) {
 		dbg("write to block %d at zone %d, failed with error %d",
@@ -386,7 +389,7 @@ restart:
 		if (test_bit(boffset / SM_SECTOR_SIZE, &invalid_bitmap)) {
 
 			sm_printk("sector %d of block at LBA %d of zone %d"
-				" couldn't be read, marking it as invalid",
+				" coudn't be read, marking it as invalid",
 				boffset / SM_SECTOR_SIZE, lba, zone);
 
 			oob.data_status = 0;
@@ -460,8 +463,11 @@ static int sm_erase_block(struct sm_ftl *ftl, int zone_num, uint16_t block,
 	struct mtd_info *mtd = ftl->trans->mtd;
 	struct erase_info erase;
 
+	erase.mtd = mtd;
+	erase.callback = sm_erase_callback;
 	erase.addr = sm_mkoffset(ftl, zone_num, block, 0);
 	erase.len = ftl->block_size;
+	erase.priv = (u_long)ftl;
 
 	if (ftl->unstable)
 		return -EIO;
@@ -473,9 +479,18 @@ static int sm_erase_block(struct sm_ftl *ftl, int zone_num, uint16_t block,
 		return -EIO;
 	}
 
-	if (mtd_erase(mtd, &erase)) {
+	if (mtd->erase(mtd, &erase)) {
 		sm_printk("erase of block %d in zone %d failed",
 							block, zone_num);
+		goto error;
+	}
+
+	if (erase.state == MTD_ERASE_PENDING)
+		wait_for_completion(&ftl->erase_completion);
+
+	if (erase.state != MTD_ERASE_DONE) {
+		sm_printk("erase of block %d in zone %d failed after wait",
+			block, zone_num);
 		goto error;
 	}
 
@@ -487,6 +502,12 @@ static int sm_erase_block(struct sm_ftl *ftl, int zone_num, uint16_t block,
 error:
 	sm_mark_block_bad(ftl, zone_num, block);
 	return -EIO;
+}
+
+static void sm_erase_callback(struct erase_info *self)
+{
+	struct sm_ftl *ftl = (struct sm_ftl *)self->priv;
+	complete(&ftl->erase_completion);
 }
 
 /* Thoroughly test that block is valid. */
@@ -551,7 +572,7 @@ static const uint8_t cis_signature[] = {
 };
 /* Find out media parameters.
  * This ideally has to be based on nand id, but for now device size is enough */
-static int sm_get_media_info(struct sm_ftl *ftl, struct mtd_info *mtd)
+int sm_get_media_info(struct sm_ftl *ftl, struct mtd_info *mtd)
 {
 	int i;
 	int size_in_megs = mtd->size / (1024 * 1024);
@@ -624,8 +645,8 @@ static int sm_get_media_info(struct sm_ftl *ftl, struct mtd_info *mtd)
 	if (!ftl->smallpagenand && mtd->oobsize < SM_OOB_SIZE)
 		return -ENODEV;
 
-	/* We use OOB */
-	if (!mtd_has_oob(mtd))
+	/* We use these functions for IO */
+	if (!mtd->read_oob || !mtd->write_oob)
 		return -ENODEV;
 
 	/* Find geometry information */
@@ -750,7 +771,7 @@ static int sm_init_zone(struct sm_ftl *ftl, int zone_num)
 	dbg("initializing zone %d", zone_num);
 
 	/* Allocate memory for FTL table */
-	zone->lba_to_phys_table = kmalloc_array(ftl->max_lba, 2, GFP_KERNEL);
+	zone->lba_to_phys_table = kmalloc(ftl->max_lba * 2, GFP_KERNEL);
 
 	if (!zone->lba_to_phys_table)
 		return -ENOMEM;
@@ -858,7 +879,7 @@ static int sm_init_zone(struct sm_ftl *ftl, int zone_num)
 }
 
 /* Get and automatically initialize an FTL mapping for one zone */
-static struct ftl_zone *sm_get_zone(struct sm_ftl *ftl, int zone_num)
+struct ftl_zone *sm_get_zone(struct sm_ftl *ftl, int zone_num)
 {
 	struct ftl_zone *zone;
 	int error;
@@ -879,7 +900,7 @@ static struct ftl_zone *sm_get_zone(struct sm_ftl *ftl, int zone_num)
 /* ----------------- cache handling ------------------------------------------*/
 
 /* Initialize the one block cache */
-static void sm_cache_init(struct sm_ftl *ftl)
+void sm_cache_init(struct sm_ftl *ftl)
 {
 	ftl->cache_data_invalid_bitmap = 0xFFFFFFFF;
 	ftl->cache_clean = 1;
@@ -889,7 +910,7 @@ static void sm_cache_init(struct sm_ftl *ftl)
 }
 
 /* Put sector in one block cache */
-static void sm_cache_put(struct sm_ftl *ftl, char *buffer, int boffset)
+void sm_cache_put(struct sm_ftl *ftl, char *buffer, int boffset)
 {
 	memcpy(ftl->cache_data + boffset, buffer, SM_SECTOR_SIZE);
 	clear_bit(boffset / SM_SECTOR_SIZE, &ftl->cache_data_invalid_bitmap);
@@ -897,7 +918,7 @@ static void sm_cache_put(struct sm_ftl *ftl, char *buffer, int boffset)
 }
 
 /* Read a sector from the cache */
-static int sm_cache_get(struct sm_ftl *ftl, char *buffer, int boffset)
+int sm_cache_get(struct sm_ftl *ftl, char *buffer, int boffset)
 {
 	if (test_bit(boffset / SM_SECTOR_SIZE,
 		&ftl->cache_data_invalid_bitmap))
@@ -908,7 +929,7 @@ static int sm_cache_get(struct sm_ftl *ftl, char *buffer, int boffset)
 }
 
 /* Write the cache to hardware */
-static int sm_cache_flush(struct sm_ftl *ftl)
+int sm_cache_flush(struct sm_ftl *ftl)
 {
 	struct ftl_zone *zone;
 
@@ -971,9 +992,9 @@ restart:
 
 
 /* flush timer, runs a second after last write */
-static void sm_cache_flush_timer(struct timer_list *t)
+static void sm_cache_flush_timer(unsigned long data)
 {
-	struct sm_ftl *ftl = from_timer(ftl, t, timer);
+	struct sm_ftl *ftl = (struct sm_ftl *)data;
 	queue_work(cache_flush_workqueue, &ftl->flush_work);
 }
 
@@ -1041,7 +1062,7 @@ static int sm_write(struct mtd_blktrans_dev *dev,
 {
 	struct sm_ftl *ftl = dev->priv;
 	struct ftl_zone *zone;
-	int error = 0, zone_num, block, boffset;
+	int error, zone_num, block, boffset;
 
 	BUG_ON(ftl->readonly);
 	sm_break_offset(ftl, sec_no << 9, &zone_num, &block, &boffset);
@@ -1087,7 +1108,7 @@ static int sm_flush(struct mtd_blktrans_dev *dev)
 }
 
 /* outside interface: device is released */
-static void sm_release(struct mtd_blktrans_dev *dev)
+static int sm_release(struct mtd_blktrans_dev *dev)
 {
 	struct sm_ftl *ftl = dev->priv;
 
@@ -1096,6 +1117,7 @@ static void sm_release(struct mtd_blktrans_dev *dev)
 	cancel_work_sync(&ftl->flush_work);
 	sm_cache_flush(ftl);
 	mutex_unlock(&ftl->mutex);
+	return 0;
 }
 
 /* outside interface: get geometry */
@@ -1121,8 +1143,9 @@ static void sm_add_mtd(struct mtd_blktrans_ops *tr, struct mtd_info *mtd)
 
 
 	mutex_init(&ftl->mutex);
-	timer_setup(&ftl->timer, sm_cache_flush_timer, 0);
+	setup_timer(&ftl->timer, sm_cache_flush_timer, (unsigned long)ftl);
 	INIT_WORK(&ftl->flush_work, sm_cache_flush_work);
+	init_completion(&ftl->erase_completion);
 
 	/* Read media information */
 	if (sm_get_media_info(ftl, mtd)) {
@@ -1137,7 +1160,7 @@ static void sm_add_mtd(struct mtd_blktrans_ops *tr, struct mtd_info *mtd)
 		goto error2;
 
 	/* Allocate zone array, it will be initialized on demand */
-	ftl->zones = kcalloc(ftl->zone_count, sizeof(struct ftl_zone),
+	ftl->zones = kzalloc(sizeof(struct ftl_zone) * ftl->zone_count,
 								GFP_KERNEL);
 	if (!ftl->zones)
 		goto error3;
@@ -1233,7 +1256,7 @@ static void sm_remove_dev(struct mtd_blktrans_dev *dev)
 
 static struct mtd_blktrans_ops sm_ftl_ops = {
 	.name		= "smblk",
-	.major		= 0,
+	.major		= -1,
 	.part_bits	= SM_FTL_PARTN_BITS,
 	.blksize	= SM_SECTOR_SIZE,
 	.getgeo		= sm_getgeo,
@@ -1253,10 +1276,10 @@ static struct mtd_blktrans_ops sm_ftl_ops = {
 static __init int sm_module_init(void)
 {
 	int error = 0;
-
 	cache_flush_workqueue = create_freezable_workqueue("smflush");
-	if (!cache_flush_workqueue)
-		return -ENOMEM;
+
+	if (IS_ERR(cache_flush_workqueue))
+		return PTR_ERR(cache_flush_workqueue);
 
 	error = register_mtd_blktrans(&sm_ftl_ops);
 	if (error)

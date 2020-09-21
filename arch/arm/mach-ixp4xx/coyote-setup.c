@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/arm/mach-ixp4xx/coyote-setup.c
  *
@@ -111,9 +110,8 @@ static void __init coyote_init(void)
 MACHINE_START(ADI_COYOTE, "ADI Engineering Coyote")
 	/* Maintainer: MontaVista Software, Inc. */
 	.map_io		= ixp4xx_map_io,
-	.init_early	= ixp4xx_init_early,
 	.init_irq	= ixp4xx_init_irq,
-	.init_time	= ixp4xx_timer_init,
+	.timer		= &ixp4xx_timer,
 	.atag_offset	= 0x100,
 	.init_machine	= coyote_init,
 #if defined(CONFIG_PCI)
@@ -131,9 +129,8 @@ MACHINE_END
 MACHINE_START(IXDPG425, "Intel IXDPG425")
 	/* Maintainer: MontaVista Software, Inc. */
 	.map_io		= ixp4xx_map_io,
-	.init_early	= ixp4xx_init_early,
 	.init_irq	= ixp4xx_init_irq,
-	.init_time	= ixp4xx_timer_init,
+	.timer		= &ixp4xx_timer,
 	.atag_offset	= 0x100,
 	.init_machine	= coyote_init,
 	.restart	= ixp4xx_restart,

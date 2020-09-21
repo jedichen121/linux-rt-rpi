@@ -11,10 +11,9 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/module.h>
 #include <linux/init.h>
 #include <linux/spinlock.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <asm/prom.h>
 #include <asm/machdep.h>
 #include <asm/rtas.h>
@@ -67,7 +66,7 @@ static void chrp_nvram_write(int addr, unsigned char val)
 void __init chrp_nvram_init(void)
 {
 	struct device_node *nvram;
-	const __be32 *nbytes_p;
+	const unsigned int *nbytes_p;
 	unsigned int proplen;
 
 	nvram = of_find_node_by_type(NULL, "nvram");
@@ -80,7 +79,7 @@ void __init chrp_nvram_init(void)
 		return;
 	}
 
-	nvram_size = be32_to_cpup(nbytes_p);
+	nvram_size = *nbytes_p;
 
 	printk(KERN_INFO "CHRP nvram contains %u bytes\n", nvram_size);
 	of_node_put(nvram);
@@ -90,5 +89,3 @@ void __init chrp_nvram_init(void)
 
 	return;
 }
-
-MODULE_LICENSE("GPL v2");

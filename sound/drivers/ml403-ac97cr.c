@@ -73,7 +73,7 @@ MODULE_SUPPORTED_DEVICE("{{Xilinx,ML403 AC97 Controller Reference}}");
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;
-static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE;
+static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE;
 
 module_param_array(index, int, NULL, 0444);
 MODULE_PARM_DESC(index, "Index value for ML403 AC97 Controller Reference.");
@@ -373,7 +373,7 @@ struct snd_ml403_ac97cr {
 	struct snd_pcm_indirect2 capture_ind2_rec;
 };
 
-static const struct snd_pcm_hardware snd_ml403_ac97cr_playback = {
+static struct snd_pcm_hardware snd_ml403_ac97cr_playback = {
 	.info =	            (SNDRV_PCM_INFO_MMAP |
 			     SNDRV_PCM_INFO_INTERLEAVED |
 			     SNDRV_PCM_INFO_MMAP_VALID),
@@ -392,7 +392,7 @@ static const struct snd_pcm_hardware snd_ml403_ac97cr_playback = {
 	.fifo_size =	    0,
 };
 
-static const struct snd_pcm_hardware snd_ml403_ac97cr_capture = {
+static struct snd_pcm_hardware snd_ml403_ac97cr_capture = {
 	.info =	            (SNDRV_PCM_INFO_MMAP |
 			     SNDRV_PCM_INFO_INTERLEAVED |
 			     SNDRV_PCM_INFO_MMAP_VALID),
@@ -759,7 +759,7 @@ static int snd_ml403_ac97cr_capture_close(struct snd_pcm_substream *substream)
 	return 0;
 }
 
-static const struct snd_pcm_ops snd_ml403_ac97cr_playback_ops = {
+static struct snd_pcm_ops snd_ml403_ac97cr_playback_ops = {
 	.open = snd_ml403_ac97cr_playback_open,
 	.close = snd_ml403_ac97cr_playback_close,
 	.ioctl = snd_pcm_lib_ioctl,
@@ -770,7 +770,7 @@ static const struct snd_pcm_ops snd_ml403_ac97cr_playback_ops = {
 	.pointer = snd_ml403_ac97cr_pcm_pointer,
 };
 
-static const struct snd_pcm_ops snd_ml403_ac97cr_capture_ops = {
+static struct snd_pcm_ops snd_ml403_ac97cr_capture_ops = {
 	.open = snd_ml403_ac97cr_capture_open,
 	.close = snd_ml403_ac97cr_capture_close,
 	.ioctl = snd_pcm_lib_ioctl,
@@ -1063,7 +1063,7 @@ snd_ml403_ac97cr_codec_write(struct snd_ac97 *ac97, unsigned short reg,
 	return;
 }
 
-static int
+static int __devinit
 snd_ml403_ac97cr_chip_init(struct snd_ml403_ac97cr *ml403_ac97cr)
 {
 	unsigned long end_time;
@@ -1094,7 +1094,8 @@ static int snd_ml403_ac97cr_free(struct snd_ml403_ac97cr *ml403_ac97cr)
 	if (ml403_ac97cr->capture_irq >= 0)
 		free_irq(ml403_ac97cr->capture_irq, ml403_ac97cr);
 	/* give back "port" */
-	iounmap(ml403_ac97cr->port);
+	if (ml403_ac97cr->port != NULL)
+		iounmap(ml403_ac97cr->port);
 	kfree(ml403_ac97cr);
 	PDEBUG(INIT_INFO, "free(): (done)\n");
 	return 0;
@@ -1107,7 +1108,7 @@ static int snd_ml403_ac97cr_dev_free(struct snd_device *snddev)
 	return snd_ml403_ac97cr_free(ml403_ac97cr);
 }
 
-static int
+static int __devinit
 snd_ml403_ac97cr_create(struct snd_card *card, struct platform_device *pfdev,
 			struct snd_ml403_ac97cr **rml403_ac97cr)
 {
@@ -1203,7 +1204,7 @@ static void snd_ml403_ac97cr_mixer_free(struct snd_ac97 *ac97)
 	PDEBUG(INIT_INFO, "mixer_free(): (done)\n");
 }
 
-static int
+static int __devinit
 snd_ml403_ac97cr_mixer(struct snd_ml403_ac97cr *ml403_ac97cr)
 {
 	struct snd_ac97_bus *bus;
@@ -1236,12 +1237,15 @@ snd_ml403_ac97cr_mixer(struct snd_ml403_ac97cr *ml403_ac97cr)
 	return err;
 }
 
-static int
-snd_ml403_ac97cr_pcm(struct snd_ml403_ac97cr *ml403_ac97cr, int device)
+static int __devinit
+snd_ml403_ac97cr_pcm(struct snd_ml403_ac97cr *ml403_ac97cr, int device,
+		     struct snd_pcm **rpcm)
 {
 	struct snd_pcm *pcm;
 	int err;
 
+	if (rpcm)
+		*rpcm = NULL;
 	err = snd_pcm_new(ml403_ac97cr->card, "ML403AC97CR/1", device, 1, 1,
 			  &pcm);
 	if (err < 0)
@@ -1259,10 +1263,12 @@ snd_ml403_ac97cr_pcm(struct snd_ml403_ac97cr *ml403_ac97cr, int device)
 					  snd_dma_continuous_data(GFP_KERNEL),
 					  64 * 1024,
 					  128 * 1024);
+	if (rpcm)
+		*rpcm = pcm;
 	return 0;
 }
 
-static int snd_ml403_ac97cr_probe(struct platform_device *pfdev)
+static int __devinit snd_ml403_ac97cr_probe(struct platform_device *pfdev)
 {
 	struct snd_card *card;
 	struct snd_ml403_ac97cr *ml403_ac97cr = NULL;
@@ -1274,8 +1280,7 @@ static int snd_ml403_ac97cr_probe(struct platform_device *pfdev)
 	if (!enable[dev])
 		return -ENOENT;
 
-	err = snd_card_new(&pfdev->dev, index[dev], id[dev], THIS_MODULE,
-			   0, &card);
+	err = snd_card_create(index[dev], id[dev], THIS_MODULE, 0, &card);
 	if (err < 0)
 		return err;
 	err = snd_ml403_ac97cr_create(card, pfdev, &ml403_ac97cr);
@@ -1292,7 +1297,7 @@ static int snd_ml403_ac97cr_probe(struct platform_device *pfdev)
 		return err;
 	}
 	PDEBUG(INIT_INFO, "probe(): mixer done\n");
-	err = snd_ml403_ac97cr_pcm(ml403_ac97cr, 0);
+	err = snd_ml403_ac97cr_pcm(ml403_ac97cr, 0, NULL);
 	if (err < 0) {
 		snd_card_free(card);
 		return err;
@@ -1304,6 +1309,8 @@ static int snd_ml403_ac97cr_probe(struct platform_device *pfdev)
 		card->shortname, card->driver,
 		(unsigned long)ml403_ac97cr->port, ml403_ac97cr->irq,
 		ml403_ac97cr->capture_irq, dev + 1);
+
+	snd_card_set_dev(card, &pfdev->dev);
 
 	err = snd_card_register(card);
 	if (err < 0) {
@@ -1318,6 +1325,7 @@ static int snd_ml403_ac97cr_probe(struct platform_device *pfdev)
 static int snd_ml403_ac97cr_remove(struct platform_device *pfdev)
 {
 	snd_card_free(platform_get_drvdata(pfdev));
+	platform_set_drvdata(pfdev, NULL);
 	return 0;
 }
 
@@ -1329,7 +1337,19 @@ static struct platform_driver snd_ml403_ac97cr_driver = {
 	.remove = snd_ml403_ac97cr_remove,
 	.driver = {
 		.name = SND_ML403_AC97CR_DRIVER,
+		.owner = THIS_MODULE,
 	},
 };
 
-module_platform_driver(snd_ml403_ac97cr_driver);
+static int __init alsa_card_ml403_ac97cr_init(void)
+{
+	return platform_driver_register(&snd_ml403_ac97cr_driver);
+}
+
+static void __exit alsa_card_ml403_ac97cr_exit(void)
+{
+	platform_driver_unregister(&snd_ml403_ac97cr_driver);
+}
+
+module_init(alsa_card_ml403_ac97cr_init)
+module_exit(alsa_card_ml403_ac97cr_exit)

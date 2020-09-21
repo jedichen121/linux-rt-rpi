@@ -1,11 +1,45 @@
-// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /******************************************************************************
  *
  * Module Name: evevent - Fixed Event handling and dispatch
  *
- * Copyright (C) 2000 - 2018, Intel Corp.
- *
  *****************************************************************************/
+
+/*
+ * Copyright (C) 2000 - 2011, Intel Corp.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions, and the following disclaimer,
+ *    without modification.
+ * 2. Redistributions in binary form must reproduce at minimum a disclaimer
+ *    substantially similar to the "NO WARRANTY" disclaimer below
+ *    ("Disclaimer") and any redistribution must be conditioned upon
+ *    including a substantially similar Disclaimer requirement for further
+ *    binary redistribution.
+ * 3. Neither the names of the above-listed copyright holders nor the names
+ *    of any contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * Alternatively, this software may be distributed under the terms of the
+ * GNU General Public License ("GPL") version 2 as published by the Free
+ * Software Foundation.
+ *
+ * NO WARRANTY
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+ * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGES.
+ */
 
 #include <acpi/acpi.h>
 #include "accommon.h"
@@ -13,7 +47,7 @@
 
 #define _COMPONENT          ACPI_EVENTS
 ACPI_MODULE_NAME("evevent")
-#if (!ACPI_REDUCED_HARDWARE)	/* Entire module */
+
 /* Local prototypes */
 static acpi_status acpi_ev_fixed_event_initialize(void);
 
@@ -36,12 +70,6 @@ acpi_status acpi_ev_initialize_events(void)
 	acpi_status status;
 
 	ACPI_FUNCTION_TRACE(ev_initialize_events);
-
-	/* If Hardware Reduced flag is set, there are no fixed events */
-
-	if (acpi_gbl_reduced_hardware) {
-		return_ACPI_STATUS(AE_OK);
-	}
 
 	/*
 	 * Initialize the Fixed and General Purpose Events. This is done prior to
@@ -82,12 +110,6 @@ acpi_status acpi_ev_install_xrupt_handlers(void)
 	acpi_status status;
 
 	ACPI_FUNCTION_TRACE(ev_install_xrupt_handlers);
-
-	/* If Hardware Reduced flag is set, there is no ACPI h/w */
-
-	if (acpi_gbl_reduced_hardware) {
-		return_ACPI_STATUS(AE_OK);
-	}
 
 	/* Install the SCI handler */
 
@@ -170,7 +192,6 @@ u32 acpi_ev_fixed_event_detect(void)
 	u32 fixed_status;
 	u32 fixed_enable;
 	u32 i;
-	acpi_status status;
 
 	ACPI_FUNCTION_NAME(ev_fixed_event_detect);
 
@@ -178,12 +199,8 @@ u32 acpi_ev_fixed_event_detect(void)
 	 * Read the fixed feature status and enable registers, as all the cases
 	 * depend on their values. Ignore errors here.
 	 */
-	status = acpi_hw_register_read(ACPI_REGISTER_PM1_STATUS, &fixed_status);
-	status |=
-	    acpi_hw_register_read(ACPI_REGISTER_PM1_ENABLE, &fixed_enable);
-	if (ACPI_FAILURE(status)) {
-		return (int_status);
-	}
+	(void)acpi_hw_register_read(ACPI_REGISTER_PM1_STATUS, &fixed_status);
+	(void)acpi_hw_register_read(ACPI_REGISTER_PM1_ENABLE, &fixed_enable);
 
 	ACPI_DEBUG_PRINT((ACPI_DB_INTERRUPTS,
 			  "Fixed Event Block: Enable %08X Status %08X\n",
@@ -222,14 +239,12 @@ u32 acpi_ev_fixed_event_detect(void)
  *
  * FUNCTION:    acpi_ev_fixed_event_dispatch
  *
- * PARAMETERS:  event               - Event type
+ * PARAMETERS:  Event               - Event type
  *
  * RETURN:      INTERRUPT_HANDLED or INTERRUPT_NOT_HANDLED
  *
  * DESCRIPTION: Clears the status bit for the requested event, calls the
  *              handler that previously registered for the event.
- *              NOTE: If there is no handler for the event, the event is
- *              disabled to prevent further interrupts.
  *
  ******************************************************************************/
 
@@ -244,17 +259,17 @@ static u32 acpi_ev_fixed_event_dispatch(u32 event)
 				      status_register_id, ACPI_CLEAR_STATUS);
 
 	/*
-	 * Make sure that a handler exists. If not, report an error
-	 * and disable the event to prevent further interrupts.
+	 * Make sure we've got a handler. If not, report an error. The event is
+	 * disabled to prevent further interrupts.
 	 */
-	if (!acpi_gbl_fixed_event_handlers[event].handler) {
+	if (NULL == acpi_gbl_fixed_event_handlers[event].handler) {
 		(void)acpi_write_bit_register(acpi_gbl_fixed_event_info[event].
 					      enable_register_id,
 					      ACPI_DISABLE_EVENT);
 
 		ACPI_ERROR((AE_INFO,
-			    "No installed handler for fixed event - %s (%u), disabling",
-			    acpi_ut_get_event_name(event), event));
+			    "No installed handler for fixed event [0x%08X]",
+			    event));
 
 		return (ACPI_INTERRUPT_NOT_HANDLED);
 	}
@@ -264,5 +279,3 @@ static u32 acpi_ev_fixed_event_dispatch(u32 event)
 	return ((acpi_gbl_fixed_event_handlers[event].
 		 handler) (acpi_gbl_fixed_event_handlers[event].context));
 }
-
-#endif				/* !ACPI_REDUCED_HARDWARE */

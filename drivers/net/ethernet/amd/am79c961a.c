@@ -1,5 +1,5 @@
 /*
- *  linux/drivers/net/ethernet/amd/am79c961a.c
+ *  linux/drivers/net/am79c961.c
  *
  *  by Russell King <rmk@arm.linux.org.uk> 1995-2001.
  *
@@ -30,6 +30,7 @@
 #include <linux/io.h>
 
 #include <mach/hardware.h>
+#include <asm/system.h>
 
 #define TX_BUFFERS 15
 #define RX_BUFFERS 25
@@ -50,8 +51,8 @@ static const char version[] =
 static void write_rreg(u_long base, u_int reg, u_int val)
 {
 	asm volatile(
-	"strh	%1, [%2]	@ NET_RAP\n\t"
-	"strh	%0, [%2, #-4]	@ NET_RDP"
+	"str%?h	%1, [%2]	@ NET_RAP\n\t"
+	"str%?h	%0, [%2, #-4]	@ NET_RDP"
 	:
 	: "r" (val), "r" (reg), "r" (ISAIO_BASE + 0x0464));
 }
@@ -60,8 +61,8 @@ static inline unsigned short read_rreg(u_long base_addr, u_int reg)
 {
 	unsigned short v;
 	asm volatile(
-	"strh	%1, [%2]	@ NET_RAP\n\t"
-	"ldrh	%0, [%2, #-4]	@ NET_RDP"
+	"str%?h	%1, [%2]	@ NET_RAP\n\t"
+	"ldr%?h	%0, [%2, #-4]	@ NET_RDP"
 	: "=r" (v)
 	: "r" (reg), "r" (ISAIO_BASE + 0x0464));
 	return v;
@@ -70,8 +71,8 @@ static inline unsigned short read_rreg(u_long base_addr, u_int reg)
 static inline void write_ireg(u_long base, u_int reg, u_int val)
 {
 	asm volatile(
-	"strh	%1, [%2]	@ NET_RAP\n\t"
-	"strh	%0, [%2, #8]	@ NET_IDP"
+	"str%?h	%1, [%2]	@ NET_RAP\n\t"
+	"str%?h	%0, [%2, #8]	@ NET_IDP"
 	:
 	: "r" (val), "r" (reg), "r" (ISAIO_BASE + 0x0464));
 }
@@ -80,8 +81,8 @@ static inline unsigned short read_ireg(u_long base_addr, u_int reg)
 {
 	u_short v;
 	asm volatile(
-	"strh	%1, [%2]	@ NAT_RAP\n\t"
-	"ldrh	%0, [%2, #8]	@ NET_IDP\n\t"
+	"str%?h	%1, [%2]	@ NAT_RAP\n\t"
+	"ldr%?h	%0, [%2, #8]	@ NET_IDP\n\t"
 	: "=r" (v)
 	: "r" (reg), "r" (ISAIO_BASE + 0x0464));
 	return v;
@@ -96,7 +97,7 @@ am_writebuffer(struct net_device *dev, u_int offset, unsigned char *buf, unsigne
 	offset = ISAMEM_BASE + (offset << 1);
 	length = (length + 1) & ~1;
 	if ((int)buf & 2) {
-		asm volatile("strh	%2, [%0], #4"
+		asm volatile("str%?h	%2, [%0], #4"
 		 : "=&r" (offset) : "0" (offset), "r" (buf[0] | (buf[1] << 8)));
 		buf += 2;
 		length -= 2;
@@ -104,20 +105,20 @@ am_writebuffer(struct net_device *dev, u_int offset, unsigned char *buf, unsigne
 	while (length > 8) {
 		register unsigned int tmp asm("r2"), tmp2 asm("r3");
 		asm volatile(
-			"ldmia	%0!, {%1, %2}"
+			"ldm%?ia	%0!, {%1, %2}"
 			: "+r" (buf), "=&r" (tmp), "=&r" (tmp2));
 		length -= 8;
 		asm volatile(
-			"strh	%1, [%0], #4\n\t"
-			"mov	%1, %1, lsr #16\n\t"
-			"strh	%1, [%0], #4\n\t"
-			"strh	%2, [%0], #4\n\t"
-			"mov	%2, %2, lsr #16\n\t"
-			"strh	%2, [%0], #4"
+			"str%?h	%1, [%0], #4\n\t"
+			"mov%?	%1, %1, lsr #16\n\t"
+			"str%?h	%1, [%0], #4\n\t"
+			"str%?h	%2, [%0], #4\n\t"
+			"mov%?	%2, %2, lsr #16\n\t"
+			"str%?h	%2, [%0], #4"
 		: "+r" (offset), "=&r" (tmp), "=&r" (tmp2));
 	}
 	while (length > 0) {
-		asm volatile("strh	%2, [%0], #4"
+		asm volatile("str%?h	%2, [%0], #4"
 		 : "=&r" (offset) : "0" (offset), "r" (buf[0] | (buf[1] << 8)));
 		buf += 2;
 		length -= 2;
@@ -132,23 +133,23 @@ am_readbuffer(struct net_device *dev, u_int offset, unsigned char *buf, unsigned
 	if ((int)buf & 2) {
 		unsigned int tmp;
 		asm volatile(
-			"ldrh	%2, [%0], #4\n\t"
-			"strb	%2, [%1], #1\n\t"
-			"mov	%2, %2, lsr #8\n\t"
-			"strb	%2, [%1], #1"
+			"ldr%?h	%2, [%0], #4\n\t"
+			"str%?b	%2, [%1], #1\n\t"
+			"mov%?	%2, %2, lsr #8\n\t"
+			"str%?b	%2, [%1], #1"
 		: "=&r" (offset), "=&r" (buf), "=r" (tmp): "0" (offset), "1" (buf));
 		length -= 2;
 	}
 	while (length > 8) {
 		register unsigned int tmp asm("r2"), tmp2 asm("r3"), tmp3;
 		asm volatile(
-			"ldrh	%2, [%0], #4\n\t"
-			"ldrh	%4, [%0], #4\n\t"
-			"ldrh	%3, [%0], #4\n\t"
-			"orr	%2, %2, %4, lsl #16\n\t"
-			"ldrh	%4, [%0], #4\n\t"
-			"orr	%3, %3, %4, lsl #16\n\t"
-			"stmia	%1!, {%2, %3}"
+			"ldr%?h	%2, [%0], #4\n\t"
+			"ldr%?h	%4, [%0], #4\n\t"
+			"ldr%?h	%3, [%0], #4\n\t"
+			"orr%?	%2, %2, %4, lsl #16\n\t"
+			"ldr%?h	%4, [%0], #4\n\t"
+			"orr%?	%3, %3, %4, lsl #16\n\t"
+			"stm%?ia	%1!, {%2, %3}"
 		: "=&r" (offset), "=&r" (buf), "=r" (tmp), "=r" (tmp2), "=r" (tmp3)
 		: "0" (offset), "1" (buf));
 		length -= 8;
@@ -156,10 +157,10 @@ am_readbuffer(struct net_device *dev, u_int offset, unsigned char *buf, unsigned
 	while (length > 0) {
 		unsigned int tmp;
 		asm volatile(
-			"ldrh	%2, [%0], #4\n\t"
-			"strb	%2, [%1], #1\n\t"
-			"mov	%2, %2, lsr #8\n\t"
-			"strb	%2, [%1], #1"
+			"ldr%?h	%2, [%0], #4\n\t"
+			"str%?b	%2, [%1], #1\n\t"
+			"mov%?	%2, %2, lsr #8\n\t"
+			"str%?b	%2, [%1], #1"
 		: "=&r" (offset), "=&r" (buf), "=r" (tmp) : "0" (offset), "1" (buf));
 		length -= 2;
 	}
@@ -302,10 +303,10 @@ am79c961_init_for_open(struct net_device *dev)
 	write_rreg (dev->base_addr, CSR0, CSR0_IENA|CSR0_STRT);
 }
 
-static void am79c961_timer(struct timer_list *t)
+static void am79c961_timer(unsigned long data)
 {
-	struct dev_priv *priv = from_timer(priv, t, timer);
-	struct net_device *dev = priv->dev;
+	struct net_device *dev = (struct net_device *)data;
+	struct dev_priv *priv = netdev_priv(dev);
 	unsigned int lnkstat, carrier;
 	unsigned long flags;
 
@@ -472,7 +473,7 @@ am79c961_sendpacket(struct sk_buff *skb, struct net_device *dev)
 	if (am_readword(dev, priv->txhdr + (priv->txhead << 3) + 2) & TMD_OWN)
 		netif_stop_queue(dev);
 
-	dev_consume_skb_any(skb);
+	dev_kfree_skb(skb);
 
 	return NETDEV_TX_OK;
 }
@@ -515,7 +516,7 @@ am79c961_rx(struct net_device *dev, struct dev_priv *priv)
 		}
 
 		len = am_readword(dev, hdraddr + 6);
-		skb = netdev_alloc_skb(dev, len + 2);
+		skb = dev_alloc_skb(len + 2);
 
 		if (skb) {
 			skb_reserve(skb, 2);
@@ -528,6 +529,7 @@ am79c961_rx(struct net_device *dev, struct dev_priv *priv)
 			dev->stats.rx_packets++;
 		} else {
 			am_writeword (dev, hdraddr + 2, RMD_OWN);
+			printk (KERN_WARNING "%s: memory squeeze, dropping packet.\n", dev->name);
 			dev->stats.rx_dropped++;
 			break;
 		}
@@ -663,13 +665,14 @@ static const struct net_device_ops am79c961_netdev_ops = {
 	.ndo_set_rx_mode	= am79c961_setmulticastlist,
 	.ndo_tx_timeout		= am79c961_timeout,
 	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_set_mac_address	= eth_mac_addr,
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller	= am79c961_poll_controller,
 #endif
 };
 
-static int am79c961_probe(struct platform_device *pdev)
+static int __devinit am79c961_probe(struct platform_device *pdev)
 {
 	struct resource *res;
 	struct net_device *dev;
@@ -728,8 +731,9 @@ static int am79c961_probe(struct platform_device *pdev)
 	am79c961_banner();
 
 	spin_lock_init(&priv->chip_lock);
-	priv->dev = dev;
-	timer_setup(&priv->timer, am79c961_timer, 0);
+	init_timer(&priv->timer);
+	priv->timer.data = (unsigned long)dev;
+	priv->timer.function = am79c961_timer;
 
 	if (am79c961_hw_init(dev))
 		goto release;

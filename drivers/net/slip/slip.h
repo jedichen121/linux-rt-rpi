@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * slip.h	Define the SLIP device driver interface and constants.
  *
@@ -54,7 +53,6 @@ struct slip {
   struct tty_struct	*tty;		/* ptr to TTY structure		*/
   struct net_device	*dev;		/* easy for intr handling	*/
   spinlock_t		lock;
-  struct work_struct	tx_work;	/* Flushes transmit buffer	*/
 
 #ifdef SL_INCLUDE_CSLIP
   struct slcompress	*slcomp;	/* for header compression 	*/

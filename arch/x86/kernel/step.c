@@ -1,26 +1,22 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * x86 single-step support code, common to 32-bit and 64-bit.
  */
 #include <linux/sched.h>
-#include <linux/sched/task_stack.h>
 #include <linux/mm.h>
 #include <linux/ptrace.h>
 #include <asm/desc.h>
-#include <asm/mmu_context.h>
 
 unsigned long convert_ip_to_linear(struct task_struct *child, struct pt_regs *regs)
 {
 	unsigned long addr, seg;
 
 	addr = regs->ip;
-	seg = regs->cs;
+	seg = regs->cs & 0xffff;
 	if (v8086_mode(regs)) {
 		addr = (addr & 0xffff) + (seg << 4);
 		return addr;
 	}
 
-#ifdef CONFIG_MODIFY_LDT_SYSCALL
 	/*
 	 * We'll assume that the code segments in the GDT
 	 * are all zero-based. That is largely true: the
@@ -31,14 +27,13 @@ unsigned long convert_ip_to_linear(struct task_struct *child, struct pt_regs *re
 		struct desc_struct *desc;
 		unsigned long base;
 
-		seg >>= 3;
+		seg &= ~7UL;
 
 		mutex_lock(&child->mm->context.lock);
-		if (unlikely(!child->mm->context.ldt ||
-			     seg >= child->mm->context.ldt->nr_entries))
+		if (unlikely((seg >> 3) >= child->mm->context.size))
 			addr = -1L; /* bogus selector, access would fault */
 		else {
-			desc = &child->mm->context.ldt->entries[seg];
+			desc = child->mm->context.ldt + seg;
 			base = get_desc_base(desc);
 
 			/* 16-bit code segment? */
@@ -48,7 +43,6 @@ unsigned long convert_ip_to_linear(struct task_struct *child, struct pt_regs *re
 		}
 		mutex_unlock(&child->mm->context.lock);
 	}
-#endif
 
 	return addr;
 }
@@ -59,8 +53,7 @@ static int is_setting_trap_flag(struct task_struct *child, struct pt_regs *regs)
 	unsigned char opcode[15];
 	unsigned long addr = convert_ip_to_linear(child, regs);
 
-	copied = access_process_vm(child, addr, opcode, sizeof(opcode),
-			FOLL_FORCE);
+	copied = access_process_vm(child, addr, opcode, sizeof(opcode), 0);
 	for (i = 0; i < copied; i++) {
 		switch (opcode[i]) {
 		/* popf and iret */
@@ -164,34 +157,6 @@ static int enable_single_step(struct task_struct *child)
 	return 1;
 }
 
-void set_task_blockstep(struct task_struct *task, bool on)
-{
-	unsigned long debugctl;
-
-	/*
-	 * Ensure irq/preemption can't change debugctl in between.
-	 * Note also that both TIF_BLOCKSTEP and debugctl should
-	 * be changed atomically wrt preemption.
-	 *
-	 * NOTE: this means that set/clear TIF_BLOCKSTEP is only safe if
-	 * task is current or it can't be running, otherwise we can race
-	 * with __switch_to_xtra(). We rely on ptrace_freeze_traced() but
-	 * PTRACE_KILL is not safe.
-	 */
-	local_irq_disable();
-	debugctl = get_debugctlmsr();
-	if (on) {
-		debugctl |= DEBUGCTLMSR_BTF;
-		set_tsk_thread_flag(task, TIF_BLOCKSTEP);
-	} else {
-		debugctl &= ~DEBUGCTLMSR_BTF;
-		clear_tsk_thread_flag(task, TIF_BLOCKSTEP);
-	}
-	if (task == current)
-		update_debugctlmsr(debugctl);
-	local_irq_enable();
-}
-
 /*
  * Enable single or block step.
  */
@@ -204,10 +169,19 @@ static void enable_step(struct task_struct *child, bool block)
 	 * So no one should try to use debugger block stepping in a program
 	 * that uses user-mode single stepping itself.
 	 */
-	if (enable_single_step(child) && block)
-		set_task_blockstep(child, true);
-	else if (test_tsk_thread_flag(child, TIF_BLOCKSTEP))
-		set_task_blockstep(child, false);
+	if (enable_single_step(child) && block) {
+		unsigned long debugctl = get_debugctlmsr();
+
+		debugctl |= DEBUGCTLMSR_BTF;
+		update_debugctlmsr(debugctl);
+		set_tsk_thread_flag(child, TIF_BLOCKSTEP);
+	} else if (test_tsk_thread_flag(child, TIF_BLOCKSTEP)) {
+		unsigned long debugctl = get_debugctlmsr();
+
+		debugctl &= ~DEBUGCTLMSR_BTF;
+		update_debugctlmsr(debugctl);
+		clear_tsk_thread_flag(child, TIF_BLOCKSTEP);
+	}
 }
 
 void user_enable_single_step(struct task_struct *child)
@@ -225,8 +199,13 @@ void user_disable_single_step(struct task_struct *child)
 	/*
 	 * Make sure block stepping (BTF) is disabled.
 	 */
-	if (test_tsk_thread_flag(child, TIF_BLOCKSTEP))
-		set_task_blockstep(child, false);
+	if (test_tsk_thread_flag(child, TIF_BLOCKSTEP)) {
+		unsigned long debugctl = get_debugctlmsr();
+
+		debugctl &= ~DEBUGCTLMSR_BTF;
+		update_debugctlmsr(debugctl);
+		clear_tsk_thread_flag(child, TIF_BLOCKSTEP);
+	}
 
 	/* Always clear TIF_SINGLESTEP... */
 	clear_tsk_thread_flag(child, TIF_SINGLESTEP);

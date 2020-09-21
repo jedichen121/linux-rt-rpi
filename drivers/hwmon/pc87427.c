@@ -1,7 +1,7 @@
 /*
  *  pc87427.c - hardware monitoring driver for the
  *              National Semiconductor PC87427 Super-I/O chip
- *  Copyright (C) 2006, 2008, 2010  Jean Delvare <jdelvare@suse.de>
+ *  Copyright (C) 2006, 2008, 2010  Jean Delvare <khali@linux-fr.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2 as
@@ -46,11 +46,9 @@ static struct platform_device *pdev;
 
 #define DRVNAME "pc87427"
 
-/*
- * The lock mutex protects both the I/O accesses (needed because the
- * device is using banked registers) and the register cache (needed to keep
- * the data in the registers and the cache in sync at any time).
- */
+/* The lock mutex protects both the I/O accesses (needed because the
+   device is using banked registers) and the register cache (needed to keep
+   the data in the registers and the cache in sync at any time). */
 struct pc87427_data {
 	struct device *hwmon_dev;
 	struct mutex lock;
@@ -106,13 +104,6 @@ static const char *logdev_str[2] = { DRVNAME " FMC", DRVNAME " HMC" };
 #define LD_IN		1
 #define LD_TEMP		1
 
-static inline int superio_enter(int sioaddr)
-{
-	if (!request_muxed_region(sioaddr, 2, DRVNAME))
-		return -EBUSY;
-	return 0;
-}
-
 static inline void superio_outb(int sioaddr, int reg, int val)
 {
 	outb(reg, sioaddr);
@@ -129,7 +120,6 @@ static inline void superio_exit(int sioaddr)
 {
 	outb(0x02, sioaddr);
 	outb(0x02, sioaddr + 1);
-	release_region(sioaddr, 2);
 }
 
 /*
@@ -183,12 +173,10 @@ static inline void pc87427_write8_bank(struct pc87427_data *data, u8 ldi,
 #define FAN_STATUS_LOSPD		(1 << 1)
 #define FAN_STATUS_MONEN		(1 << 0)
 
-/*
- * Dedicated function to read all registers related to a given fan input.
- * This saves us quite a few locks and bank selections.
- * Must be called with data->lock held.
- * nr is from 0 to 7
- */
+/* Dedicated function to read all registers related to a given fan input.
+   This saves us quite a few locks and bank selections.
+   Must be called with data->lock held.
+   nr is from 0 to 7 */
 static void pc87427_readall_fan(struct pc87427_data *data, u8 nr)
 {
 	int iobase = data->address[LD_FAN];
@@ -201,10 +189,8 @@ static void pc87427_readall_fan(struct pc87427_data *data, u8 nr)
 	outb(data->fan_status[nr], iobase + PC87427_REG_FAN_STATUS);
 }
 
-/*
- * The 2 LSB of fan speed registers are used for something different.
- * The actual 2 LSB of the measurements are not available.
- */
+/* The 2 LSB of fan speed registers are used for something different.
+   The actual 2 LSB of the measurements are not available. */
 static inline unsigned long fan_from_reg(u16 reg)
 {
 	reg &= 0xfffc;
@@ -238,12 +224,10 @@ static inline u16 fan_to_reg(unsigned long val)
 #define PWM_MODE_OFF			(2 << 4)
 #define PWM_MODE_ON			(7 << 4)
 
-/*
- * Dedicated function to read all registers related to a given PWM output.
- * This saves us quite a few locks and bank selections.
- * Must be called with data->lock held.
- * nr is from 0 to 3
- */
+/* Dedicated function to read all registers related to a given PWM output.
+   This saves us quite a few locks and bank selections.
+   Must be called with data->lock held.
+   nr is from 0 to 3 */
 static void pc87427_readall_pwm(struct pc87427_data *data, u8 nr)
 {
 	int iobase = data->address[LD_FAN];
@@ -302,12 +286,10 @@ static inline u8 pwm_enable_to_reg(unsigned long val, u8 pwmval)
 #define TEMP_TYPE_REMOTE_DIODE		(2 << 5)
 #define TEMP_TYPE_LOCAL_DIODE		(3 << 5)
 
-/*
- * Dedicated function to read all registers related to a given temperature
- * input. This saves us quite a few locks and bank selections.
- * Must be called with data->lock held.
- * nr is from 0 to 5
- */
+/* Dedicated function to read all registers related to a given temperature
+   input. This saves us quite a few locks and bank selections.
+   Must be called with data->lock held.
+   nr is from 0 to 5 */
 static void pc87427_readall_temp(struct pc87427_data *data, u8 nr)
 {
 	int iobase = data->address[LD_TEMP];
@@ -336,10 +318,8 @@ static inline unsigned int temp_type_from_reg(u8 reg)
 	}
 }
 
-/*
- * We assume 8-bit thermal sensors; 9-bit thermal sensors are possible
- * too, but I have no idea how to figure out when they are used.
- */
+/* We assume 8-bit thermal sensors; 9-bit thermal sensors are possible
+   too, but I have no idea how to figure out when they are used. */
 static inline long temp_from_reg(s16 reg)
 {
 	return reg * 1000 / 256;
@@ -438,16 +418,14 @@ static ssize_t set_fan_min(struct device *dev, struct device_attribute
 	unsigned long val;
 	int iobase = data->address[LD_FAN];
 
-	if (kstrtoul(buf, 10, &val) < 0)
+	if (strict_strtoul(buf, 10, &val) < 0)
 		return -EINVAL;
 
 	mutex_lock(&data->lock);
 	outb(BANK_FM(nr), iobase + PC87427_REG_BANK);
-	/*
-	 * The low speed limit registers are read-only while monitoring
-	 * is enabled, so we have to disable monitoring, then change the
-	 * limit, and finally enable monitoring again.
-	 */
+	/* The low speed limit registers are read-only while monitoring
+	   is enabled, so we have to disable monitoring, then change the
+	   limit, and finally enable monitoring again. */
 	outb(0, iobase + PC87427_REG_FAN_STATUS);
 	data->fan_min[nr] = fan_to_reg(val);
 	outw(data->fan_min[nr], iobase + PC87427_REG_FAN_MIN);
@@ -564,10 +542,8 @@ static const struct attribute_group pc87427_group_fan[8] = {
 	{ .attrs = pc87427_attributes_fan[7] },
 };
 
-/*
- * Must be called with data->lock held and pc87427_readall_pwm() freshly
- * called
- */
+/* Must be called with data->lock held and pc87427_readall_pwm() freshly
+   called */
 static void update_pwm_enable(struct pc87427_data *data, int nr, u8 mode)
 {
 	int iobase = data->address[LD_FAN];
@@ -596,7 +572,7 @@ static ssize_t set_pwm_enable(struct device *dev, struct device_attribute
 	int nr = to_sensor_dev_attr(devattr)->index;
 	unsigned long val;
 
-	if (kstrtoul(buf, 10, &val) < 0 || val > 2)
+	if (strict_strtoul(buf, 10, &val) < 0 || val > 2)
 		return -EINVAL;
 	/* Can't go to automatic mode if it isn't configured */
 	if (val == 2 && !(data->pwm_auto_ok & (1 << nr)))
@@ -628,16 +604,15 @@ static ssize_t set_pwm(struct device *dev, struct device_attribute
 	int iobase = data->address[LD_FAN];
 	u8 mode;
 
-	if (kstrtoul(buf, 10, &val) < 0 || val > 0xff)
+	if (strict_strtoul(buf, 10, &val) < 0 || val > 0xff)
 		return -EINVAL;
 
 	mutex_lock(&data->lock);
 	pc87427_readall_pwm(data, nr);
 	mode = data->pwm_enable[nr] & PWM_ENABLE_MODE_MASK;
 	if (mode != PWM_MODE_MANUAL && mode != PWM_MODE_OFF) {
-		dev_notice(dev,
-			   "Can't set PWM%d duty cycle while not in manual mode\n",
-			   nr + 1);
+		dev_notice(dev, "Can't set PWM%d duty cycle while not in "
+			   "manual mode\n", nr + 1);
 		mutex_unlock(&data->lock);
 		return -EPERM;
 	}
@@ -951,47 +926,63 @@ static const struct attribute_group pc87427_group_temp[6] = {
 	{ .attrs = pc87427_attributes_temp[5] },
 };
 
-static ssize_t name_show(struct device *dev, struct device_attribute
+static ssize_t show_name(struct device *dev, struct device_attribute
 			 *devattr, char *buf)
 {
 	struct pc87427_data *data = dev_get_drvdata(dev);
 
 	return sprintf(buf, "%s\n", data->name);
 }
-static DEVICE_ATTR_RO(name);
+static DEVICE_ATTR(name, S_IRUGO, show_name, NULL);
 
 
 /*
  * Device detection, attach and detach
  */
 
-static int pc87427_request_regions(struct platform_device *pdev,
-					     int count)
+static void pc87427_release_regions(struct platform_device *pdev, int count)
 {
 	struct resource *res;
 	int i;
 
 	for (i = 0; i < count; i++) {
 		res = platform_get_resource(pdev, IORESOURCE_IO, i);
+		release_region(res->start, resource_size(res));
+	}
+}
+
+static int __devinit pc87427_request_regions(struct platform_device *pdev,
+					     int count)
+{
+	struct resource *res;
+	int i, err = 0;
+
+	for (i = 0; i < count; i++) {
+		res = platform_get_resource(pdev, IORESOURCE_IO, i);
 		if (!res) {
+			err = -ENOENT;
 			dev_err(&pdev->dev, "Missing resource #%d\n", i);
-			return -ENOENT;
+			break;
 		}
-		if (!devm_request_region(&pdev->dev, res->start,
-					 resource_size(res), DRVNAME)) {
+		if (!request_region(res->start, resource_size(res), DRVNAME)) {
+			err = -EBUSY;
 			dev_err(&pdev->dev,
 				"Failed to request region 0x%lx-0x%lx\n",
 				(unsigned long)res->start,
 				(unsigned long)res->end);
-			return -EBUSY;
+			break;
 		}
 	}
-	return 0;
+
+	if (err && i)
+		pc87427_release_regions(pdev, i);
+
+	return err;
 }
 
-static void pc87427_init_device(struct device *dev)
+static void __devinit pc87427_init_device(struct device *dev)
 {
-	struct pc87427_sio_data *sio_data = dev_get_platdata(dev);
+	struct pc87427_sio_data *sio_data = dev->platform_data;
 	struct pc87427_data *data = dev_get_drvdata(dev);
 	int i;
 	u8 reg;
@@ -1032,11 +1023,9 @@ static void pc87427_init_device(struct device *dev)
 		if (reg & PWM_ENABLE_CTLEN)
 			data->pwm_enabled |= (1 << i);
 
-		/*
-		 * We don't expose an interface to reconfigure the automatic
-		 * fan control mode, so only allow to return to this mode if
-		 * it was originally set.
-		 */
+		/* We don't expose an interface to reconfigure the automatic
+		   fan control mode, so only allow to return to this mode if
+		   it was originally set. */
 		if ((reg & PWM_ENABLE_MODE_MASK) == PWM_MODE_AUTO) {
 			dev_dbg(dev, "PWM%d is in automatic control mode\n",
 				i + 1);
@@ -1081,16 +1070,18 @@ static void pc87427_remove_files(struct device *dev)
 	}
 }
 
-static int pc87427_probe(struct platform_device *pdev)
+static int __devinit pc87427_probe(struct platform_device *pdev)
 {
-	struct pc87427_sio_data *sio_data = dev_get_platdata(&pdev->dev);
+	struct pc87427_sio_data *sio_data = pdev->dev.platform_data;
 	struct pc87427_data *data;
 	int i, err, res_count;
 
-	data = devm_kzalloc(&pdev->dev, sizeof(struct pc87427_data),
-			    GFP_KERNEL);
-	if (!data)
-		return -ENOMEM;
+	data = kzalloc(sizeof(struct pc87427_data), GFP_KERNEL);
+	if (!data) {
+		err = -ENOMEM;
+		pr_err("Out of memory\n");
+		goto exit;
+	}
 
 	data->address[0] = sio_data->address[0];
 	data->address[1] = sio_data->address[1];
@@ -1098,7 +1089,7 @@ static int pc87427_probe(struct platform_device *pdev)
 
 	err = pc87427_request_regions(pdev, res_count);
 	if (err)
-		return err;
+		goto exit_kfree;
 
 	mutex_init(&data->lock);
 	data->name = "pc87427";
@@ -1108,7 +1099,7 @@ static int pc87427_probe(struct platform_device *pdev)
 	/* Register sysfs hooks */
 	err = device_create_file(&pdev->dev, &dev_attr_name);
 	if (err)
-		return err;
+		goto exit_release_region;
 	for (i = 0; i < 8; i++) {
 		if (!(data->fan_enabled & (1 << i)))
 			continue;
@@ -1145,15 +1136,28 @@ static int pc87427_probe(struct platform_device *pdev)
 
 exit_remove_files:
 	pc87427_remove_files(&pdev->dev);
+exit_release_region:
+	pc87427_release_regions(pdev, res_count);
+exit_kfree:
+	platform_set_drvdata(pdev, NULL);
+	kfree(data);
+exit:
 	return err;
 }
 
-static int pc87427_remove(struct platform_device *pdev)
+static int __devexit pc87427_remove(struct platform_device *pdev)
 {
 	struct pc87427_data *data = platform_get_drvdata(pdev);
+	int res_count;
+
+	res_count = (data->address[0] != 0) + (data->address[1] != 0);
 
 	hwmon_device_unregister(data->hwmon_dev);
 	pc87427_remove_files(&pdev->dev);
+	platform_set_drvdata(pdev, NULL);
+	kfree(data);
+
+	pc87427_release_regions(pdev, res_count);
 
 	return 0;
 }
@@ -1161,10 +1165,11 @@ static int pc87427_remove(struct platform_device *pdev)
 
 static struct platform_driver pc87427_driver = {
 	.driver = {
+		.owner	= THIS_MODULE,
 		.name	= DRVNAME,
 	},
 	.probe		= pc87427_probe,
-	.remove		= pc87427_remove,
+	.remove		= __devexit_p(pc87427_remove),
 };
 
 static int __init pc87427_device_add(const struct pc87427_sio_data *sio_data)
@@ -1228,11 +1233,7 @@ static int __init pc87427_find(int sioaddr, struct pc87427_sio_data *sio_data)
 {
 	u16 val;
 	u8 cfg, cfg_b;
-	int i, err;
-
-	err = superio_enter(sioaddr);
-	if (err)
-		return err;
+	int i, err = 0;
 
 	/* Identify device */
 	val = force_id ? force_id : superio_inb(sioaddr, SIOREG_DEVID);
@@ -1255,16 +1256,16 @@ static int __init pc87427_find(int sioaddr, struct pc87427_sio_data *sio_data)
 
 		val = superio_inb(sioaddr, SIOREG_MAP);
 		if (val & 0x01) {
-			pr_warn("Logical device 0x%02x is memory-mapped, can't use\n",
-				logdev[i]);
+			pr_warn("Logical device 0x%02x is memory-mapped, "
+				"can't use\n", logdev[i]);
 			continue;
 		}
 
 		val = (superio_inb(sioaddr, SIOREG_IOBASE) << 8)
 		    | superio_inb(sioaddr, SIOREG_IOBASE + 1);
 		if (!val) {
-			pr_info("I/O base address not set for logical device 0x%02x\n",
-				logdev[i]);
+			pr_info("I/O base address not set for logical device "
+				"0x%02x\n", logdev[i]);
 			continue;
 		}
 		sio_data->address[i] = val;
@@ -1356,7 +1357,7 @@ static void __exit pc87427_exit(void)
 	platform_driver_unregister(&pc87427_driver);
 }
 
-MODULE_AUTHOR("Jean Delvare <jdelvare@suse.de>");
+MODULE_AUTHOR("Jean Delvare <khali@linux-fr.org>");
 MODULE_DESCRIPTION("PC87427 hardware monitoring driver");
 MODULE_LICENSE("GPL");
 

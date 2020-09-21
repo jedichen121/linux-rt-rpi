@@ -480,7 +480,6 @@ extern u16 ssp_inactive_to;
 extern u16 stp_inactive_to;
 extern unsigned char phy_gen;
 extern unsigned char max_concurr_spinup;
-extern uint cable_selection_override;
 
 irqreturn_t isci_msix_isr(int vec, void *data);
 irqreturn_t isci_intx_isr(int vec, void *data);
@@ -498,10 +497,12 @@ struct sci_timer {
 };
 
 static inline
-void sci_init_timer(struct sci_timer *tmr, void (*fn)(struct timer_list *t))
+void sci_init_timer(struct sci_timer *tmr, void (*fn)(unsigned long))
 {
+	tmr->timer.function = fn;
+	tmr->timer.data = (unsigned long) tmr;
 	tmr->cancel = 0;
-	timer_setup(&tmr->timer, fn, 0);
+	init_timer(&tmr->timer);
 }
 
 static inline void sci_mod_timer(struct sci_timer *tmr, unsigned long msec)

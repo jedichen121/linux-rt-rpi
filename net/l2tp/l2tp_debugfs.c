@@ -9,8 +9,6 @@
  *	2 of the License, or (at your option) any later version.
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <linux/socket.h>
@@ -47,21 +45,13 @@ struct l2tp_dfs_seq_data {
 
 static void l2tp_dfs_next_tunnel(struct l2tp_dfs_seq_data *pd)
 {
-	/* Drop reference taken during previous invocation */
-	if (pd->tunnel)
-		l2tp_tunnel_dec_refcount(pd->tunnel);
-
-	pd->tunnel = l2tp_tunnel_get_nth(pd->net, pd->tunnel_idx);
+	pd->tunnel = l2tp_tunnel_find_nth(pd->net, pd->tunnel_idx);
 	pd->tunnel_idx++;
 }
 
 static void l2tp_dfs_next_session(struct l2tp_dfs_seq_data *pd)
 {
-	/* Drop reference taken during previous invocation */
-	if (pd->session)
-		l2tp_session_dec_refcount(pd->session);
-
-	pd->session = l2tp_session_get_nth(pd->tunnel, pd->session_idx);
+	pd->session = l2tp_session_find_nth(pd->tunnel, pd->session_idx);
 	pd->session_idx++;
 
 	if (pd->session == NULL) {
@@ -104,22 +94,7 @@ static void *l2tp_dfs_seq_next(struct seq_file *m, void *v, loff_t *pos)
 
 static void l2tp_dfs_seq_stop(struct seq_file *p, void *v)
 {
-	struct l2tp_dfs_seq_data *pd = v;
-
-	if (!pd || pd == SEQ_START_TOKEN)
-		return;
-
-	/* Drop reference taken by last invocation of l2tp_dfs_next_session()
-	 * or l2tp_dfs_next_tunnel().
-	 */
-	if (pd->session) {
-		l2tp_session_dec_refcount(pd->session);
-		pd->session = NULL;
-	}
-	if (pd->tunnel) {
-		l2tp_tunnel_dec_refcount(pd->tunnel);
-		pd->tunnel = NULL;
-	}
+	/* nothing to do */
 }
 
 static void l2tp_dfs_seq_tunnel_show(struct seq_file *m, void *v)
@@ -147,15 +122,6 @@ static void l2tp_dfs_seq_tunnel_show(struct seq_file *m, void *v)
 	seq_printf(m, "\nTUNNEL %u peer %u", tunnel->tunnel_id, tunnel->peer_tunnel_id);
 	if (tunnel->sock) {
 		struct inet_sock *inet = inet_sk(tunnel->sock);
-
-#if IS_ENABLED(CONFIG_IPV6)
-		if (tunnel->sock->sk_family == AF_INET6) {
-			const struct ipv6_pinfo *np = inet6_sk(tunnel->sock);
-
-			seq_printf(m, " from %pI6c to %pI6c\n",
-				&np->saddr, &tunnel->sock->sk_v6_daddr);
-		} else
-#endif
 		seq_printf(m, " from %pI4 to %pI4\n",
 			   &inet->inet_saddr, &inet->inet_daddr);
 		if (tunnel->encap == L2TP_ENCAPTYPE_UDP)
@@ -167,16 +133,20 @@ static void l2tp_dfs_seq_tunnel_show(struct seq_file *m, void *v)
 		   tunnel->encap == L2TP_ENCAPTYPE_IP ? "IP" :
 		   "");
 	seq_printf(m, " %d sessions, refcnt %d/%d\n", session_count,
-		   tunnel->sock ? refcount_read(&tunnel->sock->sk_refcnt) : 0,
-		   refcount_read(&tunnel->ref_count));
-	seq_printf(m, " %08x rx %ld/%ld/%ld rx %ld/%ld/%ld\n",
+		   tunnel->sock ? atomic_read(&tunnel->sock->sk_refcnt) : 0,
+		   atomic_read(&tunnel->ref_count));
+
+	seq_printf(m, " %08x rx %llu/%llu/%llu rx %llu/%llu/%llu\n",
 		   tunnel->debug,
-		   atomic_long_read(&tunnel->stats.tx_packets),
-		   atomic_long_read(&tunnel->stats.tx_bytes),
-		   atomic_long_read(&tunnel->stats.tx_errors),
-		   atomic_long_read(&tunnel->stats.rx_packets),
-		   atomic_long_read(&tunnel->stats.rx_bytes),
-		   atomic_long_read(&tunnel->stats.rx_errors));
+		   (unsigned long long)tunnel->stats.tx_packets,
+		   (unsigned long long)tunnel->stats.tx_bytes,
+		   (unsigned long long)tunnel->stats.tx_errors,
+		   (unsigned long long)tunnel->stats.rx_packets,
+		   (unsigned long long)tunnel->stats.rx_bytes,
+		   (unsigned long long)tunnel->stats.rx_errors);
+
+	if (tunnel->show != NULL)
+		tunnel->show(m, tunnel);
 }
 
 static void l2tp_dfs_seq_session_show(struct seq_file *m, void *v)
@@ -190,15 +160,18 @@ static void l2tp_dfs_seq_session_show(struct seq_file *m, void *v)
 		   "");
 	if (session->send_seq || session->recv_seq)
 		seq_printf(m, "   nr %hu, ns %hu\n", session->nr, session->ns);
-	seq_printf(m, "   refcnt %d\n", refcount_read(&session->ref_count));
-	seq_printf(m, "   config 0/0/%c/%c/-/%s %08x %u\n",
+	seq_printf(m, "   refcnt %d\n", atomic_read(&session->ref_count));
+	seq_printf(m, "   config %d/%d/%c/%c/%s/%s %08x %u\n",
+		   session->mtu, session->mru,
 		   session->recv_seq ? 'R' : '-',
 		   session->send_seq ? 'S' : '-',
+		   session->data_seq == 1 ? "IPSEQ" :
+		   session->data_seq == 2 ? "DATASEQ" : "-",
 		   session->lns_mode ? "LNS" : "LAC",
 		   session->debug,
 		   jiffies_to_msecs(session->reorder_timeout));
-	seq_printf(m, "   offset 0 l2specific %hu/%hu\n",
-		   session->l2specific_type, l2tp_get_l2specific_len(session));
+	seq_printf(m, "   offset %hu l2specific %hu/%hu\n",
+		   session->offset, session->l2specific_type, session->l2specific_len);
 	if (session->cookie_len) {
 		seq_printf(m, "   cookie %02x%02x%02x%02x",
 			   session->cookie[0], session->cookie[1],
@@ -220,14 +193,14 @@ static void l2tp_dfs_seq_session_show(struct seq_file *m, void *v)
 		seq_printf(m, "\n");
 	}
 
-	seq_printf(m, "   %hu/%hu tx %ld/%ld/%ld rx %ld/%ld/%ld\n",
+	seq_printf(m, "   %hu/%hu tx %llu/%llu/%llu rx %llu/%llu/%llu\n",
 		   session->nr, session->ns,
-		   atomic_long_read(&session->stats.tx_packets),
-		   atomic_long_read(&session->stats.tx_bytes),
-		   atomic_long_read(&session->stats.tx_errors),
-		   atomic_long_read(&session->stats.rx_packets),
-		   atomic_long_read(&session->stats.rx_bytes),
-		   atomic_long_read(&session->stats.rx_errors));
+		   (unsigned long long)session->stats.tx_packets,
+		   (unsigned long long)session->stats.tx_bytes,
+		   (unsigned long long)session->stats.tx_errors,
+		   (unsigned long long)session->stats.rx_packets,
+		   (unsigned long long)session->stats.rx_bytes,
+		   (unsigned long long)session->stats.rx_errors);
 
 	if (session->show != NULL)
 		session->show(m, session);
@@ -253,7 +226,8 @@ static int l2tp_dfs_seq_show(struct seq_file *m, void *v)
 		goto out;
 	}
 
-	if (!pd->session)
+	/* Show the tunnel or session context */
+	if (pd->session == NULL)
 		l2tp_dfs_seq_tunnel_show(m, pd->tunnel);
 	else
 		l2tp_dfs_seq_session_show(m, pd->session);
@@ -343,11 +317,11 @@ static int __init l2tp_debugfs_init(void)
 	if (tunnels == NULL)
 		rc = -EIO;
 
-	pr_info("L2TP debugfs support\n");
+	printk(KERN_INFO "L2TP debugfs support\n");
 
 out:
 	if (rc)
-		pr_warn("unable to init\n");
+		printk(KERN_WARNING "l2tp debugfs: unable to init\n");
 
 	return rc;
 }

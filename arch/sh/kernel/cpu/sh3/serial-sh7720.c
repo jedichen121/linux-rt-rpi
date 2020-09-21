@@ -1,9 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/serial_sci.h>
 #include <linux/serial_core.h>
 #include <linux/io.h>
 #include <cpu/serial.h>
-#include <cpu/gpio.h>
+#include <asm/gpio.h>
 
 static void sh7720_sci_init_pins(struct uart_port *port, unsigned int cflag)
 {

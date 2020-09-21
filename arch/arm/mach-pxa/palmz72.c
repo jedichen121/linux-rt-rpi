@@ -30,27 +30,26 @@
 #include <linux/wm97xx.h>
 #include <linux/power_supply.h>
 #include <linux/usb/gpio_vbus.h>
-#include <linux/platform_data/i2c-gpio.h>
-#include <linux/gpio/machine.h>
+#include <linux/i2c-gpio.h>
 
 #include <asm/mach-types.h>
 #include <asm/suspend.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 
-#include "pxa27x.h"
+#include <mach/pxa27x.h>
 #include <mach/audio.h>
-#include "palmz72.h"
-#include <linux/platform_data/mmc-pxamci.h>
-#include <linux/platform_data/video-pxafb.h>
-#include <linux/platform_data/irda-pxaficp.h>
-#include <linux/platform_data/keypad-pxa27x.h>
-#include "udc.h"
-#include <linux/platform_data/asoc-palm27x.h>
-#include "palm27x.h"
+#include <mach/palmz72.h>
+#include <mach/mmc.h>
+#include <mach/pxafb.h>
+#include <mach/irda.h>
+#include <plat/pxa27x_keypad.h>
+#include <mach/udc.h>
+#include <mach/palmasoc.h>
+#include <mach/palm27x.h>
 
-#include "pm.h"
-#include <linux/platform_data/media/camera-pxa.h>
+#include <mach/pm.h>
+#include <mach/camera.h>
 
 #include <media/soc_camera.h>
 
@@ -141,7 +140,7 @@ static unsigned long palmz72_pin_config[] __initdata = {
  * GPIO keyboard
  ******************************************************************************/
 #if defined(CONFIG_KEYBOARD_PXA27x) || defined(CONFIG_KEYBOARD_PXA27x_MODULE)
-static const unsigned int palmz72_matrix_keys[] = {
+static unsigned int palmz72_matrix_keys[] = {
 	KEY(0, 0, KEY_POWER),
 	KEY(0, 1, KEY_F1),
 	KEY(0, 2, KEY_ENTER),
@@ -157,15 +156,11 @@ static const unsigned int palmz72_matrix_keys[] = {
 	KEY(3, 2, KEY_LEFT),
 };
 
-static struct matrix_keymap_data almz72_matrix_keymap_data = {
-	.keymap			= palmz72_matrix_keys,
-	.keymap_size		= ARRAY_SIZE(palmz72_matrix_keys),
-};
-
 static struct pxa27x_keypad_platform_data palmz72_keypad_platform_data = {
 	.matrix_key_rows	= 4,
 	.matrix_key_cols	= 3,
-	.matrix_keymap_data	= &almz72_matrix_keymap_data,
+	.matrix_key_map		= palmz72_matrix_keys,
+	.matrix_key_map_size	= ARRAY_SIZE(palmz72_matrix_keys),
 
 	.debounce_interval	= 30,
 };
@@ -250,7 +245,7 @@ static int palmz72_pm_suspend(void)
 	store_ptr = *PALMZ72_SAVE_DWORD;
 
 	/* Setting PSPR to a proper value */
-	PSPR = __pa_symbol(&palmz72_resume_info);
+	PSPR = virt_to_phys(&palmz72_resume_info);
 
 	return 0;
 }
@@ -321,17 +316,9 @@ static struct soc_camera_link palmz72_iclink = {
 	.flags		= SOCAM_DATAWIDTH_8,
 };
 
-static struct gpiod_lookup_table palmz72_i2c_gpiod_table = {
-	.dev_id		= "i2c-gpio.0",
-	.table		= {
-		GPIO_LOOKUP_IDX("gpio-pxa", 118, NULL, 0,
-				GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN),
-		GPIO_LOOKUP_IDX("gpio-pxa", 117, NULL, 1,
-				GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN),
-	},
-};
-
 static struct i2c_gpio_platform_data palmz72_i2c_bus_data = {
+	.sda_pin	= 118,
+	.scl_pin	= 117,
 	.udelay		= 10,
 	.timeout	= 100,
 };
@@ -378,7 +365,6 @@ static void __init palmz72_camera_init(void)
 {
 	palmz72_cam_gpio_init();
 	pxa_set_camera_info(&palmz72_pxacamera_platform_data);
-	gpiod_add_lookup_table(&palmz72_i2c_gpiod_table);
 	platform_device_register(&palmz72_i2c_bus_device);
 	platform_device_register(&palmz72_camera);
 }
@@ -415,10 +401,9 @@ static void __init palmz72_init(void)
 MACHINE_START(PALMZ72, "Palm Zire72")
 	.atag_offset	= 0x100,
 	.map_io		= pxa27x_map_io,
-	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa27x_init_irq,
 	.handle_irq	= pxa27x_handle_irq,
-	.init_time	= pxa_timer_init,
+	.timer		= &pxa_timer,
 	.init_machine	= palmz72_init,
 	.restart	= pxa_restart,
 MACHINE_END

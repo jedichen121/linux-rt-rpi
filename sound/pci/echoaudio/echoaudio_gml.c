@@ -46,9 +46,8 @@ static int check_asic_status(struct echoaudio *chip)
 	/* The DSP will return a value to indicate whether or not the
 	   ASIC is currently loaded */
 	if (read_dsp(chip, &asic_status) < 0) {
-		dev_err(chip->card->dev,
-			"check_asic_status: failed on read_dsp\n");
-		chip->asic_loaded = false;
+		DE_INIT(("check_asic_status: failed on read_dsp\n"));
+		chip->asic_loaded = FALSE;
 		return -EIO;
 	}
 
@@ -63,22 +62,20 @@ the control register.  write_control_reg sends the new control register
 value to the DSP. */
 static int write_control_reg(struct echoaudio *chip, u32 value, char force)
 {
-	__le32 reg_value;
-
 	/* Handle the digital input auto-mute */
 	if (chip->digital_in_automute)
 		value |= GML_DIGITAL_IN_AUTO_MUTE;
 	else
 		value &= ~GML_DIGITAL_IN_AUTO_MUTE;
 
-	dev_dbg(chip->card->dev, "write_control_reg: 0x%x\n", value);
+	DE_ACT(("write_control_reg: 0x%x\n", value));
 
 	/* Write the control register */
-	reg_value = cpu_to_le32(value);
-	if (reg_value != chip->comm_page->control_register || force) {
+	value = cpu_to_le32(value);
+	if (value != chip->comm_page->control_register || force) {
 		if (wait_handshake(chip))
 			return -EIO;
-		chip->comm_page->control_register = reg_value;
+		chip->comm_page->control_register = value;
 		clear_handshake(chip);
 		return send_vector(chip, DSP_VC_WRITE_CONTROL_REG);
 	}
@@ -94,7 +91,7 @@ If the auto-mute is disabled, the digital inputs are enabled regardless of
 what the input clock is set or what is connected. */
 static int set_input_auto_mute(struct echoaudio *chip, int automute)
 {
-	dev_dbg(chip->card->dev, "set_input_auto_mute %d\n", automute);
+	DE_ACT(("set_input_auto_mute %d\n", automute));
 
 	chip->digital_in_automute = automute;
 
@@ -194,10 +191,10 @@ static int set_professional_spdif(struct echoaudio *chip, char prof)
 		}
 	}
 
-	if ((err = write_control_reg(chip, control_reg, false)))
+	if ((err = write_control_reg(chip, control_reg, FALSE)))
 		return err;
 	chip->professional_spdif = prof;
-	dev_dbg(chip->card->dev, "set_professional_spdif to %s\n",
-		prof ? "Professional" : "Consumer");
+	DE_ACT(("set_professional_spdif to %s\n",
+		prof ? "Professional" : "Consumer"));
 	return 0;
 }

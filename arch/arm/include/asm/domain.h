@@ -10,11 +10,6 @@
 #ifndef __ASM_PROC_DOMAIN_H
 #define __ASM_PROC_DOMAIN_H
 
-#ifndef __ASSEMBLY__
-#include <asm/barrier.h>
-#include <asm/thread_info.h>
-#endif
-
 /*
  * Domain numbers
  *
@@ -35,14 +30,15 @@
  */
 #ifndef CONFIG_IO_36
 #define DOMAIN_KERNEL	0
+#define DOMAIN_TABLE	0
 #define DOMAIN_USER	1
 #define DOMAIN_IO	2
 #else
 #define DOMAIN_KERNEL	2
+#define DOMAIN_TABLE	2
 #define DOMAIN_USER	1
 #define DOMAIN_IO	0
 #endif
-#define DOMAIN_VECTORS	3
 
 /*
  * Domain types
@@ -55,77 +51,31 @@
 #define DOMAIN_MANAGER	1
 #endif
 
-#define domain_mask(dom)	((3) << (2 * (dom)))
-#define domain_val(dom,type)	((type) << (2 * (dom)))
-
-#ifdef CONFIG_CPU_SW_DOMAIN_PAN
-#define DACR_INIT \
-	(domain_val(DOMAIN_USER, DOMAIN_NOACCESS) | \
-	 domain_val(DOMAIN_KERNEL, DOMAIN_MANAGER) | \
-	 domain_val(DOMAIN_IO, DOMAIN_CLIENT) | \
-	 domain_val(DOMAIN_VECTORS, DOMAIN_CLIENT))
-#else
-#define DACR_INIT \
-	(domain_val(DOMAIN_USER, DOMAIN_CLIENT) | \
-	 domain_val(DOMAIN_KERNEL, DOMAIN_MANAGER) | \
-	 domain_val(DOMAIN_IO, DOMAIN_CLIENT) | \
-	 domain_val(DOMAIN_VECTORS, DOMAIN_CLIENT))
-#endif
-
-#define __DACR_DEFAULT \
-	domain_val(DOMAIN_KERNEL, DOMAIN_CLIENT) | \
-	domain_val(DOMAIN_IO, DOMAIN_CLIENT) | \
-	domain_val(DOMAIN_VECTORS, DOMAIN_CLIENT)
-
-#define DACR_UACCESS_DISABLE	\
-	(__DACR_DEFAULT | domain_val(DOMAIN_USER, DOMAIN_NOACCESS))
-#define DACR_UACCESS_ENABLE	\
-	(__DACR_DEFAULT | domain_val(DOMAIN_USER, DOMAIN_CLIENT))
+#define domain_val(dom,type)	((type) << (2*(dom)))
 
 #ifndef __ASSEMBLY__
 
-#ifdef CONFIG_CPU_CP15_MMU
-static inline unsigned int get_domain(void)
-{
-	unsigned int domain;
-
-	asm(
-	"mrc	p15, 0, %0, c3, c0	@ get domain"
-	 : "=r" (domain)
-	 : "m" (current_thread_info()->cpu_domain));
-
-	return domain;
-}
-
-static inline void set_domain(unsigned val)
-{
-	asm volatile(
-	"mcr	p15, 0, %0, c3, c0	@ set domain"
-	  : : "r" (val) : "memory");
-	isb();
-}
-#else
-static inline unsigned int get_domain(void)
-{
-	return 0;
-}
-
-static inline void set_domain(unsigned val)
-{
-}
-#endif
-
 #ifdef CONFIG_CPU_USE_DOMAINS
+#define set_domain(x)					\
+	do {						\
+	__asm__ __volatile__(				\
+	"mcr	p15, 0, %0, c3, c0	@ set domain"	\
+	  : : "r" (x));					\
+	isb();						\
+	} while (0)
+
 #define modify_domain(dom,type)					\
 	do {							\
-		unsigned int domain = get_domain();		\
-		domain &= ~domain_mask(dom);			\
-		domain = domain | domain_val(dom, type);	\
-		set_domain(domain);				\
+	struct thread_info *thread = current_thread_info();	\
+	unsigned int domain = thread->cpu_domain;		\
+	domain &= ~domain_val(dom, DOMAIN_MANAGER);		\
+	thread->cpu_domain = domain | domain_val(dom, type);	\
+	set_domain(thread->cpu_domain);				\
 	} while (0)
 
 #else
-static inline void modify_domain(unsigned dom, unsigned type)	{ }
+#define set_domain(x)		do { } while (0)
+#define modify_domain(dom,type)	do { } while (0)
 #endif
 
 /*
@@ -133,9 +83,9 @@ static inline void modify_domain(unsigned dom, unsigned type)	{ }
  * instructions (inline assembly)
  */
 #ifdef CONFIG_CPU_USE_DOMAINS
-#define TUSER(instr)	#instr "t"
+#define T(instr)	#instr "t"
 #else
-#define TUSER(instr)	#instr
+#define T(instr)	#instr
 #endif
 
 #else /* __ASSEMBLY__ */
@@ -145,9 +95,9 @@ static inline void modify_domain(unsigned dom, unsigned type)	{ }
  * instructions
  */
 #ifdef CONFIG_CPU_USE_DOMAINS
-#define TUSER(instr)	instr ## t
+#define T(instr)	instr ## t
 #else
-#define TUSER(instr)	instr
+#define T(instr)	instr
 #endif
 
 #endif /* __ASSEMBLY__ */

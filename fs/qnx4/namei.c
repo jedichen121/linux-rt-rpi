@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /* 
  * QNX4 file system, Linux implementation.
  * 
@@ -40,6 +39,10 @@ static int qnx4_match(int len, const char *name,
 	} else {
 		namelen = QNX4_SHORT_NAME_MAX;
 	}
+	/* "" means "." ---> so paths like "/usr/lib//libc.a" work */
+	if (!len && (de->di_fname[0] == '.') && (de->di_fname[1] == '\0')) {
+		return 1;
+	}
 	thislen = strlen( de->di_fname );
 	if ( thislen > namelen )
 		thislen = namelen;
@@ -61,13 +64,15 @@ static struct buffer_head *qnx4_find_entry(int len, struct inode *dir,
 	struct buffer_head *bh;
 
 	*res_dir = NULL;
+	if (!dir->i_sb) {
+		printk(KERN_WARNING "qnx4: no superblock on dir.\n");
+		return NULL;
+	}
 	bh = NULL;
 	block = offset = blkofs = 0;
 	while (blkofs * QNX4_BLOCK_SIZE + offset < dir->i_size) {
 		if (!bh) {
-			block = qnx4_block_map(dir, blkofs);
-			if (block)
-				bh = sb_bread(dir->i_sb, block);
+			bh = qnx4_bread(dir, blkofs, 0);
 			if (!bh) {
 				blkofs++;
 				continue;
@@ -75,6 +80,7 @@ static struct buffer_head *qnx4_find_entry(int len, struct inode *dir,
 		}
 		*res_dir = (struct qnx4_inode_entry *) (bh->b_data + offset);
 		if (qnx4_match(len, name, bh, &offset)) {
+			block = qnx4_block_map( dir, blkofs );
 			*ino = block * QNX4_INODES_PER_BLOCK +
 			    (offset / QNX4_DIR_ENTRY_SIZE) - 1;
 			return bh;
@@ -92,7 +98,7 @@ static struct buffer_head *qnx4_find_entry(int len, struct inode *dir,
 	return NULL;
 }
 
-struct dentry * qnx4_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
+struct dentry * qnx4_lookup(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
 {
 	int ino;
 	struct qnx4_inode_entry *de;
@@ -114,9 +120,13 @@ struct dentry * qnx4_lookup(struct inode *dir, struct dentry *dentry, unsigned i
 	brelse(bh);
 
 	foundinode = qnx4_iget(dir->i_sb, ino);
-	if (IS_ERR(foundinode))
+	if (IS_ERR(foundinode)) {
 		QNX4DEBUG((KERN_ERR "qnx4: lookup->iget -> error %ld\n",
 			   PTR_ERR(foundinode)));
+		return ERR_CAST(foundinode);
+	}
 out:
-	return d_splice_alias(foundinode, dentry);
+	d_add(dentry, foundinode);
+
+	return NULL;
 }

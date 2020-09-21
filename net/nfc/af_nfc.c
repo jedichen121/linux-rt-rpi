@@ -16,7 +16,9 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, see <http://www.gnu.org/licenses/>.
+ * along with this program; if not, write to the
+ * Free Software Foundation, Inc.,
+ * 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 
 #include <linux/nfc.h>
@@ -28,7 +30,7 @@ static DEFINE_RWLOCK(proto_tab_lock);
 static const struct nfc_protocol *proto_tab[NFC_SOCKPROTO_MAX];
 
 static int nfc_sock_create(struct net *net, struct socket *sock, int proto,
-			   int kern)
+								int kern)
 {
 	int rc = -EPROTONOSUPPORT;
 
@@ -40,7 +42,7 @@ static int nfc_sock_create(struct net *net, struct socket *sock, int proto,
 
 	read_lock(&proto_tab_lock);
 	if (proto_tab[proto] &&	try_module_get(proto_tab[proto]->owner)) {
-		rc = proto_tab[proto]->create(net, sock, proto_tab[proto], kern);
+		rc = proto_tab[proto]->create(net, sock, proto_tab[proto]);
 		module_put(proto_tab[proto]->owner);
 	}
 	read_unlock(&proto_tab_lock);
@@ -48,7 +50,7 @@ static int nfc_sock_create(struct net *net, struct socket *sock, int proto,
 	return rc;
 }
 
-static const struct net_proto_family nfc_sock_family_ops = {
+static struct net_proto_family nfc_sock_family_ops = {
 	.owner  = THIS_MODULE,
 	.family = PF_NFC,
 	.create = nfc_sock_create,

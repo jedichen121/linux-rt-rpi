@@ -293,7 +293,7 @@ static inline void __init show_version (void) {
   
 */
 
-static void do_housekeeping (struct timer_list *t);
+static void do_housekeeping (unsigned long arg);
 /********** globals **********/
 
 static unsigned short debug = 0;
@@ -802,7 +802,7 @@ static void fill_rx_pool (amb_dev * dev, unsigned char pool,
     }
     // cast needed as there is no %? for pointer differences
     PRINTD (DBG_SKB, "allocated skb at %p, head %p, area %li",
-	    skb, skb->head, (long) skb_end_offset(skb));
+	    skb, skb->head, (long) (skb_end_pointer(skb) - skb->head));
     rx.handle = virt_to_bus (skb);
     rx.host_address = cpu_to_be32 (virt_to_bus (skb->data));
     if (rx_give (dev, &rx, pool))
@@ -1403,7 +1403,7 @@ static void amb_free_rx_skb (struct atm_vcc * atm_vcc, struct sk_buff * skb) {
   rx.host_address = cpu_to_be32 (virt_to_bus (skb->data));
   
   skb->data = skb->head;
-  skb_reset_tail_pointer(skb);
+  skb->tail = skb->head;
   skb->len = 0;
   
   if (!rx_give (dev, &rx, pool)) {
@@ -1493,8 +1493,8 @@ static const struct atmdev_ops amb_ops = {
 };
 
 /********** housekeeping **********/
-static void do_housekeeping (struct timer_list *t) {
-  amb_dev * dev = from_timer(dev, t, housekeeping);
+static void do_housekeeping (unsigned long arg) {
+  amb_dev * dev = (amb_dev *) arg;
   
   // could collect device-specific (not driver/atm-linux) stats here
       
@@ -1507,9 +1507,9 @@ static void do_housekeeping (struct timer_list *t) {
 
 /********** creation of communication queues **********/
 
-static int create_queues(amb_dev *dev, unsigned int cmds, unsigned int txs,
-			 unsigned int *rxs, unsigned int *rx_buffer_sizes)
-{
+static int __devinit create_queues (amb_dev * dev, unsigned int cmds,
+				 unsigned int txs, unsigned int * rxs,
+				 unsigned int * rx_buffer_sizes) {
   unsigned char pool;
   size_t total = 0;
   void * memory;
@@ -1737,9 +1737,8 @@ static  int decode_loader_result (loader_command cmd, u32 result)
 	return res;
 }
 
-static int do_loader_command(volatile loader_block *lb, const amb_dev *dev,
-			     loader_command cmd)
-{
+static int __devinit do_loader_command (volatile loader_block * lb,
+				     const amb_dev * dev, loader_command cmd) {
   
   unsigned long timeout;
   
@@ -1794,9 +1793,8 @@ static int do_loader_command(volatile loader_block *lb, const amb_dev *dev,
 
 /* loader: determine loader version */
 
-static int get_loader_version(loader_block *lb, const amb_dev *dev,
-			      u32 *version)
-{
+static int __devinit get_loader_version (loader_block * lb,
+				      const amb_dev * dev, u32 * version) {
   int res;
   
   PRINTD (DBG_FLOW|DBG_LOAD, "get_loader_version");
@@ -1811,9 +1809,9 @@ static int get_loader_version(loader_block *lb, const amb_dev *dev,
 
 /* loader: write memory data blocks */
 
-static int loader_write(loader_block *lb, const amb_dev *dev,
-			const struct ihex_binrec *rec)
-{
+static int __devinit loader_write (loader_block* lb,
+				   const amb_dev *dev,
+				   const struct ihex_binrec *rec) {
   transfer_block * tb = &lb->payload.transfer;
   
   PRINTD (DBG_FLOW|DBG_LOAD, "loader_write");
@@ -1826,9 +1824,9 @@ static int loader_write(loader_block *lb, const amb_dev *dev,
 
 /* loader: verify memory data blocks */
 
-static int loader_verify(loader_block *lb, const amb_dev *dev,
-			 const struct ihex_binrec *rec)
-{
+static int __devinit loader_verify (loader_block * lb,
+				    const amb_dev *dev,
+				    const struct ihex_binrec *rec) {
   transfer_block * tb = &lb->payload.transfer;
   int res;
   
@@ -1844,8 +1842,8 @@ static int loader_verify(loader_block *lb, const amb_dev *dev,
 
 /* loader: start microcode */
 
-static int loader_start(loader_block *lb, const amb_dev *dev, u32 address)
-{
+static int __devinit loader_start (loader_block * lb,
+				const amb_dev * dev, u32 address) {
   PRINTD (DBG_FLOW|DBG_LOAD, "loader_start");
   
   lb->payload.start = cpu_to_be32 (address);
@@ -1920,12 +1918,11 @@ static int amb_reset (amb_dev * dev, int diags) {
 
 /********** transfer and start the microcode **********/
 
-static int ucode_init(loader_block *lb, amb_dev *dev)
-{
+static int __devinit ucode_init (loader_block * lb, amb_dev * dev) {
   const struct firmware *fw;
   unsigned long start_address;
   const struct ihex_binrec *rec;
-  const char *errmsg = NULL;
+  const char *errmsg = 0;
   int res;
 
   res = request_ihex_firmware(&fw, "atmsar11.fw", &dev->pci_dev->dev);
@@ -1964,7 +1961,6 @@ static int ucode_init(loader_block *lb, amb_dev *dev)
     res = loader_verify(lb, dev, rec);
     if (res)
       break;
-    rec = ihex_next_binrec(rec);
   }
   release_firmware(fw);
   if (!res)
@@ -1983,8 +1979,7 @@ static inline __be32 bus_addr(void * addr) {
     return cpu_to_be32 (virt_to_bus (addr));
 }
 
-static int amb_talk(amb_dev *dev)
-{
+static int __devinit amb_talk (amb_dev * dev) {
   adap_talk_block a;
   unsigned char pool;
   unsigned long timeout;
@@ -2031,8 +2026,7 @@ static int amb_talk(amb_dev *dev)
 }
 
 // get microcode version
-static void amb_ucode_version(amb_dev *dev)
-{
+static void __devinit amb_ucode_version (amb_dev * dev) {
   u32 major;
   u32 minor;
   command cmd;
@@ -2047,8 +2041,7 @@ static void amb_ucode_version(amb_dev *dev)
 }
   
 // get end station address
-static void amb_esi(amb_dev *dev, u8 *esi)
-{
+static void __devinit amb_esi (amb_dev * dev, u8 * esi) {
   u32 lower4;
   u16 upper2;
   command cmd;
@@ -2094,7 +2087,7 @@ static void fixup_plx_window (amb_dev *dev, loader_block *lb)
 	return;
 }
 
-static int amb_init(amb_dev *dev)
+static int __devinit amb_init (amb_dev * dev)
 {
   loader_block lb;
   
@@ -2190,8 +2183,7 @@ static void setup_pci_dev(struct pci_dev *pci_dev)
 	}
 }
 
-static int amb_probe(struct pci_dev *pci_dev,
-		     const struct pci_device_id *pci_ent)
+static int __devinit amb_probe(struct pci_dev *pci_dev, const struct pci_device_id *pci_ent)
 {
 	amb_dev * dev;
 	int err;
@@ -2258,7 +2250,7 @@ static int amb_probe(struct pci_dev *pci_dev,
 
 	PRINTD (DBG_INFO, "registered Madge ATM adapter (no. %d) (%p) at %p",
 		dev->atm_dev->number, dev, dev->atm_dev);
-	dev->atm_dev->dev_data = (void *) dev;
+		dev->atm_dev->dev_data = (void *) dev;
 
 	// register our address
 	amb_esi (dev, dev->atm_dev->esi);
@@ -2267,7 +2259,9 @@ static int amb_probe(struct pci_dev *pci_dev,
 	dev->atm_dev->ci_range.vpi_bits = NUM_VPI_BITS;
 	dev->atm_dev->ci_range.vci_bits = NUM_VCI_BITS;
 
-	timer_setup(&dev->housekeeping, do_housekeeping, 0);
+	init_timer(&dev->housekeeping);
+	dev->housekeeping.function = do_housekeeping;
+	dev->housekeeping.data = (unsigned long) dev;
 	mod_timer(&dev->housekeeping, jiffies);
 
 	// enable host interrupts
@@ -2290,7 +2284,7 @@ out_disable:
 }
 
 
-static void amb_remove_one(struct pci_dev *pci_dev)
+static void __devexit amb_remove_one(struct pci_dev *pci_dev)
 {
 	struct amb_dev *dev;
 
@@ -2373,7 +2367,7 @@ MODULE_PARM_DESC(pci_lat, "PCI latency in bus cycles");
 
 /********** module entry **********/
 
-static const struct pci_device_id amb_pci_tbl[] = {
+static struct pci_device_id amb_pci_tbl[] = {
 	{ PCI_VDEVICE(MADGE, PCI_DEVICE_ID_MADGE_AMBASSADOR), 0 },
 	{ PCI_VDEVICE(MADGE, PCI_DEVICE_ID_MADGE_AMBASSADOR_BAD), 0 },
 	{ 0, }
@@ -2384,7 +2378,7 @@ MODULE_DEVICE_TABLE(pci, amb_pci_tbl);
 static struct pci_driver amb_driver = {
 	.name =		"amb",
 	.probe =	amb_probe,
-	.remove =	amb_remove_one,
+	.remove =	__devexit_p(amb_remove_one),
 	.id_table =	amb_pci_tbl,
 };
 
@@ -2392,7 +2386,12 @@ static int __init amb_module_init (void)
 {
   PRINTD (DBG_FLOW|DBG_INIT, "init_module");
   
-  BUILD_BUG_ON(sizeof(amb_mem) != 4*16 + 4*12);
+  // sanity check - cast needed as printk does not support %Zu
+  if (sizeof(amb_mem) != 4*16 + 4*12) {
+    PRINTK (KERN_ERR, "Fix amb_mem (is %lu words).",
+	    (unsigned long) sizeof(amb_mem));
+    return -ENOMEM;
+  }
   
   show_version();
   

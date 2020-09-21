@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  linux/fs/nfs/iostat.h
  *
@@ -55,11 +54,6 @@ static inline void nfs_add_fscache_stats(struct inode *inode,
 					 long addend)
 {
 	this_cpu_add(NFS_SERVER(inode)->io_stats->fscache[stat], addend);
-}
-static inline void nfs_inc_fscache_stats(struct inode *inode,
-					 enum nfs_stat_fscachecounters stat)
-{
-	this_cpu_inc(NFS_SERVER(inode)->io_stats->fscache[stat]);
 }
 #endif
 

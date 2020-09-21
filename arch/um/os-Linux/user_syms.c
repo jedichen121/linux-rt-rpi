@@ -1,6 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0
-#include <linux/types.h>
-#include <linux/module.h>
+#include "linux/types.h"
+#include "linux/module.h"
 
 /* Some of this are builtin function (some are not but could in the future),
  * so I *must* declare good prototypes for them and then EXPORT them.
@@ -46,7 +45,7 @@ EXPORT_SYMBOL(readdir64);
 extern void truncate64(void) __attribute__((weak));
 EXPORT_SYMBOL(truncate64);
 
-#ifdef CONFIG_ARCH_REUSE_HOST_VSYSCALL_AREA
+#ifdef SUBARCH_i386
 EXPORT_SYMBOL(vsyscall_ehdr);
 EXPORT_SYMBOL(vsyscall_end);
 #endif

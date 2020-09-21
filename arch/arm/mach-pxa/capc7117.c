@@ -24,13 +24,12 @@
 #include <linux/ata_platform.h>
 #include <linux/serial_8250.h>
 #include <linux/gpio.h>
-#include <linux/regulator/machine.h>
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 
-#include "pxa320.h"
-#include "mxm8x10.h"
+#include <mach/pxa320.h>
+#include <mach/mxm8x10.h>
 
 #include "generic.h"
 
@@ -51,8 +50,8 @@ static struct resource capc7117_ide_resources[] = {
 	       .flags = IORESOURCE_MEM
 	},
 	[2] = {
-	       .start = PXA_GPIO_TO_IRQ(mfp_to_gpio(MFP_PIN_GPIO76)),
-	       .end = PXA_GPIO_TO_IRQ(mfp_to_gpio(MFP_PIN_GPIO76)),
+	       .start = gpio_to_irq(mfp_to_gpio(MFP_PIN_GPIO76)),
+	       .end = gpio_to_irq(mfp_to_gpio(MFP_PIN_GPIO76)),
 	       .flags = IORESOURCE_IRQ | IRQF_TRIGGER_RISING
 	}
 };
@@ -81,7 +80,7 @@ static void __init capc7117_ide_init(void)
 static struct plat_serial8250_port ti16c752_platform_data[] = {
 	[0] = {
 	       .mapbase = 0x14000000,
-	       .irq = PXA_GPIO_TO_IRQ(mfp_to_gpio(MFP_PIN_GPIO78)),
+	       .irq = gpio_to_irq(mfp_to_gpio(MFP_PIN_GPIO78)),
 	       .irqflags = IRQF_TRIGGER_RISING,
 	       .flags = TI16C752_FLAGS,
 	       .iotype = UPIO_MEM,
@@ -90,7 +89,7 @@ static struct plat_serial8250_port ti16c752_platform_data[] = {
 	},
 	[1] = {
 	       .mapbase = 0x14000040,
-	       .irq = PXA_GPIO_TO_IRQ(mfp_to_gpio(MFP_PIN_GPIO79)),
+	       .irq = gpio_to_irq(mfp_to_gpio(MFP_PIN_GPIO79)),
 	       .irqflags = IRQF_TRIGGER_RISING,
 	       .flags = TI16C752_FLAGS,
 	       .iotype = UPIO_MEM,
@@ -99,7 +98,7 @@ static struct plat_serial8250_port ti16c752_platform_data[] = {
 	},
 	[2] = {
 	       .mapbase = 0x14000080,
-	       .irq = PXA_GPIO_TO_IRQ(mfp_to_gpio(MFP_PIN_GPIO80)),
+	       .irq = gpio_to_irq(mfp_to_gpio(MFP_PIN_GPIO80)),
 	       .irqflags = IRQF_TRIGGER_RISING,
 	       .flags = TI16C752_FLAGS,
 	       .iotype = UPIO_MEM,
@@ -108,7 +107,7 @@ static struct plat_serial8250_port ti16c752_platform_data[] = {
 	},
 	[3] = {
 	       .mapbase = 0x140000c0,
-	       .irq = PXA_GPIO_TO_IRQ(mfp_to_gpio(MFP_PIN_GPIO81)),
+	       .irq = gpio_to_irq(mfp_to_gpio(MFP_PIN_GPIO81)),
 	       .irqflags = IRQF_TRIGGER_RISING,
 	       .flags = TI16C752_FLAGS,
 	       .iotype = UPIO_MEM,
@@ -145,18 +144,15 @@ static void __init capc7117_init(void)
 
 	capc7117_uarts_init();
 	capc7117_ide_init();
-
-	regulator_has_full_constraints();
 }
 
 MACHINE_START(CAPC7117,
 	      "Embedian CAPC-7117 evaluation kit based on the MXM-8x10 CoM")
 	.atag_offset = 0x100,
 	.map_io = pxa3xx_map_io,
-	.nr_irqs = PXA_NR_IRQS,
 	.init_irq = pxa3xx_init_irq,
 	.handle_irq = pxa3xx_handle_irq,
-	.init_time	= pxa_timer_init,
+	.timer = &pxa_timer,
 	.init_machine = capc7117_init,
 	.restart	= pxa_restart,
 MACHINE_END

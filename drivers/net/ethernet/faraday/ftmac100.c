@@ -25,11 +25,9 @@
 #include <linux/etherdevice.h>
 #include <linux/ethtool.h>
 #include <linux/init.h>
-#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/mii.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/netdevice.h>
 #include <linux/platform_device.h>
 
@@ -403,7 +401,6 @@ static bool ftmac100_rx_packet(struct ftmac100 *priv, int *processed)
 	struct page *page;
 	dma_addr_t map;
 	int length;
-	bool ret;
 
 	rxdes = ftmac100_rx_locate_first_segment(priv);
 	if (!rxdes)
@@ -418,8 +415,8 @@ static bool ftmac100_rx_packet(struct ftmac100 *priv, int *processed)
 	 * It is impossible to get multi-segment packets
 	 * because we always provide big enough receive buffers.
 	 */
-	ret = ftmac100_rxdes_last_segment(rxdes);
-	BUG_ON(!ret);
+	if (unlikely(!ftmac100_rxdes_last_segment(rxdes)))
+		BUG();
 
 	/* start processing */
 	skb = netdev_alloc_skb_ip_align(netdev, 128);
@@ -443,14 +440,11 @@ static bool ftmac100_rx_packet(struct ftmac100 *priv, int *processed)
 	skb->len += length;
 	skb->data_len += length;
 
-	if (length > 128) {
+	/* page might be freed in __pskb_pull_tail() */
+	if (length > 64)
 		skb->truesize += PAGE_SIZE;
-		/* We pull the minimum amount into linear part */
-		__pskb_pull_tail(skb, ETH_HLEN);
-	} else {
-		/* Small frames are copied into linear part to free one page */
-		__pskb_pull_tail(skb, length);
-	}
+	__pskb_pull_tail(skb, min(length, 64));
+
 	ftmac100_alloc_rx_page(priv, rxdes, GFP_ATOMIC);
 
 	ftmac100_rx_pointer_advance(priv);
@@ -734,12 +728,12 @@ static int ftmac100_alloc_buffers(struct ftmac100 *priv)
 {
 	int i;
 
-	priv->descs = dma_zalloc_coherent(priv->dev,
-					  sizeof(struct ftmac100_descs),
-					  &priv->descs_dma_addr,
-					  GFP_KERNEL);
+	priv->descs = dma_alloc_coherent(priv->dev, sizeof(struct ftmac100_descs),
+					 &priv->descs_dma_addr, GFP_KERNEL);
 	if (!priv->descs)
 		return -ENOMEM;
+
+	memset(priv->descs, 0, sizeof(struct ftmac100_descs));
 
 	/* initialize RX ring */
 	ftmac100_rxdes_set_end_of_ring(&priv->descs->rxdes[RX_QUEUE_ENTRIES - 1]);
@@ -822,26 +816,21 @@ static void ftmac100_mdio_write(struct net_device *netdev, int phy_id, int reg,
 static void ftmac100_get_drvinfo(struct net_device *netdev,
 				 struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, dev_name(&netdev->dev), sizeof(info->bus_info));
+	strcpy(info->driver, DRV_NAME);
+	strcpy(info->version, DRV_VERSION);
+	strcpy(info->bus_info, dev_name(&netdev->dev));
 }
 
-static int ftmac100_get_link_ksettings(struct net_device *netdev,
-				       struct ethtool_link_ksettings *cmd)
+static int ftmac100_get_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
 {
 	struct ftmac100 *priv = netdev_priv(netdev);
-
-	mii_ethtool_get_link_ksettings(&priv->mii, cmd);
-
-	return 0;
+	return mii_ethtool_gset(&priv->mii, cmd);
 }
 
-static int ftmac100_set_link_ksettings(struct net_device *netdev,
-				       const struct ethtool_link_ksettings *cmd)
+static int ftmac100_set_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
 {
 	struct ftmac100 *priv = netdev_priv(netdev);
-	return mii_ethtool_set_link_ksettings(&priv->mii, cmd);
+	return mii_ethtool_sset(&priv->mii, cmd);
 }
 
 static int ftmac100_nway_reset(struct net_device *netdev)
@@ -857,11 +846,11 @@ static u32 ftmac100_get_link(struct net_device *netdev)
 }
 
 static const struct ethtool_ops ftmac100_ethtool_ops = {
+	.set_settings		= ftmac100_set_settings,
+	.get_settings		= ftmac100_get_settings,
 	.get_drvinfo		= ftmac100_get_drvinfo,
 	.nway_reset		= ftmac100_nway_reset,
 	.get_link		= ftmac100_get_link,
-	.get_link_ksettings	= ftmac100_get_link_ksettings,
-	.set_link_ksettings	= ftmac100_set_link_ksettings,
 };
 
 /******************************************************************************
@@ -872,10 +861,11 @@ static irqreturn_t ftmac100_interrupt(int irq, void *dev_id)
 	struct net_device *netdev = dev_id;
 	struct ftmac100 *priv = netdev_priv(netdev);
 
-	/* Disable interrupts for polling */
-	ftmac100_disable_all_int(priv);
-	if (likely(netif_running(netdev)))
+	if (likely(netif_running(netdev))) {
+		/* Disable interrupts for polling */
+		ftmac100_disable_all_int(priv);
 		napi_schedule(&priv->napi);
+	}
 
 	return IRQ_HANDLED;
 }
@@ -1091,7 +1081,7 @@ static int ftmac100_probe(struct platform_device *pdev)
 	}
 
 	SET_NETDEV_DEV(netdev, &pdev->dev);
-	netdev->ethtool_ops = &ftmac100_ethtool_ops;
+	SET_ETHTOOL_OPS(netdev, &ftmac100_ethtool_ops);
 	netdev->netdev_ops = &ftmac100_netdev_ops;
 
 	platform_set_drvdata(pdev, netdev);
@@ -1142,7 +1132,7 @@ static int ftmac100_probe(struct platform_device *pdev)
 	netdev_info(netdev, "irq %d, mapped at %p\n", priv->irq, priv->base);
 
 	if (!is_valid_ether_addr(netdev->dev_addr)) {
-		eth_hw_addr_random(netdev);
+		random_ether_addr(netdev->dev_addr);
 		netdev_info(netdev, "generated random MAC address %pM\n",
 			    netdev->dev_addr);
 	}
@@ -1155,12 +1145,13 @@ err_ioremap:
 	release_resource(priv->res);
 err_req_mem:
 	netif_napi_del(&priv->napi);
+	platform_set_drvdata(pdev, NULL);
 	free_netdev(netdev);
 err_alloc_etherdev:
 	return err;
 }
 
-static int ftmac100_remove(struct platform_device *pdev)
+static int __exit ftmac100_remove(struct platform_device *pdev)
 {
 	struct net_device *netdev;
 	struct ftmac100 *priv;
@@ -1174,21 +1165,17 @@ static int ftmac100_remove(struct platform_device *pdev)
 	release_resource(priv->res);
 
 	netif_napi_del(&priv->napi);
+	platform_set_drvdata(pdev, NULL);
 	free_netdev(netdev);
 	return 0;
 }
 
-static const struct of_device_id ftmac100_of_ids[] = {
-	{ .compatible = "andestech,atmac100" },
-	{ }
-};
-
 static struct platform_driver ftmac100_driver = {
 	.probe		= ftmac100_probe,
-	.remove		= ftmac100_remove,
+	.remove		= __exit_p(ftmac100_remove),
 	.driver		= {
 		.name	= DRV_NAME,
-		.of_match_table = ftmac100_of_ids
+		.owner	= THIS_MODULE,
 	},
 };
 
@@ -1212,4 +1199,3 @@ module_exit(ftmac100_exit);
 MODULE_AUTHOR("Po-Yu Chuang <ratbert@faraday-tech.com>");
 MODULE_DESCRIPTION("FTMAC100 driver");
 MODULE_LICENSE("GPL");
-MODULE_DEVICE_TABLE(of, ftmac100_of_ids);

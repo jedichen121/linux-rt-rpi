@@ -1,11 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * zfcp device driver
  *
  * Tracking of manually configured LUNs and helper functions to
  * register the LUNs with the SCSI midlayer.
  *
- * Copyright IBM Corp. 2010
+ * Copyright IBM Corporation 2010
  */
 
 #include "zfcp_def.h"
@@ -22,13 +21,12 @@
 void zfcp_unit_scsi_scan(struct zfcp_unit *unit)
 {
 	struct fc_rport *rport = unit->port->rport;
-	u64 lun;
+	unsigned int lun;
 
 	lun = scsilun_to_int((struct scsi_lun *) &unit->fcp_lun);
 
 	if (rport && rport->port_state == FC_PORTSTATE_ONLINE)
-		scsi_scan_target(&rport->dev, 0, rport->scsi_target_id, lun,
-				 SCSI_SCAN_MANUAL);
+		scsi_scan_target(&rport->dev, 0, rport->scsi_target_id, lun, 1);
 }
 
 static void zfcp_unit_scsi_scan_work(struct work_struct *work)
@@ -106,7 +104,7 @@ static void zfcp_unit_release(struct device *dev)
 {
 	struct zfcp_unit *unit = container_of(dev, struct zfcp_unit, dev);
 
-	atomic_dec(&unit->port->units);
+	put_device(&unit->port->dev);
 	kfree(unit);
 }
 
@@ -121,65 +119,48 @@ static void zfcp_unit_release(struct device *dev)
 int zfcp_unit_add(struct zfcp_port *port, u64 fcp_lun)
 {
 	struct zfcp_unit *unit;
-	int retval = 0;
-
-	mutex_lock(&zfcp_sysfs_port_units_mutex);
-	if (zfcp_sysfs_port_is_removing(port)) {
-		/* port is already gone */
-		retval = -ENODEV;
-		goto out;
-	}
 
 	unit = zfcp_unit_find(port, fcp_lun);
 	if (unit) {
 		put_device(&unit->dev);
-		retval = -EEXIST;
-		goto out;
+		return -EEXIST;
 	}
 
 	unit = kzalloc(sizeof(struct zfcp_unit), GFP_KERNEL);
-	if (!unit) {
-		retval = -ENOMEM;
-		goto out;
-	}
+	if (!unit)
+		return -ENOMEM;
 
 	unit->port = port;
 	unit->fcp_lun = fcp_lun;
 	unit->dev.parent = &port->dev;
 	unit->dev.release = zfcp_unit_release;
-	unit->dev.groups = zfcp_unit_attr_groups;
 	INIT_WORK(&unit->scsi_work, zfcp_unit_scsi_scan_work);
 
 	if (dev_set_name(&unit->dev, "0x%016llx",
 			 (unsigned long long) fcp_lun)) {
 		kfree(unit);
-		retval = -ENOMEM;
-		goto out;
+		return -ENOMEM;
 	}
+
+	get_device(&port->dev);
 
 	if (device_register(&unit->dev)) {
 		put_device(&unit->dev);
-		retval = -ENOMEM;
-		goto out;
+		return -ENOMEM;
 	}
 
-	atomic_inc(&port->units); /* under zfcp_sysfs_port_units_mutex ! */
+	if (sysfs_create_group(&unit->dev.kobj, &zfcp_sysfs_unit_attrs)) {
+		device_unregister(&unit->dev);
+		return -EINVAL;
+	}
 
 	write_lock_irq(&port->unit_list_lock);
 	list_add_tail(&unit->list, &port->unit_list);
 	write_unlock_irq(&port->unit_list_lock);
-	/*
-	 * lock order: shost->scan_mutex before zfcp_sysfs_port_units_mutex
-	 * due to      zfcp_unit_scsi_scan() => zfcp_scsi_slave_alloc()
-	 */
-	mutex_unlock(&zfcp_sysfs_port_units_mutex);
 
 	zfcp_unit_scsi_scan(unit);
-	return retval;
 
-out:
-	mutex_unlock(&zfcp_sysfs_port_units_mutex);
-	return retval;
+	return 0;
 }
 
 /**
@@ -196,7 +177,7 @@ struct scsi_device *zfcp_unit_sdev(struct zfcp_unit *unit)
 {
 	struct Scsi_Host *shost;
 	struct zfcp_port *port;
-	u64 lun;
+	unsigned int lun;
 
 	lun = scsilun_to_int((struct scsi_lun *) &unit->fcp_lun);
 	port = unit->port;
@@ -257,7 +238,7 @@ int zfcp_unit_remove(struct zfcp_port *port, u64 fcp_lun)
 
 	put_device(&unit->dev);
 
-	device_unregister(&unit->dev);
+	zfcp_device_unregister(&unit->dev, &zfcp_sysfs_unit_attrs);
 
 	return 0;
 }

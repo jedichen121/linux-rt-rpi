@@ -1,22 +1,15 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *	Low-Level PCI Access for i386 machines.
  *
  *	(c) 1999 Martin Mares <mj@ucw.cz>
  */
 
-#include <linux/ioport.h>
-
 #undef DEBUG
 
 #ifdef DEBUG
-#define DBG(fmt, ...) printk(fmt, ##__VA_ARGS__)
+#define DBG(x...) printk(x)
 #else
-#define DBG(fmt, ...)				\
-do {						\
-	if (0)					\
-		printk(fmt, ##__VA_ARGS__);	\
-} while (0)
+#define DBG(x...)
 #endif
 
 #define PCI_PROBE_BIOS		0x0001
@@ -38,7 +31,6 @@ do {						\
 #define PCI_NOASSIGN_ROMS	0x80000
 #define PCI_ROOT_NO_CRS		0x100000
 #define PCI_NOASSIGN_BARS	0x200000
-#define PCI_BIG_ROOT_WINDOW	0x400000
 
 extern unsigned int pci_probe;
 extern unsigned long pirq_table_addr;
@@ -52,12 +44,15 @@ enum pci_bf_sort_state {
 
 /* pci-i386.c */
 
+extern unsigned int pcibios_max_latency;
+
 void pcibios_resource_survey(void);
 void pcibios_set_cache_line_size(void);
 
 /* pci-pc.c */
 
 extern int pcibios_last_bus;
+extern struct pci_bus *pci_root_bus;
 extern struct pci_ops pci_root_ops;
 
 void pcibios_scan_specific_bus(int busn);
@@ -97,8 +92,6 @@ extern raw_spinlock_t pci_config_lock;
 extern int (*pcibios_enable_irq)(struct pci_dev *dev);
 extern void (*pcibios_disable_irq)(struct pci_dev *dev);
 
-extern bool mp_should_keep_irq(struct device *dev);
-
 struct pci_raw_ops {
 	int (*read)(unsigned int domain, unsigned int bus, unsigned int devfn,
 						int reg, int len, u32 *val);
@@ -109,7 +102,6 @@ struct pci_raw_ops {
 extern const struct pci_raw_ops *raw_pci_ops;
 extern const struct pci_raw_ops *raw_pci_ext_ops;
 
-extern const struct pci_raw_ops pci_mmcfg;
 extern const struct pci_raw_ops pci_direct_conf1;
 extern bool port_cf9_safe;
 
@@ -145,25 +137,18 @@ struct pci_mmcfg_region {
 
 extern int __init pci_mmcfg_arch_init(void);
 extern void __init pci_mmcfg_arch_free(void);
-extern int pci_mmcfg_arch_map(struct pci_mmcfg_region *cfg);
-extern void pci_mmcfg_arch_unmap(struct pci_mmcfg_region *cfg);
-extern int pci_mmconfig_insert(struct device *dev, u16 seg, u8 start, u8 end,
-			       phys_addr_t addr);
-extern int pci_mmconfig_delete(u16 seg, u8 start, u8 end);
 extern struct pci_mmcfg_region *pci_mmconfig_lookup(int segment, int bus);
-extern struct pci_mmcfg_region *__init pci_mmconfig_add(int segment, int start,
-							int end, u64 addr);
 
 extern struct list_head pci_mmcfg_list;
 
 #define PCI_MMCFG_BUS_OFFSET(bus)      ((bus) << 20)
 
 /*
- * On AMD Fam10h CPUs, all PCI MMIO configuration space accesses must use
- * %eax.  No other source or target registers may be used.  The following
- * mmio_config_* accessors enforce this.  See "BIOS and Kernel Developer's
- * Guide (BKDG) For AMD Family 10h Processors", rev. 3.48, sec 2.11.1,
- * "MMIO Configuration Coding Requirements".
+ * AMD Fam10h CPUs are buggy, and cannot access MMIO config space
+ * on their northbrige except through the * %eax register. As such, you MUST
+ * NOT use normal IOMEM accesses, you need to only use the magic mmio-config
+ * accessor functions.
+ * In fact just use pci_config_*, nothing else please.
  */
 static inline unsigned char mmio_config_readb(void __iomem *pos)
 {

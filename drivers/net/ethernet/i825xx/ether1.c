@@ -48,6 +48,7 @@
 #include <linux/skbuff.h>
 #include <linux/bitops.h>
 
+#include <asm/system.h>
 #include <asm/io.h>
 #include <asm/dma.h>
 #include <asm/ecard.h>
@@ -64,8 +65,7 @@ static unsigned int net_debug = NET_DEBUG;
 #define RX_AREA_END	0x0fc00
 
 static int ether1_open(struct net_device *dev);
-static netdev_tx_t ether1_sendpacket(struct sk_buff *skb,
-				     struct net_device *dev);
+static int ether1_sendpacket(struct sk_buff *skb, struct net_device *dev);
 static irqreturn_t ether1_interrupt(int irq, void *dev_id);
 static int ether1_close(struct net_device *dev);
 static void ether1_setmulticastlist(struct net_device *dev);
@@ -73,7 +73,7 @@ static void ether1_timeout(struct net_device *dev);
 
 /* ------------------------------------------------------------------------- */
 
-static char version[] = "ether1 ethernet driver (c) 2000 Russell King v1.07\n";
+static char version[] __devinitdata = "ether1 ethernet driver (c) 2000 Russell King v1.07\n";
 
 #define BUS_16 16
 #define BUS_8  8
@@ -251,7 +251,7 @@ ether1_readbuffer (struct net_device *dev, void *data, unsigned int start, unsig
 	} while (thislen);
 }
 
-static int
+static int __devinit
 ether1_ramtest(struct net_device *dev, unsigned char byte)
 {
 	unsigned char *buffer = kmalloc (BUFFER_SIZE, GFP_KERNEL);
@@ -305,7 +305,7 @@ ether1_reset (struct net_device *dev)
 	return BUS_16;
 }
 
-static int
+static int __devinit
 ether1_init_2(struct net_device *dev)
 {
 	int i;
@@ -639,6 +639,12 @@ ether1_txalloc (struct net_device *dev, int size)
 static int
 ether1_open (struct net_device *dev)
 {
+	if (!is_valid_ether_addr(dev->dev_addr)) {
+		printk(KERN_WARNING "%s: invalid ethernet MAC address\n",
+			dev->name);
+		return -EINVAL;
+	}
+
 	if (request_irq(dev->irq, ether1_interrupt, 0, "ether1", dev))
 		return -EAGAIN;
 
@@ -668,7 +674,7 @@ ether1_timeout(struct net_device *dev)
 	netif_wake_queue(dev);
 }
 
-static netdev_tx_t
+static int
 ether1_sendpacket (struct sk_buff *skb, struct net_device *dev)
 {
 	int tmp, tst, nopaddr, txaddr, tbdaddr, dataddr;
@@ -861,7 +867,7 @@ ether1_recv_done (struct net_device *dev)
 			struct sk_buff *skb;
 
 			length = (length + 1) & ~1;
-			skb = netdev_alloc_skb(dev, length + 2);
+			skb = dev_alloc_skb (length + 2);
 
 			if (skb) {
 				skb_reserve (skb, 2);
@@ -967,7 +973,7 @@ ether1_setmulticastlist (struct net_device *dev)
 
 /* ------------------------------------------------------------------------- */
 
-static void ether1_banner(void)
+static void __devinit ether1_banner(void)
 {
 	static unsigned int version_printed = 0;
 
@@ -982,10 +988,11 @@ static const struct net_device_ops ether1_netdev_ops = {
 	.ndo_set_rx_mode	= ether1_setmulticastlist,
 	.ndo_tx_timeout		= ether1_timeout,
 	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_set_mac_address	= eth_mac_addr,
 };
 
-static int
+static int __devinit
 ether1_probe(struct expansion_card *ec, const struct ecard_id *id)
 {
 	struct net_device *dev;
@@ -1046,7 +1053,7 @@ ether1_probe(struct expansion_card *ec, const struct ecard_id *id)
 	return ret;
 }
 
-static void ether1_remove(struct expansion_card *ec)
+static void __devexit ether1_remove(struct expansion_card *ec)
 {
 	struct net_device *dev = ecard_get_drvdata(ec);
 
@@ -1064,7 +1071,7 @@ static const struct ecard_id ether1_ids[] = {
 
 static struct ecard_driver ether1_driver = {
 	.probe		= ether1_probe,
-	.remove		= ether1_remove,
+	.remove		= __devexit_p(ether1_remove),
 	.id_table	= ether1_ids,
 	.drv = {
 		.name	= "ether1",

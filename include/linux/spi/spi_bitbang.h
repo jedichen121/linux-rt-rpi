@@ -1,14 +1,17 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef	__SPI_BITBANG_H
 #define	__SPI_BITBANG_H
 
 #include <linux/workqueue.h>
 
 struct spi_bitbang {
-	struct mutex		lock;
+	struct workqueue_struct	*workqueue;
+	struct work_struct	work;
+
+	spinlock_t		lock;
+	struct list_head	queue;
 	u8			busy;
 	u8			use_dma;
-	u16			flags;		/* extra spi->mode support */
+	u8			flags;		/* extra spi->mode support */
 
 	struct spi_master	*master;
 
@@ -30,8 +33,7 @@ struct spi_bitbang {
 	/* txrx_word[SPI_MODE_*]() just looks like a shift register */
 	u32	(*txrx_word[4])(struct spi_device *spi,
 			unsigned nsecs,
-			u32 word, u8 bits, unsigned flags);
-	int	(*set_line_direction)(struct spi_device *spi, bool output);
+			u32 word, u8 bits);
 };
 
 /* you can call these default bitbang->master methods from your custom
@@ -39,11 +41,12 @@ struct spi_bitbang {
  */
 extern int spi_bitbang_setup(struct spi_device *spi);
 extern void spi_bitbang_cleanup(struct spi_device *spi);
+extern int spi_bitbang_transfer(struct spi_device *spi, struct spi_message *m);
 extern int spi_bitbang_setup_transfer(struct spi_device *spi,
 				      struct spi_transfer *t);
 
 /* start or stop queue processing */
 extern int spi_bitbang_start(struct spi_bitbang *spi);
-extern void spi_bitbang_stop(struct spi_bitbang *spi);
+extern int spi_bitbang_stop(struct spi_bitbang *spi);
 
 #endif	/* __SPI_BITBANG_H */

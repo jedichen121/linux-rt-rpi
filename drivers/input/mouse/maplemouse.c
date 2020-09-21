@@ -64,7 +64,7 @@ static void dc_mouse_close(struct input_dev *dev)
 }
 
 /* allow the mouse to be used */
-static int probe_maple_mouse(struct device *dev)
+static int __devinit probe_maple_mouse(struct device *dev)
 {
 	struct maple_device *mdev = to_maple_dev(dev);
 	struct maple_driver *mdrv = to_maple_driver(dev->driver);
@@ -87,6 +87,7 @@ static int probe_maple_mouse(struct device *dev)
 	mse->dev = input_dev;
 	mse->mdev = mdev;
 
+	input_set_drvdata(input_dev, mse);
 	input_dev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_REL);
 	input_dev->keybit[BIT_WORD(BTN_MOUSE)] = BIT_MASK(BTN_LEFT) |
 		BIT_MASK(BTN_RIGHT) | BIT_MASK(BTN_MIDDLE);
@@ -113,7 +114,7 @@ fail:
 	return error;
 }
 
-static int remove_maple_mouse(struct device *dev)
+static int __devexit remove_maple_mouse(struct device *dev)
 {
 	struct maple_device *mdev = to_maple_dev(dev);
 	struct dc_mouse *mse = maple_get_drvdata(mdev);
@@ -131,7 +132,7 @@ static struct maple_driver dc_mouse_driver = {
 	.drv = {
 		.name = "Dreamcast_mouse",
 		.probe = probe_maple_mouse,
-		.remove = remove_maple_mouse,
+		.remove = __devexit_p(remove_maple_mouse),
 	},
 };
 

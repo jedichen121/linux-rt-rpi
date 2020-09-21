@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/filesystems.c
  *
@@ -15,7 +14,7 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 
 /*
  * Handling of filesystem drivers list.
@@ -34,10 +33,9 @@ static struct file_system_type *file_systems;
 static DEFINE_RWLOCK(file_systems_lock);
 
 /* WARNING: This can be used only if we _already_ own a reference */
-struct file_system_type *get_filesystem(struct file_system_type *fs)
+void get_filesystem(struct file_system_type *fs)
 {
 	__module_get(fs->owner);
-	return fs;
 }
 
 void put_filesystem(struct file_system_type *fs)
@@ -48,9 +46,9 @@ void put_filesystem(struct file_system_type *fs)
 static struct file_system_type **find_filesystem(const char *name, unsigned len)
 {
 	struct file_system_type **p;
-	for (p = &file_systems; *p; p = &(*p)->next)
-		if (strncmp((*p)->name, name, len) == 0 &&
-		    !(*p)->name[len])
+	for (p=&file_systems; *p; p=&(*p)->next)
+		if (strlen((*p)->name) == len &&
+		    strncmp((*p)->name, name, len) == 0)
 			break;
 	return p;
 }
@@ -76,6 +74,7 @@ int register_filesystem(struct file_system_type * fs)
 	BUG_ON(strchr(fs->name, '.'));
 	if (fs->next)
 		return -EBUSY;
+	INIT_LIST_HEAD(&fs->fs_supers);
 	write_lock(&file_systems_lock);
 	p = find_filesystem(fs->name, strlen(fs->name));
 	if (*p)
@@ -123,11 +122,10 @@ int unregister_filesystem(struct file_system_type * fs)
 
 EXPORT_SYMBOL(unregister_filesystem);
 
-#ifdef CONFIG_SYSFS_SYSCALL
 static int fs_index(const char __user * __name)
 {
 	struct file_system_type * tmp;
-	struct filename *name;
+	char * name;
 	int err, index;
 
 	name = getname(__name);
@@ -138,7 +136,7 @@ static int fs_index(const char __user * __name)
 	err = -EINVAL;
 	read_lock(&file_systems_lock);
 	for (tmp=file_systems, index=0 ; tmp ; tmp=tmp->next, index++) {
-		if (strcmp(tmp->name, name->name) == 0) {
+		if (strcmp(tmp->name,name) == 0) {
 			err = index;
 			break;
 		}
@@ -202,7 +200,6 @@ SYSCALL_DEFINE3(sysfs, int, option, unsigned long, arg1, unsigned long, arg2)
 	}
 	return retval;
 }
-#endif
 
 int __init get_filesystem_list(char *buf)
 {
@@ -238,9 +235,21 @@ static int filesystems_proc_show(struct seq_file *m, void *v)
 	return 0;
 }
 
+static int filesystems_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, filesystems_proc_show, NULL);
+}
+
+static const struct file_operations filesystems_proc_fops = {
+	.open		= filesystems_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 static int __init proc_filesystems_init(void)
 {
-	proc_create_single("filesystems", 0, NULL, filesystems_proc_show);
+	proc_create("filesystems", 0, NULL, &filesystems_proc_fops);
 	return 0;
 }
 module_init(proc_filesystems_init);
@@ -265,10 +274,8 @@ struct file_system_type *get_fs_type(const char *name)
 	int len = dot ? dot - name : strlen(name);
 
 	fs = __get_fs_type(name, len);
-	if (!fs && (request_module("fs-%.*s", len, name) == 0)) {
+	if (!fs && (request_module("%.*s", len, name) == 0))
 		fs = __get_fs_type(name, len);
-		WARN_ONCE(!fs, "request_module fs-%.*s succeeded, but still no fs?\n", len, name);
-	}
 
 	if (dot && fs && !(fs->fs_flags & FS_HAS_SUBTYPE)) {
 		put_filesystem(fs);

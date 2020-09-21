@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /* suncore.c
  *
  * Common SUN serial routines.  Based entirely
@@ -11,17 +10,18 @@
  * Copyright (C) 2002 David S. Miller (davem@redhat.com)
  */
 
+#include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/console.h>
 #include <linux/tty.h>
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/serial_core.h>
-#include <linux/sunserialcore.h>
 #include <linux/init.h>
 
 #include <asm/prom.h>
 
+#include "suncore.h"
 
 static int sunserial_current_minor = 64;
 
@@ -112,7 +112,6 @@ void sunserial_console_termios(struct console *con, struct device_node *uart_dp)
 		mode = of_get_property(dp, mode_prop, NULL);
 		if (!mode)
 			mode = "9600,8,n,1,-";
-		of_node_put(dp);
 	}
 
 	cflag = CREAD | HUPCL | CLOCAL;
@@ -235,10 +234,14 @@ static int __init suncore_init(void)
 {
 	return 0;
 }
-device_initcall(suncore_init);
 
-#if 0 /* ..def MODULE ; never supported as such */
+static void __exit suncore_exit(void)
+{
+}
+
+module_init(suncore_init);
+module_exit(suncore_exit);
+
 MODULE_AUTHOR("Eddie C. Dost, David S. Miller");
 MODULE_DESCRIPTION("Sun serial common layer");
 MODULE_LICENSE("GPL");
-#endif

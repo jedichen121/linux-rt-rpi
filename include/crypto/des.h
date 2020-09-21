@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /* 
  * DES & Triple DES EDE Cipher Algorithms.
  */
@@ -16,8 +15,5 @@
 
 
 extern unsigned long des_ekey(u32 *pe, const u8 *k);
-
-extern int __des3_ede_setkey(u32 *expkey, u32 *flags, const u8 *key,
-			     unsigned int keylen);
 
 #endif /* __CRYPTO_DES_H */

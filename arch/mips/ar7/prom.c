@@ -21,11 +21,10 @@
 #include <linux/kernel.h>
 #include <linux/serial_reg.h>
 #include <linux/spinlock.h>
-#include <linux/export.h>
+#include <linux/module.h>
 #include <linux/string.h>
 #include <linux/io.h>
 #include <asm/bootinfo.h>
-#include <asm/setup.h>
 
 #include <asm/mach-ar7/ar7.h>
 #include <asm/mach-ar7/prom.h>
@@ -70,7 +69,7 @@ struct psbl_rec {
 	u32	ffs_size;
 };
 
-static const char psp_env_version[] __initconst = "TIENV0.8";
+static __initdata char psp_env_version[] = "TIENV0.8";
 
 struct psp_env_chunk {
 	u8	num;
@@ -85,7 +84,7 @@ struct psp_var_map_entry {
 	char	*value;
 };
 
-static const struct psp_var_map_entry psp_var_map[] = {
+static struct psp_var_map_entry psp_var_map[] = {
 	{  1,	"cpufrequency" },
 	{  2,	"memsize" },
 	{  3,	"flashsize" },
@@ -247,6 +246,8 @@ void __init prom_init(void)
 	ar7_init_cmdline(fw_arg0, (char **)fw_arg1);
 	ar7_init_env((struct env_var *)fw_arg2);
 	console_config();
+
+	ar7_gpio_init();
 }
 
 #define PORT(offset) (KSEG1ADDR(AR7_REGS_UART0 + (offset * 4)))
@@ -260,9 +261,10 @@ static inline void serial_out(int offset, int value)
 	writel(value, (void *)PORT(offset));
 }
 
-void prom_putchar(char c)
+int prom_putchar(char c)
 {
 	while ((serial_in(UART_LSR) & UART_LSR_TEMT) == 0)
 		;
 	serial_out(UART_TX, c);
+	return 1;
 }

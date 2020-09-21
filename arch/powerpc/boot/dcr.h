@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _PPC_BOOT_DCR_H_
 #define _PPC_BOOT_DCR_H_
 
@@ -15,10 +14,6 @@
 		unsigned long rval; \
 		asm volatile("mfdcrx %0,%1" : "=r"(rval) : "r"(rn)); \
 		rval; \
-	})
-#define mtdcrx(rn, val) \
-	({	\
-		asm volatile("mtdcrx %0,%1" : : "r"(rn), "r" (val)); \
 	})
 
 /* 440GP/440GX SDRAM controller DCRs */

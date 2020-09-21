@@ -24,7 +24,6 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/export.h>
 #include <linux/slab.h>
 #include <linux/err.h>
 #include <linux/of_platform.h>
@@ -101,8 +100,8 @@ int __init instantiate_cache_sram(struct platform_device *dev,
 
 	if (!request_mem_region(cache_sram->base_phys, cache_sram->size,
 						"fsl_85xx_cache_sram")) {
-		dev_err(&dev->dev, "%pOF: request memory failed\n",
-				dev->dev.of_node);
+		dev_err(&dev->dev, "%s: request memory failed\n",
+				dev->dev.of_node->full_name);
 		ret = -ENXIO;
 		goto out_free;
 	}
@@ -110,16 +109,16 @@ int __init instantiate_cache_sram(struct platform_device *dev,
 	cache_sram->base_virt = ioremap_prot(cache_sram->base_phys,
 				cache_sram->size, _PAGE_COHERENT | PAGE_KERNEL);
 	if (!cache_sram->base_virt) {
-		dev_err(&dev->dev, "%pOF: ioremap_prot failed\n",
-				dev->dev.of_node);
+		dev_err(&dev->dev, "%s: ioremap_prot failed\n",
+				dev->dev.of_node->full_name);
 		ret = -ENOMEM;
 		goto out_release;
 	}
 
 	cache_sram->rh = rh_create(sizeof(unsigned int));
 	if (IS_ERR(cache_sram->rh)) {
-		dev_err(&dev->dev, "%pOF: Unable to create remote heap\n",
-				dev->dev.of_node);
+		dev_err(&dev->dev, "%s: Unable to create remote heap\n",
+				dev->dev.of_node->full_name);
 		ret = PTR_ERR(cache_sram->rh);
 		goto out_unmap;
 	}

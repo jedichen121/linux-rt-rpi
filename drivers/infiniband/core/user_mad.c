@@ -33,8 +33,6 @@
  * SOFTWARE.
  */
 
-#define pr_fmt(fmt) "user_mad: " fmt
-
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/device.h>
@@ -49,28 +47,22 @@
 #include <linux/sched.h>
 #include <linux/semaphore.h>
 #include <linux/slab.h>
-#include <linux/nospec.h>
 
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 
 #include <rdma/ib_mad.h>
 #include <rdma/ib_user_mad.h>
-
-#include "core_priv.h"
 
 MODULE_AUTHOR("Roland Dreier");
 MODULE_DESCRIPTION("InfiniBand userspace MAD packet access");
 MODULE_LICENSE("Dual BSD/GPL");
 
 enum {
-	IB_UMAD_MAX_PORTS  = RDMA_MAX_PORTS,
+	IB_UMAD_MAX_PORTS  = 64,
 	IB_UMAD_MAX_AGENTS = 32,
 
 	IB_UMAD_MAJOR      = 231,
-	IB_UMAD_MINOR_BASE = 0,
-	IB_UMAD_NUM_FIXED_MINOR = 64,
-	IB_UMAD_NUM_DYNAMIC_MINOR = IB_UMAD_MAX_PORTS - IB_UMAD_NUM_FIXED_MINOR,
-	IB_ISSM_MINOR_BASE        = IB_UMAD_NUM_FIXED_MINOR,
+	IB_UMAD_MINOR_BASE = 0
 };
 
 /*
@@ -105,7 +97,8 @@ struct ib_umad_port {
 };
 
 struct ib_umad_device {
-	struct kobject       kobj;
+	int                  start_port, end_port;
+	struct kref          ref;
 	struct ib_umad_port  port[0];
 };
 
@@ -133,28 +126,21 @@ struct ib_umad_packet {
 
 static struct class *umad_class;
 
-static const dev_t base_umad_dev = MKDEV(IB_UMAD_MAJOR, IB_UMAD_MINOR_BASE);
-static const dev_t base_issm_dev = MKDEV(IB_UMAD_MAJOR, IB_UMAD_MINOR_BASE) +
-				   IB_UMAD_NUM_FIXED_MINOR;
-static dev_t dynamic_umad_dev;
-static dev_t dynamic_issm_dev;
+static const dev_t base_dev = MKDEV(IB_UMAD_MAJOR, IB_UMAD_MINOR_BASE);
 
+static DEFINE_SPINLOCK(port_lock);
 static DECLARE_BITMAP(dev_map, IB_UMAD_MAX_PORTS);
 
 static void ib_umad_add_one(struct ib_device *device);
-static void ib_umad_remove_one(struct ib_device *device, void *client_data);
+static void ib_umad_remove_one(struct ib_device *device);
 
-static void ib_umad_release_dev(struct kobject *kobj)
+static void ib_umad_release_dev(struct kref *ref)
 {
 	struct ib_umad_device *dev =
-		container_of(kobj, struct ib_umad_device, kobj);
+		container_of(ref, struct ib_umad_device, ref);
 
 	kfree(dev);
 }
-
-static struct kobj_type ib_umad_dev_ktype = {
-	.release = ib_umad_release_dev,
-};
 
 static int hdr_size(struct ib_umad_file *file)
 {
@@ -206,7 +192,7 @@ static void send_handler(struct ib_mad_agent *agent,
 	struct ib_umad_packet *packet = send_wc->send_buf->context[0];
 
 	dequeue_send(file, packet);
-	rdma_destroy_ah(packet->msg->ah);
+	ib_destroy_ah(packet->msg->ah);
 	ib_free_send_mad(packet->msg);
 
 	if (send_wc->status == IB_WC_RESP_TIMEOUT_ERR) {
@@ -219,7 +205,6 @@ static void send_handler(struct ib_mad_agent *agent,
 }
 
 static void recv_handler(struct ib_mad_agent *agent,
-			 struct ib_mad_send_buf *send_buf,
 			 struct ib_mad_recv_wc *mad_recv_wc)
 {
 	struct ib_umad_file *file = agent->context;
@@ -238,38 +223,23 @@ static void recv_handler(struct ib_mad_agent *agent,
 	packet->mad.hdr.status	   = 0;
 	packet->mad.hdr.length	   = hdr_size(file) + mad_recv_wc->mad_len;
 	packet->mad.hdr.qpn	   = cpu_to_be32(mad_recv_wc->wc->src_qp);
-	/*
-	 * On OPA devices it is okay to lose the upper 16 bits of LID as this
-	 * information is obtained elsewhere. Mask off the upper 16 bits.
-	 */
-	if (rdma_cap_opa_mad(agent->device, agent->port_num))
-		packet->mad.hdr.lid = ib_lid_be16(0xFFFF &
-						  mad_recv_wc->wc->slid);
-	else
-		packet->mad.hdr.lid = ib_lid_be16(mad_recv_wc->wc->slid);
+	packet->mad.hdr.lid	   = cpu_to_be16(mad_recv_wc->wc->slid);
 	packet->mad.hdr.sl	   = mad_recv_wc->wc->sl;
 	packet->mad.hdr.path_bits  = mad_recv_wc->wc->dlid_path_bits;
 	packet->mad.hdr.pkey_index = mad_recv_wc->wc->pkey_index;
 	packet->mad.hdr.grh_present = !!(mad_recv_wc->wc->wc_flags & IB_WC_GRH);
 	if (packet->mad.hdr.grh_present) {
-		struct rdma_ah_attr ah_attr;
-		const struct ib_global_route *grh;
-		int ret;
+		struct ib_ah_attr ah_attr;
 
-		ret = ib_init_ah_attr_from_wc(agent->device, agent->port_num,
-					      mad_recv_wc->wc,
-					      mad_recv_wc->recv_buf.grh,
-					      &ah_attr);
-		if (ret)
-			goto err2;
+		ib_init_ah_from_wc(agent->device, agent->port_num,
+				   mad_recv_wc->wc, mad_recv_wc->recv_buf.grh,
+				   &ah_attr);
 
-		grh = rdma_ah_read_grh(&ah_attr);
-		packet->mad.hdr.gid_index = grh->sgid_index;
-		packet->mad.hdr.hop_limit = grh->hop_limit;
-		packet->mad.hdr.traffic_class = grh->traffic_class;
-		memcpy(packet->mad.hdr.gid, &grh->dgid, 16);
-		packet->mad.hdr.flow_label = cpu_to_be32(grh->flow_label);
-		rdma_destroy_ah_attr(&ah_attr);
+		packet->mad.hdr.gid_index = ah_attr.grh.sgid_index;
+		packet->mad.hdr.hop_limit = ah_attr.grh.hop_limit;
+		packet->mad.hdr.traffic_class = ah_attr.grh.traffic_class;
+		memcpy(packet->mad.hdr.gid, &ah_attr.grh.dgid, 16);
+		packet->mad.hdr.flow_label = cpu_to_be32(ah_attr.grh.flow_label);
 	}
 
 	if (queue_packet(file, agent, packet))
@@ -287,23 +257,20 @@ static ssize_t copy_recv_mad(struct ib_umad_file *file, char __user *buf,
 {
 	struct ib_mad_recv_buf *recv_buf;
 	int left, seg_payload, offset, max_seg_payload;
-	size_t seg_size;
-
-	recv_buf = &packet->recv_wc->recv_buf;
-	seg_size = packet->recv_wc->mad_seg_size;
 
 	/* We need enough room to copy the first (or only) MAD segment. */
-	if ((packet->length <= seg_size &&
+	recv_buf = &packet->recv_wc->recv_buf;
+	if ((packet->length <= sizeof (*recv_buf->mad) &&
 	     count < hdr_size(file) + packet->length) ||
-	    (packet->length > seg_size &&
-	     count < hdr_size(file) + seg_size))
+	    (packet->length > sizeof (*recv_buf->mad) &&
+	     count < hdr_size(file) + sizeof (*recv_buf->mad)))
 		return -EINVAL;
 
 	if (copy_to_user(buf, &packet->mad, hdr_size(file)))
 		return -EFAULT;
 
 	buf += hdr_size(file);
-	seg_payload = min_t(int, packet->length, seg_size);
+	seg_payload = min_t(int, packet->length, sizeof (*recv_buf->mad));
 	if (copy_to_user(buf, recv_buf->mad, seg_payload))
 		return -EFAULT;
 
@@ -320,7 +287,7 @@ static ssize_t copy_recv_mad(struct ib_umad_file *file, char __user *buf,
 			return -ENOSPC;
 		}
 		offset = ib_get_mad_data_offset(recv_buf->mad->mad_hdr.mgmt_class);
-		max_seg_payload = seg_size - offset;
+		max_seg_payload = sizeof (struct ib_mad) - offset;
 
 		for (left = packet->length - seg_payload, buf += seg_payload;
 		     left; left -= seg_payload, buf += seg_payload) {
@@ -453,11 +420,11 @@ static int is_duplicate(struct ib_umad_file *file,
 		 * the same TID, reject the second as a duplicate.  This is more
 		 * restrictive than required by the spec.
 		 */
-		if (!ib_response_mad(hdr)) {
-			if (!ib_response_mad(sent_hdr))
+		if (!ib_response_mad((struct ib_mad *) hdr)) {
+			if (!ib_response_mad((struct ib_mad *) sent_hdr))
 				return 1;
 			continue;
-		} else if (!ib_response_mad(sent_hdr))
+		} else if (!ib_response_mad((struct ib_mad *) sent_hdr))
 			continue;
 
 		if (same_destination(&packet->mad.hdr, &sent_packet->mad.hdr))
@@ -473,12 +440,11 @@ static ssize_t ib_umad_write(struct file *filp, const char __user *buf,
 	struct ib_umad_file *file = filp->private_data;
 	struct ib_umad_packet *packet;
 	struct ib_mad_agent *agent;
-	struct rdma_ah_attr ah_attr;
+	struct ib_ah_attr ah_attr;
 	struct ib_ah *ah;
 	struct ib_rmpp_mad *rmpp_mad;
 	__be64 *tid;
 	int ret, data_len, hdr_len, copy_offset, rmpp_active;
-	u8 base_version;
 
 	if (count < hdr_size(file) + IB_MGMT_RMPP_HDR)
 		return -EINVAL;
@@ -513,22 +479,20 @@ static ssize_t ib_umad_write(struct file *filp, const char __user *buf,
 	}
 
 	memset(&ah_attr, 0, sizeof ah_attr);
-	ah_attr.type = rdma_ah_find_type(agent->device,
-					 file->port->port_num);
-	rdma_ah_set_dlid(&ah_attr, be16_to_cpu(packet->mad.hdr.lid));
-	rdma_ah_set_sl(&ah_attr, packet->mad.hdr.sl);
-	rdma_ah_set_path_bits(&ah_attr, packet->mad.hdr.path_bits);
-	rdma_ah_set_port_num(&ah_attr, file->port->port_num);
+	ah_attr.dlid          = be16_to_cpu(packet->mad.hdr.lid);
+	ah_attr.sl            = packet->mad.hdr.sl;
+	ah_attr.src_path_bits = packet->mad.hdr.path_bits;
+	ah_attr.port_num      = file->port->port_num;
 	if (packet->mad.hdr.grh_present) {
-		rdma_ah_set_grh(&ah_attr, NULL,
-				be32_to_cpu(packet->mad.hdr.flow_label),
-				packet->mad.hdr.gid_index,
-				packet->mad.hdr.hop_limit,
-				packet->mad.hdr.traffic_class);
-		rdma_ah_set_dgid_raw(&ah_attr, packet->mad.hdr.gid);
+		ah_attr.ah_flags = IB_AH_GRH;
+		memcpy(ah_attr.grh.dgid.raw, packet->mad.hdr.gid, 16);
+		ah_attr.grh.sgid_index	   = packet->mad.hdr.gid_index;
+		ah_attr.grh.flow_label	   = be32_to_cpu(packet->mad.hdr.flow_label);
+		ah_attr.grh.hop_limit	   = packet->mad.hdr.hop_limit;
+		ah_attr.grh.traffic_class  = packet->mad.hdr.traffic_class;
 	}
 
-	ah = rdma_create_user_ah(agent->qp->pd, &ah_attr, NULL);
+	ah = ib_create_ah(agent->qp->pd, &ah_attr);
 	if (IS_ERR(ah)) {
 		ret = PTR_ERR(ah);
 		goto err_up;
@@ -536,24 +500,20 @@ static ssize_t ib_umad_write(struct file *filp, const char __user *buf,
 
 	rmpp_mad = (struct ib_rmpp_mad *) packet->mad.data;
 	hdr_len = ib_get_mad_data_offset(rmpp_mad->mad_hdr.mgmt_class);
-
-	if (ib_is_mad_class_rmpp(rmpp_mad->mad_hdr.mgmt_class)
-	    && ib_mad_kernel_rmpp_agent(agent)) {
-		copy_offset = IB_MGMT_RMPP_HDR;
-		rmpp_active = ib_get_rmpp_flags(&rmpp_mad->rmpp_hdr) &
-						IB_MGMT_RMPP_FLAG_ACTIVE;
-	} else {
+	if (!ib_is_mad_class_rmpp(rmpp_mad->mad_hdr.mgmt_class)) {
 		copy_offset = IB_MGMT_MAD_HDR;
 		rmpp_active = 0;
+	} else {
+		copy_offset = IB_MGMT_RMPP_HDR;
+		rmpp_active = ib_get_rmpp_flags(&rmpp_mad->rmpp_hdr) &
+			      IB_MGMT_RMPP_FLAG_ACTIVE;
 	}
 
-	base_version = ((struct ib_mad_hdr *)&packet->mad.data)->base_version;
 	data_len = count - hdr_size(file) - hdr_len;
 	packet->msg = ib_create_send_mad(agent,
 					 be32_to_cpu(packet->mad.hdr.qpn),
 					 packet->mad.hdr.pkey_index, rmpp_active,
-					 hdr_len, data_len, GFP_KERNEL,
-					 base_version);
+					 hdr_len, data_len, GFP_KERNEL);
 	if (IS_ERR(packet->msg)) {
 		ret = PTR_ERR(packet->msg);
 		goto err_ah;
@@ -592,22 +552,14 @@ static ssize_t ib_umad_write(struct file *filp, const char __user *buf,
 		rmpp_mad->mad_hdr.tid = *tid;
 	}
 
-	if (!ib_mad_kernel_rmpp_agent(agent)
-	   && ib_is_mad_class_rmpp(rmpp_mad->mad_hdr.mgmt_class)
-	   && (ib_get_rmpp_flags(&rmpp_mad->rmpp_hdr) & IB_MGMT_RMPP_FLAG_ACTIVE)) {
-		spin_lock_irq(&file->send_lock);
+	spin_lock_irq(&file->send_lock);
+	ret = is_duplicate(file, packet);
+	if (!ret)
 		list_add_tail(&packet->list, &file->send_list);
-		spin_unlock_irq(&file->send_lock);
-	} else {
-		spin_lock_irq(&file->send_lock);
-		ret = is_duplicate(file, packet);
-		if (!ret)
-			list_add_tail(&packet->list, &file->send_list);
-		spin_unlock_irq(&file->send_lock);
-		if (ret) {
-			ret = -EINVAL;
-			goto err_msg;
-		}
+	spin_unlock_irq(&file->send_lock);
+	if (ret) {
+		ret = -EINVAL;
+		goto err_msg;
 	}
 
 	ret = ib_post_send_mad(packet->msg, NULL);
@@ -622,7 +574,7 @@ err_send:
 err_msg:
 	ib_free_send_mad(packet->msg);
 err_ah:
-	rdma_destroy_ah(ah);
+	ib_destroy_ah(ah);
 err_up:
 	mutex_unlock(&file->mutex);
 err:
@@ -630,17 +582,17 @@ err:
 	return ret;
 }
 
-static __poll_t ib_umad_poll(struct file *filp, struct poll_table_struct *wait)
+static unsigned int ib_umad_poll(struct file *filp, struct poll_table_struct *wait)
 {
 	struct ib_umad_file *file = filp->private_data;
 
 	/* we will always be able to post a MAD send */
-	__poll_t mask = EPOLLOUT | EPOLLWRNORM;
+	unsigned int mask = POLLOUT | POLLWRNORM;
 
 	poll_wait(filp, &file->recv_wait, wait);
 
 	if (!list_empty(&file->recv_list))
-		mask |= EPOLLIN | EPOLLRDNORM;
+		mask |= POLLIN | POLLRDNORM;
 
 	return mask;
 }
@@ -658,8 +610,6 @@ static int ib_umad_reg_agent(struct ib_umad_file *file, void __user *arg,
 	mutex_lock(&file->mutex);
 
 	if (!file->port->ib_dev) {
-		dev_notice(file->port->dev,
-			   "ib_umad_reg_agent: invalid device\n");
 		ret = -EPIPE;
 		goto out;
 	}
@@ -670,9 +620,6 @@ static int ib_umad_reg_agent(struct ib_umad_file *file, void __user *arg,
 	}
 
 	if (ureq.qpn != 0 && ureq.qpn != 1) {
-		dev_notice(file->port->dev,
-			   "ib_umad_reg_agent: invalid QPN %d specified\n",
-			   ureq.qpn);
 		ret = -EINVAL;
 		goto out;
 	}
@@ -681,15 +628,11 @@ static int ib_umad_reg_agent(struct ib_umad_file *file, void __user *arg,
 		if (!__get_agent(file, agent_id))
 			goto found;
 
-	dev_notice(file->port->dev,
-		   "ib_umad_reg_agent: Max Agents (%u) reached\n",
-		   IB_UMAD_MAX_AGENTS);
 	ret = -ENOMEM;
 	goto out;
 
 found:
 	if (ureq.mgmt_class) {
-		memset(&req, 0, sizeof(req));
 		req.mgmt_class         = ureq.mgmt_class;
 		req.mgmt_class_version = ureq.mgmt_class_version;
 		memcpy(req.oui, ureq.oui, sizeof req.oui);
@@ -710,7 +653,7 @@ found:
 				      ureq.qpn ? IB_QPT_GSI : IB_QPT_SMI,
 				      ureq.mgmt_class ? &req : NULL,
 				      ureq.rmpp_version,
-				      send_handler, recv_handler, file, 0);
+				      send_handler, recv_handler, file);
 	if (IS_ERR(agent)) {
 		ret = PTR_ERR(agent);
 		agent = NULL;
@@ -726,11 +669,10 @@ found:
 	if (!file->already_used) {
 		file->already_used = 1;
 		if (!file->use_pkey_index) {
-			dev_warn(file->port->dev,
-				"process %s did not enable P_Key index support.\n",
-				current->comm);
-			dev_warn(file->port->dev,
-				"   Documentation/infiniband/user_mad.txt has info on the new ABI.\n");
+			printk(KERN_WARNING "user_mad: process %s did not enable "
+			       "P_Key index support.\n", current->comm);
+			printk(KERN_WARNING "user_mad:   Documentation/infiniband/user_mad.txt "
+			       "has info on the new ABI.\n");
 		}
 	}
 
@@ -747,119 +689,6 @@ out:
 
 	return ret;
 }
-
-static int ib_umad_reg_agent2(struct ib_umad_file *file, void __user *arg)
-{
-	struct ib_user_mad_reg_req2 ureq;
-	struct ib_mad_reg_req req;
-	struct ib_mad_agent *agent = NULL;
-	int agent_id;
-	int ret;
-
-	mutex_lock(&file->port->file_mutex);
-	mutex_lock(&file->mutex);
-
-	if (!file->port->ib_dev) {
-		dev_notice(file->port->dev,
-			   "ib_umad_reg_agent2: invalid device\n");
-		ret = -EPIPE;
-		goto out;
-	}
-
-	if (copy_from_user(&ureq, arg, sizeof(ureq))) {
-		ret = -EFAULT;
-		goto out;
-	}
-
-	if (ureq.qpn != 0 && ureq.qpn != 1) {
-		dev_notice(file->port->dev,
-			   "ib_umad_reg_agent2: invalid QPN %d specified\n",
-			   ureq.qpn);
-		ret = -EINVAL;
-		goto out;
-	}
-
-	if (ureq.flags & ~IB_USER_MAD_REG_FLAGS_CAP) {
-		dev_notice(file->port->dev,
-			   "ib_umad_reg_agent2 failed: invalid registration flags specified 0x%x; supported 0x%x\n",
-			   ureq.flags, IB_USER_MAD_REG_FLAGS_CAP);
-		ret = -EINVAL;
-
-		if (put_user((u32)IB_USER_MAD_REG_FLAGS_CAP,
-				(u32 __user *) (arg + offsetof(struct
-				ib_user_mad_reg_req2, flags))))
-			ret = -EFAULT;
-
-		goto out;
-	}
-
-	for (agent_id = 0; agent_id < IB_UMAD_MAX_AGENTS; ++agent_id)
-		if (!__get_agent(file, agent_id))
-			goto found;
-
-	dev_notice(file->port->dev,
-		   "ib_umad_reg_agent2: Max Agents (%u) reached\n",
-		   IB_UMAD_MAX_AGENTS);
-	ret = -ENOMEM;
-	goto out;
-
-found:
-	if (ureq.mgmt_class) {
-		memset(&req, 0, sizeof(req));
-		req.mgmt_class         = ureq.mgmt_class;
-		req.mgmt_class_version = ureq.mgmt_class_version;
-		if (ureq.oui & 0xff000000) {
-			dev_notice(file->port->dev,
-				   "ib_umad_reg_agent2 failed: oui invalid 0x%08x\n",
-				   ureq.oui);
-			ret = -EINVAL;
-			goto out;
-		}
-		req.oui[2] =  ureq.oui & 0x0000ff;
-		req.oui[1] = (ureq.oui & 0x00ff00) >> 8;
-		req.oui[0] = (ureq.oui & 0xff0000) >> 16;
-		memcpy(req.method_mask, ureq.method_mask,
-			sizeof(req.method_mask));
-	}
-
-	agent = ib_register_mad_agent(file->port->ib_dev, file->port->port_num,
-				      ureq.qpn ? IB_QPT_GSI : IB_QPT_SMI,
-				      ureq.mgmt_class ? &req : NULL,
-				      ureq.rmpp_version,
-				      send_handler, recv_handler, file,
-				      ureq.flags);
-	if (IS_ERR(agent)) {
-		ret = PTR_ERR(agent);
-		agent = NULL;
-		goto out;
-	}
-
-	if (put_user(agent_id,
-		     (u32 __user *)(arg +
-				offsetof(struct ib_user_mad_reg_req2, id)))) {
-		ret = -EFAULT;
-		goto out;
-	}
-
-	if (!file->already_used) {
-		file->already_used = 1;
-		file->use_pkey_index = 1;
-	}
-
-	file->agent[agent_id] = agent;
-	ret = 0;
-
-out:
-	mutex_unlock(&file->mutex);
-
-	if (ret && agent)
-		ib_unregister_mad_agent(agent);
-
-	mutex_unlock(&file->port->file_mutex);
-
-	return ret;
-}
-
 
 static int ib_umad_unreg_agent(struct ib_umad_file *file, u32 __user *arg)
 {
@@ -869,14 +698,11 @@ static int ib_umad_unreg_agent(struct ib_umad_file *file, u32 __user *arg)
 
 	if (get_user(id, arg))
 		return -EFAULT;
-	if (id >= IB_UMAD_MAX_AGENTS)
-		return -EINVAL;
 
 	mutex_lock(&file->port->file_mutex);
 	mutex_lock(&file->mutex);
 
-	id = array_index_nospec(id, IB_UMAD_MAX_AGENTS);
-	if (!__get_agent(file, id)) {
+	if (id >= IB_UMAD_MAX_AGENTS || !__get_agent(file, id)) {
 		ret = -EINVAL;
 		goto out;
 	}
@@ -919,8 +745,6 @@ static long ib_umad_ioctl(struct file *filp, unsigned int cmd,
 		return ib_umad_unreg_agent(filp->private_data, (__u32 __user *) arg);
 	case IB_USER_MAD_ENABLE_PKEY:
 		return ib_umad_enable_pkey(filp->private_data);
-	case IB_USER_MAD_REGISTER_AGENT2:
-		return ib_umad_reg_agent2(filp->private_data, (void __user *) arg);
 	default:
 		return -ENOIOCTLCMD;
 	}
@@ -937,8 +761,6 @@ static long ib_umad_compat_ioctl(struct file *filp, unsigned int cmd,
 		return ib_umad_unreg_agent(filp->private_data, compat_ptr(arg));
 	case IB_USER_MAD_ENABLE_PKEY:
 		return ib_umad_enable_pkey(filp->private_data);
-	case IB_USER_MAD_REGISTER_AGENT2:
-		return ib_umad_reg_agent2(filp->private_data, compat_ptr(arg));
 	default:
 		return -ENOIOCTLCMD;
 	}
@@ -958,19 +780,27 @@ static int ib_umad_open(struct inode *inode, struct file *filp)
 {
 	struct ib_umad_port *port;
 	struct ib_umad_file *file;
-	int ret = -ENXIO;
+	int ret;
 
 	port = container_of(inode->i_cdev, struct ib_umad_port, cdev);
+	if (port)
+		kref_get(&port->umad_dev->ref);
+	else
+		return -ENXIO;
 
 	mutex_lock(&port->file_mutex);
 
-	if (!port->ib_dev)
+	if (!port->ib_dev) {
+		ret = -ENXIO;
 		goto out;
+	}
 
-	ret = -ENOMEM;
 	file = kzalloc(sizeof *file, GFP_KERNEL);
-	if (!file)
+	if (!file) {
+		kref_put(&port->umad_dev->ref, ib_umad_release_dev);
+		ret = -ENOMEM;
 		goto out;
+	}
 
 	mutex_init(&file->mutex);
 	spin_lock_init(&file->send_lock);
@@ -984,13 +814,6 @@ static int ib_umad_open(struct inode *inode, struct file *filp)
 	list_add_tail(&file->port_list, &port->file_list);
 
 	ret = nonseekable_open(inode, filp);
-	if (ret) {
-		list_del(&file->port_list);
-		kfree(file);
-		goto out;
-	}
-
-	kobject_get(&port->umad_dev->kobj);
 
 out:
 	mutex_unlock(&port->file_mutex);
@@ -1029,7 +852,7 @@ static int ib_umad_close(struct inode *inode, struct file *filp)
 	mutex_unlock(&file->port->file_mutex);
 
 	kfree(file);
-	kobject_put(&dev->kobj);
+	kref_put(&dev->ref, ib_umad_release_dev);
 
 	return 0;
 }
@@ -1057,6 +880,10 @@ static int ib_umad_sm_open(struct inode *inode, struct file *filp)
 	int ret;
 
 	port = container_of(inode->i_cdev, struct ib_umad_port, sm_cdev);
+	if (port)
+		kref_get(&port->umad_dev->ref);
+	else
+		return -ENXIO;
 
 	if (filp->f_flags & O_NONBLOCK) {
 		if (down_trylock(&port->sm_sem)) {
@@ -1071,27 +898,17 @@ static int ib_umad_sm_open(struct inode *inode, struct file *filp)
 	}
 
 	ret = ib_modify_port(port->ib_dev, port->port_num, 0, &props);
-	if (ret)
-		goto err_up_sem;
+	if (ret) {
+		up(&port->sm_sem);
+		goto fail;
+	}
 
 	filp->private_data = port;
 
-	ret = nonseekable_open(inode, filp);
-	if (ret)
-		goto err_clr_sm_cap;
-
-	kobject_get(&port->umad_dev->kobj);
-
-	return 0;
-
-err_clr_sm_cap:
-	swap(props.set_port_cap_mask, props.clr_port_cap_mask);
-	ib_modify_port(port->ib_dev, port->port_num, 0, &props);
-
-err_up_sem:
-	up(&port->sm_sem);
+	return nonseekable_open(inode, filp);
 
 fail:
+	kref_put(&port->umad_dev->ref, ib_umad_release_dev);
 	return ret;
 }
 
@@ -1110,7 +927,7 @@ static int ib_umad_sm_close(struct inode *inode, struct file *filp)
 
 	up(&port->sm_sem);
 
-	kobject_put(&port->umad_dev->kobj);
+	kref_put(&port->umad_dev->ref, ib_umad_release_dev);
 
 	return ret;
 }
@@ -1155,26 +972,52 @@ static DEVICE_ATTR(port, S_IRUGO, show_port, NULL);
 static CLASS_ATTR_STRING(abi_version, S_IRUGO,
 			 __stringify(IB_USER_MAD_ABI_VERSION));
 
+static dev_t overflow_maj;
+static DECLARE_BITMAP(overflow_map, IB_UMAD_MAX_PORTS);
+static int find_overflow_devnum(void)
+{
+	int ret;
+
+	if (!overflow_maj) {
+		ret = alloc_chrdev_region(&overflow_maj, 0, IB_UMAD_MAX_PORTS * 2,
+					  "infiniband_mad");
+		if (ret) {
+			printk(KERN_ERR "user_mad: couldn't register dynamic device number\n");
+			return ret;
+		}
+	}
+
+	ret = find_first_zero_bit(overflow_map, IB_UMAD_MAX_PORTS);
+	if (ret >= IB_UMAD_MAX_PORTS)
+		return -1;
+
+	return ret;
+}
+
 static int ib_umad_init_port(struct ib_device *device, int port_num,
-			     struct ib_umad_device *umad_dev,
 			     struct ib_umad_port *port)
 {
 	int devnum;
-	dev_t base_umad;
-	dev_t base_issm;
+	dev_t base;
 
+	spin_lock(&port_lock);
 	devnum = find_first_zero_bit(dev_map, IB_UMAD_MAX_PORTS);
-	if (devnum >= IB_UMAD_MAX_PORTS)
-		return -1;
-	port->dev_num = devnum;
-	set_bit(devnum, dev_map);
-	if (devnum >= IB_UMAD_NUM_FIXED_MINOR) {
-		base_umad = dynamic_umad_dev + devnum - IB_UMAD_NUM_FIXED_MINOR;
-		base_issm = dynamic_issm_dev + devnum - IB_UMAD_NUM_FIXED_MINOR;
+	if (devnum >= IB_UMAD_MAX_PORTS) {
+		spin_unlock(&port_lock);
+		devnum = find_overflow_devnum();
+		if (devnum < 0)
+			return -1;
+
+		spin_lock(&port_lock);
+		port->dev_num = devnum + IB_UMAD_MAX_PORTS;
+		base = devnum + overflow_maj;
+		set_bit(devnum, overflow_map);
 	} else {
-		base_umad = devnum + base_umad_dev;
-		base_issm = devnum + base_issm_dev;
+		port->dev_num = devnum;
+		base = devnum + base_dev;
+		set_bit(devnum, dev_map);
 	}
+	spin_unlock(&port_lock);
 
 	port->ib_dev   = device;
 	port->port_num = port_num;
@@ -1184,12 +1027,11 @@ static int ib_umad_init_port(struct ib_device *device, int port_num,
 
 	cdev_init(&port->cdev, &umad_fops);
 	port->cdev.owner = THIS_MODULE;
-	cdev_set_parent(&port->cdev, &umad_dev->kobj);
 	kobject_set_name(&port->cdev.kobj, "umad%d", port->dev_num);
-	if (cdev_add(&port->cdev, base_umad, 1))
+	if (cdev_add(&port->cdev, base, 1))
 		goto err_cdev;
 
-	port->dev = device_create(umad_class, device->dev.parent,
+	port->dev = device_create(umad_class, device->dma_device,
 				  port->cdev.dev, port,
 				  "umad%d", port->dev_num);
 	if (IS_ERR(port->dev))
@@ -1200,14 +1042,14 @@ static int ib_umad_init_port(struct ib_device *device, int port_num,
 	if (device_create_file(port->dev, &dev_attr_port))
 		goto err_dev;
 
+	base += IB_UMAD_MAX_PORTS;
 	cdev_init(&port->sm_cdev, &umad_sm_fops);
 	port->sm_cdev.owner = THIS_MODULE;
-	cdev_set_parent(&port->sm_cdev, &umad_dev->kobj);
 	kobject_set_name(&port->sm_cdev.kobj, "issm%d", port->dev_num);
-	if (cdev_add(&port->sm_cdev, base_issm, 1))
+	if (cdev_add(&port->sm_cdev, base, 1))
 		goto err_sm_cdev;
 
-	port->sm_dev = device_create(umad_class, device->dev.parent,
+	port->sm_dev = device_create(umad_class, device->dma_device,
 				     port->sm_cdev.dev, port,
 				     "issm%d", port->dev_num);
 	if (IS_ERR(port->sm_dev))
@@ -1231,7 +1073,10 @@ err_dev:
 
 err_cdev:
 	cdev_del(&port->cdev);
-	clear_bit(devnum, dev_map);
+	if (port->dev_num < IB_UMAD_MAX_PORTS)
+		clear_bit(devnum, dev_map);
+	else
+		clear_bit(devnum, overflow_map);
 
 	return -1;
 }
@@ -1265,17 +1110,27 @@ static void ib_umad_kill_port(struct ib_umad_port *port)
 	}
 
 	mutex_unlock(&port->file_mutex);
-	clear_bit(port->dev_num, dev_map);
+
+	if (port->dev_num < IB_UMAD_MAX_PORTS)
+		clear_bit(port->dev_num, dev_map);
+	else
+		clear_bit(port->dev_num - IB_UMAD_MAX_PORTS, overflow_map);
 }
 
 static void ib_umad_add_one(struct ib_device *device)
 {
 	struct ib_umad_device *umad_dev;
 	int s, e, i;
-	int count = 0;
 
-	s = rdma_start_port(device);
-	e = rdma_end_port(device);
+	if (rdma_node_get_transport(device->node_type) != RDMA_TRANSPORT_IB)
+		return;
+
+	if (device->node_type == RDMA_NODE_IB_SWITCH)
+		s = e = 0;
+	else {
+		s = 1;
+		e = device->phys_port_cnt;
+	}
 
 	umad_dev = kzalloc(sizeof *umad_dev +
 			   (e - s + 1) * sizeof (struct ib_umad_port),
@@ -1283,56 +1138,44 @@ static void ib_umad_add_one(struct ib_device *device)
 	if (!umad_dev)
 		return;
 
-	kobject_init(&umad_dev->kobj, &ib_umad_dev_ktype);
+	kref_init(&umad_dev->ref);
+
+	umad_dev->start_port = s;
+	umad_dev->end_port   = e;
 
 	for (i = s; i <= e; ++i) {
-		if (!rdma_cap_ib_mad(device, i))
-			continue;
-
 		umad_dev->port[i - s].umad_dev = umad_dev;
 
-		if (ib_umad_init_port(device, i, umad_dev,
-				      &umad_dev->port[i - s]))
+		if (ib_umad_init_port(device, i, &umad_dev->port[i - s]))
 			goto err;
-
-		count++;
 	}
-
-	if (!count)
-		goto free;
 
 	ib_set_client_data(device, &umad_client, umad_dev);
 
 	return;
 
 err:
-	while (--i >= s) {
-		if (!rdma_cap_ib_mad(device, i))
-			continue;
-
+	while (--i >= s)
 		ib_umad_kill_port(&umad_dev->port[i - s]);
-	}
-free:
-	kobject_put(&umad_dev->kobj);
+
+	kref_put(&umad_dev->ref, ib_umad_release_dev);
 }
 
-static void ib_umad_remove_one(struct ib_device *device, void *client_data)
+static void ib_umad_remove_one(struct ib_device *device)
 {
-	struct ib_umad_device *umad_dev = client_data;
+	struct ib_umad_device *umad_dev = ib_get_client_data(device, &umad_client);
 	int i;
 
 	if (!umad_dev)
 		return;
 
-	for (i = 0; i <= rdma_end_port(device) - rdma_start_port(device); ++i) {
-		if (rdma_cap_ib_mad(device, i + rdma_start_port(device)))
-			ib_umad_kill_port(&umad_dev->port[i]);
-	}
+	for (i = 0; i <= umad_dev->end_port - umad_dev->start_port; ++i)
+		ib_umad_kill_port(&umad_dev->port[i]);
 
-	kobject_put(&umad_dev->kobj);
+	kref_put(&umad_dev->ref, ib_umad_release_dev);
 }
 
-static char *umad_devnode(struct device *dev, umode_t *mode)
+static char *umad_devnode(struct device *dev, mode_t *mode)
 {
 	return kasprintf(GFP_KERNEL, "infiniband/%s", dev_name(dev));
 }
@@ -1341,27 +1184,17 @@ static int __init ib_umad_init(void)
 {
 	int ret;
 
-	ret = register_chrdev_region(base_umad_dev,
-				     IB_UMAD_NUM_FIXED_MINOR * 2,
+	ret = register_chrdev_region(base_dev, IB_UMAD_MAX_PORTS * 2,
 				     "infiniband_mad");
 	if (ret) {
-		pr_err("couldn't register device number\n");
+		printk(KERN_ERR "user_mad: couldn't register device number\n");
 		goto out;
 	}
-
-	ret = alloc_chrdev_region(&dynamic_umad_dev, 0,
-				  IB_UMAD_NUM_DYNAMIC_MINOR * 2,
-				  "infiniband_mad");
-	if (ret) {
-		pr_err("couldn't register dynamic device number\n");
-		goto out_alloc;
-	}
-	dynamic_issm_dev = dynamic_umad_dev + IB_UMAD_NUM_DYNAMIC_MINOR;
 
 	umad_class = class_create(THIS_MODULE, "infiniband_mad");
 	if (IS_ERR(umad_class)) {
 		ret = PTR_ERR(umad_class);
-		pr_err("couldn't create class infiniband_mad\n");
+		printk(KERN_ERR "user_mad: couldn't create class infiniband_mad\n");
 		goto out_chrdev;
 	}
 
@@ -1369,13 +1202,13 @@ static int __init ib_umad_init(void)
 
 	ret = class_create_file(umad_class, &class_attr_abi_version.attr);
 	if (ret) {
-		pr_err("couldn't create abi_version attribute\n");
+		printk(KERN_ERR "user_mad: couldn't create abi_version attribute\n");
 		goto out_class;
 	}
 
 	ret = ib_register_client(&umad_client);
 	if (ret) {
-		pr_err("couldn't register ib_umad client\n");
+		printk(KERN_ERR "user_mad: couldn't register ib_umad client\n");
 		goto out_class;
 	}
 
@@ -1385,12 +1218,7 @@ out_class:
 	class_destroy(umad_class);
 
 out_chrdev:
-	unregister_chrdev_region(dynamic_umad_dev,
-				 IB_UMAD_NUM_DYNAMIC_MINOR * 2);
-
-out_alloc:
-	unregister_chrdev_region(base_umad_dev,
-				 IB_UMAD_NUM_FIXED_MINOR * 2);
+	unregister_chrdev_region(base_dev, IB_UMAD_MAX_PORTS * 2);
 
 out:
 	return ret;
@@ -1400,10 +1228,9 @@ static void __exit ib_umad_cleanup(void)
 {
 	ib_unregister_client(&umad_client);
 	class_destroy(umad_class);
-	unregister_chrdev_region(base_umad_dev,
-				 IB_UMAD_NUM_FIXED_MINOR * 2);
-	unregister_chrdev_region(dynamic_umad_dev,
-				 IB_UMAD_NUM_DYNAMIC_MINOR * 2);
+	unregister_chrdev_region(base_dev, IB_UMAD_MAX_PORTS * 2);
+	if (overflow_maj)
+		unregister_chrdev_region(overflow_maj, IB_UMAD_MAX_PORTS * 2);
 }
 
 module_init(ib_umad_init);

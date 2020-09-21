@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _MCF_PGTABLE_H
 #define _MCF_PGTABLE_H
 
@@ -36,6 +35,7 @@
  * hitting hardware.
  */
 #define CF_PAGE_DIRTY		0x00000001
+#define CF_PAGE_FILE		0x00000200
 #define CF_PAGE_ACCESSED	0x00001000
 
 #define _PAGE_CACHE040		0x020   /* 68040 cache mode, cachable, copyback */
@@ -78,8 +78,7 @@
 				 | CF_PAGE_READABLE \
 				 | CF_PAGE_WRITABLE \
 				 | CF_PAGE_EXEC \
-				 | CF_PAGE_SYSTEM \
-				 | CF_PAGE_SHARED)
+				 | CF_PAGE_SYSTEM)
 
 #define PAGE_COPY	__pgprot(CF_PAGE_VALID \
 				 | CF_PAGE_ACCESSED \
@@ -243,6 +242,11 @@ static inline int pte_young(pte_t pte)
 	return pte_val(pte) & CF_PAGE_ACCESSED;
 }
 
+static inline int pte_file(pte_t pte)
+{
+	return pte_val(pte) & CF_PAGE_FILE;
+}
+
 static inline int pte_special(pte_t pte)
 {
 	return 0;
@@ -386,13 +390,26 @@ static inline void cache_page(void *vaddr)
 	*ptep = pte_mkcache(*ptep);
 }
 
+#define PTE_FILE_MAX_BITS	21
+#define PTE_FILE_SHIFT		11
+
+static inline unsigned long pte_to_pgoff(pte_t pte)
+{
+	return pte_val(pte) >> PTE_FILE_SHIFT;
+}
+
+static inline pte_t pgoff_to_pte(unsigned pgoff)
+{
+	return __pte((pgoff << PTE_FILE_SHIFT) + CF_PAGE_FILE);
+}
+
 /*
  * Encode and de-code a swap entry (must be !pte_none(e) && !pte_present(e))
  */
 #define __swp_type(x)		((x).val & 0xFF)
-#define __swp_offset(x)		((x).val >> 11)
+#define __swp_offset(x)		((x).val >> PTE_FILE_SHIFT)
 #define __swp_entry(typ, off)	((swp_entry_t) { (typ) | \
-					(off << 11) })
+					(off << PTE_FILE_SHIFT) })
 #define __pte_to_swp_entry(pte)	((swp_entry_t) { pte_val(pte) })
 #define __swp_entry_to_pte(x)	(__pte((x).val))
 

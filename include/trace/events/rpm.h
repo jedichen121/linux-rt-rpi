@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM rpm
@@ -8,8 +7,7 @@
 
 #include <linux/ktime.h>
 #include <linux/tracepoint.h>
-
-struct device;
+#include <linux/device.h>
 
 /*
  * The rpm_internal events are used for tracing some important

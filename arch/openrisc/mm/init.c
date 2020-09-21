@@ -33,6 +33,7 @@
 #include <linux/pagemap.h>
 #include <linux/memblock.h>
 
+#include <asm/system.h>
 #include <asm/segment.h>
 #include <asm/pgalloc.h>
 #include <asm/pgtable.h>
@@ -43,7 +44,6 @@
 #include <asm/kmap_types.h>
 #include <asm/fixmap.h>
 #include <asm/tlbflush.h>
-#include <asm/sections.h>
 
 int mem_init_done;
 
@@ -106,11 +106,11 @@ static void __init map_ram(void)
 			}
 
 			/* Alloc one page for holding PTE's... */
-			pte = (pte_t *) __va(memblock_alloc(PAGE_SIZE, PAGE_SIZE));
+			pte = (pte_t *) alloc_bootmem_low_pages(PAGE_SIZE);
 			set_pmd(pme, __pmd(_KERNPG_TABLE + __pa(pte)));
 
 			/* Fill the newly allocated page with PTE'S */
-			for (j = 0; p < e && j < PTRS_PER_PTE;
+			for (j = 0; p < e && j < PTRS_PER_PGD;
 			     v += PAGE_SIZE, p += PAGE_SIZE, j++, pte++) {
 				if (v >= (u32) _e_kernel_ro ||
 				    v < (u32) _s_kernel_ro)
@@ -147,7 +147,7 @@ void __init paging_init(void)
 	 * (even if it is most probably not used until the next
 	 *  switch_mm)
 	 */
-	current_pgd[smp_processor_id()] = init_mm.pgd;
+	current_pgd = init_mm.pgd;
 
 	end = (unsigned long)__va(max_low_pfn * PAGE_SIZE);
 
@@ -168,25 +168,14 @@ void __init paging_init(void)
 		unsigned long *dtlb_vector = __va(0x900);
 		unsigned long *itlb_vector = __va(0xa00);
 
-		printk(KERN_INFO "itlb_miss_handler %p\n", &itlb_miss_handler);
-		*itlb_vector = ((unsigned long)&itlb_miss_handler -
-				(unsigned long)itlb_vector) >> 2;
-
-		/* Soft ordering constraint to ensure that dtlb_vector is
-		 * the last thing updated
-		 */
-		barrier();
-
 		printk(KERN_INFO "dtlb_miss_handler %p\n", &dtlb_miss_handler);
 		*dtlb_vector = ((unsigned long)&dtlb_miss_handler -
 				(unsigned long)dtlb_vector) >> 2;
 
+		printk(KERN_INFO "itlb_miss_handler %p\n", &itlb_miss_handler);
+		*itlb_vector = ((unsigned long)&itlb_miss_handler -
+				(unsigned long)itlb_vector) >> 2;
 	}
-
-	/* Soft ordering constraint to ensure that cache invalidation and
-	 * TLB flush really happen _after_ code has been modified.
-	 */
-	barrier();
 
 	/* Invalidate instruction caches after code modification */
 	mtspr(SPR_ICBIR, 0x900);
@@ -202,20 +191,60 @@ void __init paging_init(void)
 
 /* References to section boundaries */
 
+extern char _stext, _etext, _edata, __bss_start, _end;
+extern char __init_begin, __init_end;
+
+static int __init free_pages_init(void)
+{
+	int reservedpages, pfn;
+
+	/* this will put all low memory onto the freelists */
+	totalram_pages = free_all_bootmem();
+
+	reservedpages = 0;
+	for (pfn = 0; pfn < max_low_pfn; pfn++) {
+		/*
+		 * Only count reserved RAM pages
+		 */
+		if (PageReserved(mem_map + pfn))
+			reservedpages++;
+	}
+
+	return reservedpages;
+}
+
+static void __init set_max_mapnr_init(void)
+{
+	max_mapnr = num_physpages = max_low_pfn;
+}
+
 void __init mem_init(void)
 {
-	BUG_ON(!mem_map);
+	int codesize, reservedpages, datasize, initsize;
 
-	max_mapnr = max_low_pfn;
+	if (!mem_map)
+		BUG();
+
+	set_max_mapnr_init();
+
 	high_memory = (void *)__va(max_low_pfn * PAGE_SIZE);
 
 	/* clear the zero-page */
 	memset((void *)empty_zero_page, 0, PAGE_SIZE);
 
-	/* this will put all low memory onto the freelists */
-	free_all_bootmem();
+	reservedpages = free_pages_init();
 
-	mem_init_print_info(NULL);
+	codesize = (unsigned long)&_etext - (unsigned long)&_stext;
+	datasize = (unsigned long)&_edata - (unsigned long)&_etext;
+	initsize = (unsigned long)&__init_end - (unsigned long)&__init_begin;
+
+	printk(KERN_INFO
+	       "Memory: %luk/%luk available (%dk kernel code, %dk reserved, %dk data, %dk init, %ldk highmem)\n",
+	       (unsigned long)nr_free_pages() << (PAGE_SHIFT - 10),
+	       max_mapnr << (PAGE_SHIFT - 10), codesize >> 10,
+	       reservedpages << (PAGE_SHIFT - 10), datasize >> 10,
+	       initsize >> 10, (unsigned long)(0 << (PAGE_SHIFT - 10))
+	    );
 
 	printk("mem_init_done ...........................................\n");
 	mem_init_done = 1;
@@ -225,11 +254,30 @@ void __init mem_init(void)
 #ifdef CONFIG_BLK_DEV_INITRD
 void free_initrd_mem(unsigned long start, unsigned long end)
 {
-	free_reserved_area((void *)start, (void *)end, -1, "initrd");
+	printk(KERN_INFO "Freeing initrd memory: %ldk freed\n",
+	       (end - start) >> 10);
+
+	for (; start < end; start += PAGE_SIZE) {
+		ClearPageReserved(virt_to_page(start));
+		init_page_count(virt_to_page(start));
+		free_page(start);
+		totalram_pages++;
+	}
 }
 #endif
 
 void free_initmem(void)
 {
-	free_initmem_default(-1);
+	unsigned long addr;
+
+	addr = (unsigned long)(&__init_begin);
+	for (; addr < (unsigned long)(&__init_end); addr += PAGE_SIZE) {
+		ClearPageReserved(virt_to_page(addr));
+		init_page_count(virt_to_page(addr));
+		free_page(addr);
+		totalram_pages++;
+	}
+	printk(KERN_INFO "Freeing unused kernel memory: %luk freed\n",
+	       ((unsigned long)&__init_end -
+		(unsigned long)&__init_begin) >> 10);
 }

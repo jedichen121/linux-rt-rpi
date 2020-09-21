@@ -1,9 +1,7 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_IA64_HUGETLB_H
 #define _ASM_IA64_HUGETLB_H
 
 #include <asm/page.h>
-#include <asm-generic/hugetlb.h>
 
 
 void hugetlb_free_pgd_range(struct mmu_gather *tlb, unsigned long addr,
@@ -19,6 +17,10 @@ static inline int is_hugepage_only_range(struct mm_struct *mm,
 {
 	return (REGION_NUMBER(addr) == RGN_HPAGE ||
 		REGION_NUMBER((addr)+(len)-1) == RGN_HPAGE);
+}
+
+static inline void hugetlb_prefault_arch_hook(struct mm_struct *mm)
+{
 }
 
 static inline void set_huge_pte_at(struct mm_struct *mm, unsigned long addr,
@@ -66,7 +68,12 @@ static inline pte_t huge_ptep_get(pte_t *ptep)
 	return *ptep;
 }
 
-static inline void arch_clear_hugepage_flags(struct page *page)
+static inline int arch_prepare_hugepage(struct page *page)
+{
+	return 0;
+}
+
+static inline void arch_release_hugepage(struct page *page)
 {
 }
 

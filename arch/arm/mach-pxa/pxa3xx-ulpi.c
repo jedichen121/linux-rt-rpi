@@ -26,14 +26,14 @@
 #include <linux/usb/otg.h>
 
 #include <mach/hardware.h>
-#include "regs-u2d.h"
-#include <linux/platform_data/usb-pxa3xx-ulpi.h>
+#include <mach/regs-u2d.h>
+#include <mach/pxa3xx-u2d.h>
 
 struct pxa3xx_u2d_ulpi {
 	struct clk		*clk;
 	void __iomem		*mmio_base;
 
-	struct usb_phy		*otg;
+	struct otg_transceiver	*otg;
 	unsigned int		ulpi_mode;
 };
 
@@ -74,17 +74,17 @@ static int pxa310_ulpi_poll(void)
 		cpu_relax();
 	}
 
-	pr_warn("%s: ULPI access timed out!\n", __func__);
+	pr_warning("%s: ULPI access timed out!\n", __func__);
 
 	return -ETIMEDOUT;
 }
 
-static int pxa310_ulpi_read(struct usb_phy *otg, u32 reg)
+static int pxa310_ulpi_read(struct otg_transceiver *otg, u32 reg)
 {
 	int err;
 
 	if (pxa310_ulpi_get_phymode() != SYNCH) {
-		pr_warn("%s: PHY is not in SYNCH mode!\n", __func__);
+		pr_warning("%s: PHY is not in SYNCH mode!\n", __func__);
 		return -EBUSY;
 	}
 
@@ -98,10 +98,10 @@ static int pxa310_ulpi_read(struct usb_phy *otg, u32 reg)
 	return u2d_readl(U2DOTGUCR) & U2DOTGUCR_RDATA;
 }
 
-static int pxa310_ulpi_write(struct usb_phy *otg, u32 val, u32 reg)
+static int pxa310_ulpi_write(struct otg_transceiver *otg, u32 val, u32 reg)
 {
 	if (pxa310_ulpi_get_phymode() != SYNCH) {
-		pr_warn("%s: PHY is not in SYNCH mode!\n", __func__);
+		pr_warning("%s: PHY is not in SYNCH mode!\n", __func__);
 		return -EBUSY;
 	}
 
@@ -111,7 +111,7 @@ static int pxa310_ulpi_write(struct usb_phy *otg, u32 val, u32 reg)
 	return pxa310_ulpi_poll();
 }
 
-struct usb_phy_io_ops pxa310_ulpi_access_ops = {
+struct otg_io_access_ops pxa310_ulpi_access_ops = {
 	.read	= pxa310_ulpi_read,
 	.write	= pxa310_ulpi_write,
 };
@@ -139,19 +139,19 @@ static int pxa310_start_otg_host_transcvr(struct usb_bus *host)
 
 	pxa310_otg_transceiver_rtsm();
 
-	err = usb_phy_init(u2d->otg);
+	err = otg_init(u2d->otg);
 	if (err) {
 		pr_err("OTG transceiver init failed");
 		return err;
 	}
 
-	err = otg_set_vbus(u2d->otg->otg, 1);
+	err = otg_set_vbus(u2d->otg, 1);
 	if (err) {
 		pr_err("OTG transceiver VBUS set failed");
 		return err;
 	}
 
-	err = otg_set_host(u2d->otg->otg, host);
+	err = otg_set_host(u2d->otg, host);
 	if (err)
 		pr_err("OTG transceiver Host mode set failed");
 
@@ -189,9 +189,9 @@ static void pxa310_stop_otg_hc(void)
 {
 	pxa310_otg_transceiver_rtsm();
 
-	otg_set_host(u2d->otg->otg, NULL);
-	otg_set_vbus(u2d->otg->otg, 0);
-	usb_phy_shutdown(u2d->otg);
+	otg_set_host(u2d->otg, NULL);
+	otg_set_vbus(u2d->otg, 0);
+	otg_shutdown(u2d->otg);
 }
 
 static void pxa310_u2d_setup_otg_hc(void)
@@ -256,7 +256,7 @@ int pxa3xx_u2d_start_hc(struct usb_bus *host)
 	if (!u2d)
 		return 0;
 
-	clk_prepare_enable(u2d->clk);
+	clk_enable(u2d->clk);
 
 	if (cpu_is_pxa310()) {
 		pxa310_u2d_setup_otg_hc();
@@ -276,7 +276,7 @@ void pxa3xx_u2d_stop_hc(struct usb_bus *host)
 	if (cpu_is_pxa310())
 		pxa310_stop_otg_hc();
 
-	clk_disable_unprepare(u2d->clk);
+	clk_disable(u2d->clk);
 }
 EXPORT_SYMBOL_GPL(pxa3xx_u2d_stop_hc);
 
@@ -286,9 +286,11 @@ static int pxa3xx_u2d_probe(struct platform_device *pdev)
 	struct resource *r;
 	int err;
 
-	u2d = kzalloc(sizeof(*u2d), GFP_KERNEL);
-	if (!u2d)
+	u2d = kzalloc(sizeof(struct pxa3xx_u2d_ulpi), GFP_KERNEL);
+	if (!u2d) {
+		dev_err(&pdev->dev, "failed to allocate memory\n");
 		return -ENOMEM;
+	}
 
 	u2d->clk = clk_get(&pdev->dev, NULL);
 	if (IS_ERR(u2d->clk)) {
@@ -331,7 +333,7 @@ static int pxa3xx_u2d_probe(struct platform_device *pdev)
 			goto err_free_plat;
 	}
 
-	platform_set_drvdata(pdev, u2d);
+	platform_set_drvdata(pdev, &u2d);
 
 	return 0;
 
@@ -377,11 +379,23 @@ static int pxa3xx_u2d_remove(struct platform_device *pdev)
 static struct platform_driver pxa3xx_u2d_ulpi_driver = {
         .driver		= {
                 .name   = "pxa3xx-u2d",
+		.owner	= THIS_MODULE,
         },
         .probe          = pxa3xx_u2d_probe,
         .remove         = pxa3xx_u2d_remove,
 };
-module_platform_driver(pxa3xx_u2d_ulpi_driver);
+
+static int pxa3xx_u2d_ulpi_init(void)
+{
+	return platform_driver_register(&pxa3xx_u2d_ulpi_driver);
+}
+module_init(pxa3xx_u2d_ulpi_init);
+
+static void __exit pxa3xx_u2d_ulpi_exit(void)
+{
+	platform_driver_unregister(&pxa3xx_u2d_ulpi_driver);
+}
+module_exit(pxa3xx_u2d_ulpi_exit);
 
 MODULE_DESCRIPTION("PXA3xx U2D ULPI driver");
 MODULE_AUTHOR("Igor Grinberg");

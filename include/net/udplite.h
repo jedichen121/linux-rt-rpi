@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *	Definitions for the UDP-Lite (RFC 3828) code.
  */
@@ -20,14 +19,12 @@ extern struct udp_table		udplite_table;
 static __inline__ int udplite_getfrag(void *from, char *to, int  offset,
 				      int len, int odd, struct sk_buff *skb)
 {
-	struct msghdr *msg = from;
-	return copy_from_iter_full(to, len, &msg->msg_iter) ? 0 : -EFAULT;
+	return memcpy_fromiovecend(to, (struct iovec *) from, offset, len);
 }
 
 /* Designate sk as UDP-Lite socket */
 static inline int udplite_sk_init(struct sock *sk)
 {
-	udp_init_sock(sk);
 	udp_sk(sk)->pcflag = UDPLITE_BIT;
 	return 0;
 }
@@ -43,7 +40,7 @@ static inline int udplite_checksum_init(struct sk_buff *skb, struct udphdr *uh)
          * checksum. UDP-Lite (like IPv6) mandates checksums, hence packets
          * with a zero checksum field are illegal.                            */
 	if (uh->check == 0) {
-		net_dbg_ratelimited("UDPLite: zeroed checksum field\n");
+		LIMIT_NETDEBUG(KERN_DEBUG "UDPLITE: zeroed checksum field\n");
 		return 1;
 	}
 
@@ -55,8 +52,8 @@ static inline int udplite_checksum_init(struct sk_buff *skb, struct udphdr *uh)
 		/*
 		 * Coverage length violates RFC 3828: log and discard silently.
 		 */
-		net_dbg_ratelimited("UDPLite: bad csum coverage %d/%d\n",
-				    cscov, skb->len);
+		LIMIT_NETDEBUG(KERN_DEBUG "UDPLITE: bad csum coverage %d/%d\n",
+			       cscov, skb->len);
 		return 1;
 
 	} else if (cscov < skb->len) {
@@ -64,7 +61,6 @@ static inline int udplite_checksum_init(struct sk_buff *skb, struct udphdr *uh)
 		UDP_SKB_CB(skb)->cscov = cscov;
 		if (skb->ip_summed == CHECKSUM_COMPLETE)
 			skb->ip_summed = CHECKSUM_NONE;
-		skb->csum_valid = 0;
         }
 
 	return 0;
@@ -130,7 +126,7 @@ static inline __wsum udplite_csum(struct sk_buff *skb)
 	return skb_checksum(skb, off, len, 0);
 }
 
-void udplite4_register(void);
-int udplite_get_port(struct sock *sk, unsigned short snum,
-		     int (*scmp)(const struct sock *, const struct sock *));
+extern void	udplite4_register(void);
+extern int 	udplite_get_port(struct sock *sk, unsigned short snum,
+			int (*scmp)(const struct sock *, const struct sock *));
 #endif	/* _UDPLITE_H */

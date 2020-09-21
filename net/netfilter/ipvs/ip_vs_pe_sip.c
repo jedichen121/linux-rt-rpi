@@ -13,8 +13,7 @@ static const char *ip_vs_dbg_callid(char *buf, size_t buf_len,
 				    const char *callid, size_t callid_len,
 				    int *idx)
 {
-	size_t max_len = 64;
-	size_t len = min3(max_len, callid_len, buf_len - *idx - 1);
+	size_t len = min(min(callid_len, (size_t)64), buf_len - *idx - 1);
 	memcpy(buf + *idx, callid, len);
 	buf[*idx+len] = '\0';
 	*idx += len + 1;
@@ -38,9 +37,13 @@ static int get_callid(const char *dptr, unsigned int dataoff,
 		if (ret > 0)
 			break;
 		if (!ret)
-			return -EINVAL;
+			return 0;
 		dataoff += *matchoff;
 	}
+
+	/* Empty callid is useless */
+	if (!*matchlen)
+		return -EINVAL;
 
 	/* Too large is useless */
 	if (*matchlen > IP_VS_PEDATA_MAXLEN)
@@ -70,25 +73,23 @@ ip_vs_sip_fill_param(struct ip_vs_conn_param *p, struct sk_buff *skb)
 	const char *dptr;
 	int retc;
 
-	retc = ip_vs_fill_iph_skb(p->af, skb, false, &iph);
+	ip_vs_fill_iphdr(p->af, skb_network_header(skb), &iph);
 
 	/* Only useful with UDP */
-	if (!retc || iph.protocol != IPPROTO_UDP)
+	if (iph.protocol != IPPROTO_UDP)
 		return -EINVAL;
-	/* todo: IPv6 fragments:
-	 *       I think this only should be done for the first fragment. /HS
-	 */
-	dataoff = iph.len + sizeof(struct udphdr);
 
+	/* No Data ? */
+	dataoff = iph.len + sizeof(struct udphdr);
 	if (dataoff >= skb->len)
 		return -EINVAL;
-	retc = skb_linearize(skb);
-	if (retc < 0)
+
+	if ((retc=skb_linearize(skb)) < 0)
 		return retc;
 	dptr = skb->data + dataoff;
 	datalen = skb->len - dataoff;
 
-	if (get_callid(dptr, 0, datalen, &matchoff, &matchlen))
+	if (get_callid(dptr, dataoff, datalen, &matchoff, &matchlen))
 		return -EINVAL;
 
 	/* N.B: pe_data is only set on success,
@@ -143,20 +144,6 @@ static int ip_vs_sip_show_pe_data(const struct ip_vs_conn *cp, char *buf)
 	return cp->pe_data_len;
 }
 
-static struct ip_vs_conn *
-ip_vs_sip_conn_out(struct ip_vs_service *svc,
-		   struct ip_vs_dest *dest,
-		   struct sk_buff *skb,
-		   const struct ip_vs_iphdr *iph,
-		   __be16 dport,
-		   __be16 cport)
-{
-	if (likely(iph->protocol == IPPROTO_UDP))
-		return ip_vs_new_conn_out(svc, dest, skb, iph, dport, cport);
-	/* currently no need to handle other than UDP */
-	return NULL;
-}
-
 static struct ip_vs_pe ip_vs_sip_pe =
 {
 	.name =			"sip",
@@ -167,7 +154,6 @@ static struct ip_vs_pe ip_vs_sip_pe =
 	.ct_match =		ip_vs_sip_ct_match,
 	.hashkey_raw =		ip_vs_sip_hashkey_raw,
 	.show_pe_data =		ip_vs_sip_show_pe_data,
-	.conn_out =		ip_vs_sip_conn_out,
 };
 
 static int __init ip_vs_sip_init(void)
@@ -178,7 +164,6 @@ static int __init ip_vs_sip_init(void)
 static void __exit ip_vs_sip_cleanup(void)
 {
 	unregister_ip_vs_pe(&ip_vs_sip_pe);
-	synchronize_rcu();
 }
 
 module_init(ip_vs_sip_init);

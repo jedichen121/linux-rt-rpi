@@ -3,9 +3,9 @@
  *
  * As should be obvious for Linux kernel code, license is GPLv2
  *
- * Copyright (c) 2007-2008 Joern Engel <joern@purestorage.com>
+ * Copyright (c) 2007-2008 Joern Engel <joern@logfs.org>
  * Bits and pieces stolen from Peter Zijlstra's code, which is
- * Copyright 2007, Red Hat Inc. Peter Zijlstra
+ * Copyright 2007, Red Hat Inc. Peter Zijlstra <pzijlstr@redhat.com>
  * GPLv2
  *
  * see http://programming.kicks-ass.net/kernel-patches/vma_lookup/btree.patch
@@ -75,8 +75,6 @@ struct btree_geo btree_geo128 = {
 	.no_longs = 2 * LONG_PER_U64 * (NODESIZE / sizeof(long) / (1 + 2 * LONG_PER_U64)),
 };
 EXPORT_SYMBOL_GPL(btree_geo128);
-
-#define MAX_KEYLEN	(2 * LONG_PER_U64)
 
 static struct kmem_cache *btree_cachep;
 
@@ -200,7 +198,6 @@ EXPORT_SYMBOL_GPL(btree_init);
 
 void btree_destroy(struct btree_head *head)
 {
-	mempool_free(head->node, head->mempool);
 	mempool_destroy(head->mempool);
 	head->mempool = NULL;
 }
@@ -315,15 +312,15 @@ void *btree_get_prev(struct btree_head *head, struct btree_geo *geo,
 {
 	int i, height;
 	unsigned long *node, *oldnode;
-	unsigned long *retry_key = NULL, key[MAX_KEYLEN];
+	unsigned long *retry_key = NULL, key[geo->keylen];
 
 	if (keyzero(geo, __key))
 		return NULL;
 
 	if (head->height == 0)
 		return NULL;
-	longcpy(key, __key, geo->keylen);
 retry:
+	longcpy(key, __key, geo->keylen);
 	dec_key(geo, key);
 
 	node = head->node;
@@ -354,13 +351,12 @@ retry:
 	}
 miss:
 	if (retry_key) {
-		longcpy(key, retry_key, geo->keylen);
+		__key = retry_key;
 		retry_key = NULL;
 		goto retry;
 	}
 	return NULL;
 }
-EXPORT_SYMBOL_GPL(btree_get_prev);
 
 static int getpos(struct btree_geo *geo, unsigned long *node,
 		unsigned long *key)
@@ -512,7 +508,6 @@ retry:
 int btree_insert(struct btree_head *head, struct btree_geo *geo,
 		unsigned long *key, void *val, gfp_t gfp)
 {
-	BUG_ON(!val);
 	return btree_insert_level(head, geo, key, val, 1, gfp);
 }
 EXPORT_SYMBOL_GPL(btree_insert);
@@ -641,8 +636,8 @@ EXPORT_SYMBOL_GPL(btree_remove);
 int btree_merge(struct btree_head *target, struct btree_head *victim,
 		struct btree_geo *geo, gfp_t gfp)
 {
-	unsigned long key[MAX_KEYLEN];
-	unsigned long dup[MAX_KEYLEN];
+	unsigned long key[geo->keylen];
+	unsigned long dup[geo->keylen];
 	void *val;
 	int err;
 

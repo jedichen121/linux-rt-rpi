@@ -21,6 +21,7 @@
 #include <linux/ioport.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
+#include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/skbuff.h>
 #include <linux/spinlock.h>
@@ -277,8 +278,7 @@ ks8695_refill_rxbuffers(struct ks8695_priv *ksp)
 
 	for (buff_n = 0; buff_n < MAX_RX_DESC; ++buff_n) {
 		if (!ksp->rx_buffers[buff_n].skb) {
-			struct sk_buff *skb =
-				netdev_alloc_skb(ksp->ndev, MAX_RXBUF_SIZE);
+			struct sk_buff *skb = dev_alloc_skb(MAX_RXBUF_SIZE);
 			dma_addr_t mapping;
 
 			ksp->rx_buffers[buff_n].skb = skb;
@@ -299,6 +299,7 @@ ks8695_refill_rxbuffers(struct ks8695_priv *ksp)
 				break;
 			}
 			ksp->rx_buffers[buff_n].dma_ptr = mapping;
+			skb->dev = ksp->ndev;
 			ksp->rx_buffers[buff_n].length = MAX_RXBUF_SIZE;
 
 			/* Record this into the DMA ring */
@@ -519,7 +520,7 @@ static int ks8695_rx(struct ks8695_priv *ksp, int budget)
 			/* Relinquish the SKB to the network layer */
 			skb_put(skb, pktlen);
 			skb->protocol = eth_type_trans(skb, ndev);
-			napi_gro_receive(&ksp->napi, skb);
+			netif_receive_skb(skb);
 
 			/* Record stats */
 			ndev->stats.rx_packets++;
@@ -561,17 +562,18 @@ rx_finished:
 static int ks8695_poll(struct napi_struct *napi, int budget)
 {
 	struct ks8695_priv *ksp = container_of(napi, struct ks8695_priv, napi);
+	unsigned long  work_done;
+
 	unsigned long isr = readl(KS8695_IRQ_VA + KS8695_INTEN);
 	unsigned long mask_bit = 1 << ks8695_get_rx_enable_bit(ksp);
-	int work_done;
 
 	work_done = ks8695_rx(ksp, budget);
 
-	if (work_done < budget && napi_complete_done(napi, work_done)) {
+	if (work_done < budget) {
 		unsigned long flags;
-
 		spin_lock_irqsave(&ksp->rx_lock, flags);
-		/* enable rx interrupt */
+		__napi_complete(napi);
+		/*enable rx interrupt*/
 		writel(isr | mask_bit, KS8695_IRQ_VA + KS8695_INTEN);
 		spin_unlock_irqrestore(&ksp->rx_lock, flags);
 	}
@@ -854,94 +856,85 @@ ks8695_set_msglevel(struct net_device *ndev, u32 value)
 }
 
 /**
- *	ks8695_wan_get_link_ksettings - Get device-specific settings.
+ *	ks8695_wan_get_settings - Get device-specific settings.
  *	@ndev: The network device to read settings from
  *	@cmd: The ethtool structure to read into
  */
 static int
-ks8695_wan_get_link_ksettings(struct net_device *ndev,
-			      struct ethtool_link_ksettings *cmd)
+ks8695_wan_get_settings(struct net_device *ndev, struct ethtool_cmd *cmd)
 {
 	struct ks8695_priv *ksp = netdev_priv(ndev);
 	u32 ctrl;
-	u32 supported, advertising;
 
 	/* All ports on the KS8695 support these... */
-	supported = (SUPPORTED_10baseT_Half | SUPPORTED_10baseT_Full |
+	cmd->supported = (SUPPORTED_10baseT_Half | SUPPORTED_10baseT_Full |
 			  SUPPORTED_100baseT_Half | SUPPORTED_100baseT_Full |
 			  SUPPORTED_TP | SUPPORTED_MII);
+	cmd->transceiver = XCVR_INTERNAL;
 
-	advertising = ADVERTISED_TP | ADVERTISED_MII;
-	cmd->base.port = PORT_MII;
-	supported |= (SUPPORTED_Autoneg | SUPPORTED_Pause);
-	cmd->base.phy_address = 0;
+	cmd->advertising = ADVERTISED_TP | ADVERTISED_MII;
+	cmd->port = PORT_MII;
+	cmd->supported |= (SUPPORTED_Autoneg | SUPPORTED_Pause);
+	cmd->phy_address = 0;
 
 	ctrl = readl(ksp->phyiface_regs + KS8695_WMC);
 	if ((ctrl & WMC_WAND) == 0) {
 		/* auto-negotiation is enabled */
-		advertising |= ADVERTISED_Autoneg;
+		cmd->advertising |= ADVERTISED_Autoneg;
 		if (ctrl & WMC_WANA100F)
-			advertising |= ADVERTISED_100baseT_Full;
+			cmd->advertising |= ADVERTISED_100baseT_Full;
 		if (ctrl & WMC_WANA100H)
-			advertising |= ADVERTISED_100baseT_Half;
+			cmd->advertising |= ADVERTISED_100baseT_Half;
 		if (ctrl & WMC_WANA10F)
-			advertising |= ADVERTISED_10baseT_Full;
+			cmd->advertising |= ADVERTISED_10baseT_Full;
 		if (ctrl & WMC_WANA10H)
-			advertising |= ADVERTISED_10baseT_Half;
+			cmd->advertising |= ADVERTISED_10baseT_Half;
 		if (ctrl & WMC_WANAP)
-			advertising |= ADVERTISED_Pause;
-		cmd->base.autoneg = AUTONEG_ENABLE;
+			cmd->advertising |= ADVERTISED_Pause;
+		cmd->autoneg = AUTONEG_ENABLE;
 
-		cmd->base.speed = (ctrl & WMC_WSS) ? SPEED_100 : SPEED_10;
-		cmd->base.duplex = (ctrl & WMC_WDS) ?
+		ethtool_cmd_speed_set(cmd,
+				      (ctrl & WMC_WSS) ? SPEED_100 : SPEED_10);
+		cmd->duplex = (ctrl & WMC_WDS) ?
 			DUPLEX_FULL : DUPLEX_HALF;
 	} else {
 		/* auto-negotiation is disabled */
-		cmd->base.autoneg = AUTONEG_DISABLE;
+		cmd->autoneg = AUTONEG_DISABLE;
 
-		cmd->base.speed = (ctrl & WMC_WANF100) ?
-					    SPEED_100 : SPEED_10;
-		cmd->base.duplex = (ctrl & WMC_WANFF) ?
+		ethtool_cmd_speed_set(cmd, ((ctrl & WMC_WANF100) ?
+					    SPEED_100 : SPEED_10));
+		cmd->duplex = (ctrl & WMC_WANFF) ?
 			DUPLEX_FULL : DUPLEX_HALF;
 	}
-
-	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.supported,
-						supported);
-	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.advertising,
-						advertising);
 
 	return 0;
 }
 
 /**
- *	ks8695_wan_set_link_ksettings - Set device-specific settings.
+ *	ks8695_wan_set_settings - Set device-specific settings.
  *	@ndev: The network device to configure
  *	@cmd: The settings to configure
  */
 static int
-ks8695_wan_set_link_ksettings(struct net_device *ndev,
-			      const struct ethtool_link_ksettings *cmd)
+ks8695_wan_set_settings(struct net_device *ndev, struct ethtool_cmd *cmd)
 {
 	struct ks8695_priv *ksp = netdev_priv(ndev);
 	u32 ctrl;
-	u32 advertising;
 
-	ethtool_convert_link_mode_to_legacy_u32(&advertising,
-						cmd->link_modes.advertising);
-
-	if ((cmd->base.speed != SPEED_10) && (cmd->base.speed != SPEED_100))
+	if ((cmd->speed != SPEED_10) && (cmd->speed != SPEED_100))
 		return -EINVAL;
-	if ((cmd->base.duplex != DUPLEX_HALF) &&
-	    (cmd->base.duplex != DUPLEX_FULL))
+	if ((cmd->duplex != DUPLEX_HALF) && (cmd->duplex != DUPLEX_FULL))
 		return -EINVAL;
-	if (cmd->base.port != PORT_MII)
+	if (cmd->port != PORT_MII)
 		return -EINVAL;
-	if ((cmd->base.autoneg != AUTONEG_DISABLE) &&
-	    (cmd->base.autoneg != AUTONEG_ENABLE))
+	if (cmd->transceiver != XCVR_INTERNAL)
+		return -EINVAL;
+	if ((cmd->autoneg != AUTONEG_DISABLE) &&
+	    (cmd->autoneg != AUTONEG_ENABLE))
 		return -EINVAL;
 
-	if (cmd->base.autoneg == AUTONEG_ENABLE) {
-		if ((advertising & (ADVERTISED_10baseT_Half |
+	if (cmd->autoneg == AUTONEG_ENABLE) {
+		if ((cmd->advertising & (ADVERTISED_10baseT_Half |
 				ADVERTISED_10baseT_Full |
 				ADVERTISED_100baseT_Half |
 				ADVERTISED_100baseT_Full)) == 0)
@@ -951,13 +944,13 @@ ks8695_wan_set_link_ksettings(struct net_device *ndev,
 
 		ctrl &= ~(WMC_WAND | WMC_WANA100F | WMC_WANA100H |
 			  WMC_WANA10F | WMC_WANA10H);
-		if (advertising & ADVERTISED_100baseT_Full)
+		if (cmd->advertising & ADVERTISED_100baseT_Full)
 			ctrl |= WMC_WANA100F;
-		if (advertising & ADVERTISED_100baseT_Half)
+		if (cmd->advertising & ADVERTISED_100baseT_Half)
 			ctrl |= WMC_WANA100H;
-		if (advertising & ADVERTISED_10baseT_Full)
+		if (cmd->advertising & ADVERTISED_10baseT_Full)
 			ctrl |= WMC_WANA10F;
-		if (advertising & ADVERTISED_10baseT_Half)
+		if (cmd->advertising & ADVERTISED_10baseT_Half)
 			ctrl |= WMC_WANA10H;
 
 		/* force a re-negotiation */
@@ -970,9 +963,9 @@ ks8695_wan_set_link_ksettings(struct net_device *ndev,
 		ctrl |= WMC_WAND;
 		ctrl &= ~(WMC_WANF100 | WMC_WANFF);
 
-		if (cmd->base.speed == SPEED_100)
+		if (cmd->speed == SPEED_100)
 			ctrl |= WMC_WANF100;
-		if (cmd->base.duplex == DUPLEX_FULL)
+		if (cmd->duplex == DUPLEX_FULL)
 			ctrl |= WMC_WANFF;
 
 		writel(ctrl, ksp->phyiface_regs + KS8695_WMC);
@@ -1051,12 +1044,12 @@ static const struct ethtool_ops ks8695_ethtool_ops = {
 static const struct ethtool_ops ks8695_wan_ethtool_ops = {
 	.get_msglevel	= ks8695_get_msglevel,
 	.set_msglevel	= ks8695_set_msglevel,
+	.get_settings	= ks8695_wan_get_settings,
+	.set_settings	= ks8695_wan_set_settings,
 	.nway_reset	= ks8695_wan_nwayreset,
 	.get_link	= ethtool_op_get_link,
 	.get_pauseparam = ks8695_wan_get_pause,
 	.get_drvinfo	= ks8695_get_drvinfo,
-	.get_link_ksettings = ks8695_wan_get_link_ksettings,
-	.set_link_ksettings = ks8695_wan_set_link_ksettings,
 };
 
 /* Network device interface functions */
@@ -1256,6 +1249,9 @@ ks8695_open(struct net_device *ndev)
 	struct ks8695_priv *ksp = netdev_priv(ndev);
 	int ret;
 
+	if (!is_valid_ether_addr(ndev->dev_addr))
+		return -EADDRNOTAVAIL;
+
 	ks8695_reset(ksp);
 
 	ks8695_update_mac(ksp);
@@ -1281,7 +1277,7 @@ ks8695_open(struct net_device *ndev)
  *	This initialises the LAN switch in the KS8695 to a known-good
  *	set of defaults.
  */
-static void
+static void __devinit
 ks8695_init_switch(struct ks8695_priv *ksp)
 {
 	u32 ctrl;
@@ -1309,7 +1305,7 @@ ks8695_init_switch(struct ks8695_priv *ksp)
  *	This initialises a KS8695's WAN phy to sensible values for
  *	autonegotiation etc.
  */
-static void
+static void __devinit
 ks8695_init_wan_phy(struct ks8695_priv *ksp)
 {
 	u32 ctrl;
@@ -1353,7 +1349,7 @@ static const struct net_device_ops ks8695_netdev_ops = {
  *	wan ports, and an IORESOURCE_IRQ for the link IRQ for the wan
  *	port.
  */
-static int
+static int __devinit
 ks8695_probe(struct platform_device *pdev)
 {
 	struct ks8695_priv *ksp;
@@ -1362,13 +1358,14 @@ ks8695_probe(struct platform_device *pdev)
 	struct resource *rxirq_res, *txirq_res, *linkirq_res;
 	int ret = 0;
 	int buff_n;
-	bool inv_mac_addr = false;
 	u32 machigh, maclow;
 
 	/* Initialise a net_device */
 	ndev = alloc_etherdev(sizeof(struct ks8695_priv));
-	if (!ndev)
+	if (!ndev) {
+		dev_err(&pdev->dev, "could not allocate device.\n");
 		return -ENOMEM;
+	}
 
 	SET_NETDEV_DEV(ndev, &pdev->dev);
 
@@ -1465,7 +1462,8 @@ ks8695_probe(struct platform_device *pdev)
 	ndev->dev_addr[5] = maclow & 0xFF;
 
 	if (!is_valid_ether_addr(ndev->dev_addr))
-		inv_mac_addr = true;
+		dev_warn(ksp->dev, "%s: Invalid ethernet MAC address. Please "
+			 "set using ifconfig\n", ndev->name);
 
 	/* In order to be efficient memory-wise, we allocate both
 	 * rings in one go.
@@ -1512,15 +1510,15 @@ ks8695_probe(struct platform_device *pdev)
 	if (ksp->phyiface_regs && ksp->link_irq == -1) {
 		ks8695_init_switch(ksp);
 		ksp->dtype = KS8695_DTYPE_LAN;
-		ndev->ethtool_ops = &ks8695_ethtool_ops;
+		SET_ETHTOOL_OPS(ndev, &ks8695_ethtool_ops);
 	} else if (ksp->phyiface_regs && ksp->link_irq != -1) {
 		ks8695_init_wan_phy(ksp);
 		ksp->dtype = KS8695_DTYPE_WAN;
-		ndev->ethtool_ops = &ks8695_wan_ethtool_ops;
+		SET_ETHTOOL_OPS(ndev, &ks8695_wan_ethtool_ops);
 	} else {
 		/* No initialisation since HPNA does not have a PHY */
 		ksp->dtype = KS8695_DTYPE_HPNA;
-		ndev->ethtool_ops = &ks8695_ethtool_ops;
+		SET_ETHTOOL_OPS(ndev, &ks8695_ethtool_ops);
 	}
 
 	/* And bring up the net_device with the net core */
@@ -1528,9 +1526,6 @@ ks8695_probe(struct platform_device *pdev)
 	ret = register_netdev(ndev);
 
 	if (ret == 0) {
-		if (inv_mac_addr)
-			dev_warn(ksp->dev, "%s: Invalid ethernet MAC address. Please set using ip\n",
-				 ndev->name);
 		dev_info(ksp->dev, "ks8695 ethernet (%s) MAC: %pM\n",
 			 ks8695_port_type(ksp), ndev->dev_addr);
 	} else {
@@ -1604,12 +1599,13 @@ ks8695_drv_resume(struct platform_device *pdev)
  *
  *	This unregisters and releases a KS8695 ethernet device.
  */
-static int
+static int __devexit
 ks8695_drv_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct ks8695_priv *ksp = netdev_priv(ndev);
 
+	platform_set_drvdata(pdev, NULL);
 	netif_napi_del(&ksp->napi);
 
 	unregister_netdev(ndev);
@@ -1623,14 +1619,33 @@ ks8695_drv_remove(struct platform_device *pdev)
 static struct platform_driver ks8695_driver = {
 	.driver = {
 		.name	= MODULENAME,
+		.owner	= THIS_MODULE,
 	},
 	.probe		= ks8695_probe,
-	.remove		= ks8695_drv_remove,
+	.remove		= __devexit_p(ks8695_drv_remove),
 	.suspend	= ks8695_drv_suspend,
 	.resume		= ks8695_drv_resume,
 };
 
-module_platform_driver(ks8695_driver);
+/* Module interface */
+
+static int __init
+ks8695_init(void)
+{
+	printk(KERN_INFO "%s Ethernet driver, V%s\n",
+	       MODULENAME, MODULEVERSION);
+
+	return platform_driver_register(&ks8695_driver);
+}
+
+static void __exit
+ks8695_cleanup(void)
+{
+	platform_driver_unregister(&ks8695_driver);
+}
+
+module_init(ks8695_init);
+module_exit(ks8695_cleanup);
 
 MODULE_AUTHOR("Simtec Electronics");
 MODULE_DESCRIPTION("Micrel KS8695 (Centaur) Ethernet driver");

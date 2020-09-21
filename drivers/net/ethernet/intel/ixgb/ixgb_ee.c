@@ -1,5 +1,30 @@
-// SPDX-License-Identifier: GPL-2.0
-/* Copyright(c) 1999 - 2008 Intel Corporation. */
+/*******************************************************************************
+
+  Intel PRO/10GbE Linux driver
+  Copyright(c) 1999 - 2008 Intel Corporation.
+
+  This program is free software; you can redistribute it and/or modify it
+  under the terms and conditions of the GNU General Public License,
+  version 2, as published by the Free Software Foundation.
+
+  This program is distributed in the hope it will be useful, but WITHOUT
+  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+  more details.
+
+  You should have received a copy of the GNU General Public License along with
+  this program; if not, write to the Free Software Foundation, Inc.,
+  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
+
+  The full GNU General Public License is included in this distribution in
+  the file called "COPYING".
+
+  Contact Information:
+  Linux NICS <linux.nics@intel.com>
+  e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
+  Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
+
+*******************************************************************************/
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -508,8 +533,10 @@ __le16
 ixgb_get_eeprom_word(struct ixgb_hw *hw, u16 index)
 {
 
-	if (index < IXGB_EEPROM_SIZE && ixgb_check_and_get_eeprom_data(hw))
-		return hw->eeprom[index];
+	if ((index < IXGB_EEPROM_SIZE) &&
+		(ixgb_check_and_get_eeprom_data(hw) == true)) {
+	   return hw->eeprom[index];
+	}
 
 	return 0;
 }
@@ -531,7 +558,7 @@ ixgb_get_ee_mac_addr(struct ixgb_hw *hw,
 
 	ENTER();
 
-	if (ixgb_check_and_get_eeprom_data(hw)) {
+	if (ixgb_check_and_get_eeprom_data(hw) == true) {
 		for (i = 0; i < ETH_ALEN; i++) {
 			mac_addr[i] = ee_map->mac_addr[i];
 		}
@@ -551,7 +578,7 @@ ixgb_get_ee_mac_addr(struct ixgb_hw *hw,
 u32
 ixgb_get_ee_pba_number(struct ixgb_hw *hw)
 {
-	if (ixgb_check_and_get_eeprom_data(hw))
+	if (ixgb_check_and_get_eeprom_data(hw) == true)
 		return le16_to_cpu(hw->eeprom[EEPROM_PBA_1_2_REG])
 			| (le16_to_cpu(hw->eeprom[EEPROM_PBA_3_4_REG])<<16);
 
@@ -572,7 +599,7 @@ ixgb_get_ee_device_id(struct ixgb_hw *hw)
 {
 	struct ixgb_ee_map_type *ee_map = (struct ixgb_ee_map_type *)hw->eeprom;
 
-	if (ixgb_check_and_get_eeprom_data(hw))
+	if (ixgb_check_and_get_eeprom_data(hw) == true)
 		return le16_to_cpu(ee_map->device_id);
 
 	return 0;

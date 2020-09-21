@@ -17,19 +17,14 @@
  *
  *	27/11/2000 Initial release
  */
-
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/module.h>
 #include <linux/moduleparam.h>
-#include <linux/clk.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/fs.h>
 #include <linux/miscdevice.h>
 #include <linux/watchdog.h>
 #include <linux/init.h>
-#include <linux/io.h>
 #include <linux/bitops.h>
 #include <linux/uaccess.h>
 #include <linux/timex.h>
@@ -55,10 +50,10 @@ static int sa1100dog_open(struct inode *inode, struct file *file)
 		return -EBUSY;
 
 	/* Activate SA1100 Watchdog timer */
-	writel_relaxed(readl_relaxed(OSCR) + pre_margin, OSMR3);
-	writel_relaxed(OSSR_M3, OSSR);
-	writel_relaxed(OWER_WME, OWER);
-	writel_relaxed(readl_relaxed(OIER) | OIER_E3, OIER);
+	OSMR3 = OSCR + pre_margin;
+	OSSR = OSSR_M3;
+	OWER = OWER_WME;
+	OIER |= OIER_E3;
 	return nonseekable_open(inode, file);
 }
 
@@ -71,7 +66,7 @@ static int sa1100dog_open(struct inode *inode, struct file *file)
  */
 static int sa1100dog_release(struct inode *inode, struct file *file)
 {
-	pr_crit("Device closed - timer will not stop\n");
+	printk(KERN_CRIT "WATCHDOG: Device closed - timer will not stop\n");
 	clear_bit(1, &sa1100wdt_users);
 	return 0;
 }
@@ -81,7 +76,7 @@ static ssize_t sa1100dog_write(struct file *file, const char __user *data,
 {
 	if (len)
 		/* Refresh OSMR3 timer. */
-		writel_relaxed(readl_relaxed(OSCR) + pre_margin, OSMR3);
+		OSMR3 = OSCR + pre_margin;
 	return len;
 }
 
@@ -115,7 +110,7 @@ static long sa1100dog_ioctl(struct file *file, unsigned int cmd,
 		break;
 
 	case WDIOC_KEEPALIVE:
-		writel_relaxed(readl_relaxed(OSCR) + pre_margin, OSMR3);
+		OSMR3 = OSCR + pre_margin;
 		ret = 0;
 		break;
 
@@ -130,7 +125,7 @@ static long sa1100dog_ioctl(struct file *file, unsigned int cmd,
 		}
 
 		pre_margin = oscr_freq * time;
-		writel_relaxed(readl_relaxed(OSCR) + pre_margin, OSMR3);
+		OSMR3 = OSCR + pre_margin;
 		/*fall through*/
 
 	case WDIOC_GETTIMEOUT:
@@ -156,27 +151,12 @@ static struct miscdevice sa1100dog_miscdev = {
 };
 
 static int margin __initdata = 60;		/* (secs) Default is 1 minute */
-static struct clk *clk;
 
 static int __init sa1100dog_init(void)
 {
 	int ret;
 
-	clk = clk_get(NULL, "OSTIMER0");
-	if (IS_ERR(clk)) {
-		pr_err("SA1100/PXA2xx Watchdog Timer: clock not found: %d\n",
-		       (int) PTR_ERR(clk));
-		return PTR_ERR(clk);
-	}
-
-	ret = clk_prepare_enable(clk);
-	if (ret) {
-		pr_err("SA1100/PXA2xx Watchdog Timer: clock failed to prepare+enable: %d\n",
-		       ret);
-		goto err;
-	}
-
-	oscr_freq = clk_get_rate(clk);
+	oscr_freq = get_clock_tick_rate();
 
 	/*
 	 * Read the reset status, and save it for later.  If
@@ -188,23 +168,16 @@ static int __init sa1100dog_init(void)
 	pre_margin = oscr_freq * margin;
 
 	ret = misc_register(&sa1100dog_miscdev);
-	if (ret == 0) {
-		pr_info("SA1100/PXA2xx Watchdog Timer: timer margin %d sec\n",
-			margin);
-		return 0;
-	}
-
-	clk_disable_unprepare(clk);
-err:
-	clk_put(clk);
+	if (ret == 0)
+		printk(KERN_INFO
+			"SA1100/PXA2xx Watchdog Timer: timer margin %d sec\n",
+						margin);
 	return ret;
 }
 
 static void __exit sa1100dog_exit(void)
 {
 	misc_deregister(&sa1100dog_miscdev);
-	clk_disable_unprepare(clk);
-	clk_put(clk);
 }
 
 module_init(sa1100dog_init);
@@ -217,3 +190,4 @@ module_param(margin, int, 0);
 MODULE_PARM_DESC(margin, "Watchdog margin in seconds (default 60s)");
 
 MODULE_LICENSE("GPL");
+MODULE_ALIAS_MISCDEV(WATCHDOG_MINOR);

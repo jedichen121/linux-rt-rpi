@@ -5,6 +5,7 @@
  *
  * Author:	Torsten Schenk <torsten.schenk@zoho.com>
  * Created:	Jan 01, 2011
+ * Version:	0.3.0
  * Copyright:	(C) Torsten Schenk
  *
  * This program is free software; you can redistribute it and/or modify
@@ -28,13 +29,13 @@
 #include <sound/initval.h>
 
 MODULE_AUTHOR("Torsten Schenk <torsten.schenk@zoho.com>");
-MODULE_DESCRIPTION("TerraTec DMX 6Fire USB audio driver");
+MODULE_DESCRIPTION("TerraTec DMX 6Fire USB audio driver, version 0.3.0");
 MODULE_LICENSE("GPL v2");
-MODULE_SUPPORTED_DEVICE("{{TerraTec,DMX 6Fire USB}}");
+MODULE_SUPPORTED_DEVICE("{{TerraTec, DMX 6Fire USB}}");
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX; /* Index 0-max */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR; /* Id for card */
-static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP; /* Enable card */
+static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP; /* Enable card */
 static struct sfire_chip *chips[SNDRV_CARDS] = SNDRV_DEFAULT_PTR;
 static struct usb_device *devices[SNDRV_CARDS] = SNDRV_DEFAULT_PTR;
 
@@ -82,8 +83,8 @@ static void usb6fire_chip_destroy(struct sfire_chip *chip)
 	}
 }
 
-static int usb6fire_chip_probe(struct usb_interface *intf,
-			       const struct usb_device_id *usb_id)
+static int __devinit usb6fire_chip_probe(struct usb_interface *intf,
+		const struct usb_device_id *usb_id)
 {
 	int ret;
 	int i;
@@ -101,12 +102,12 @@ static int usb6fire_chip_probe(struct usb_interface *intf,
 			usb_set_intfdata(intf, chips[i]);
 			mutex_unlock(&register_mutex);
 			return 0;
-		} else if (!devices[i] && regidx < 0)
+		} else if (regidx < 0)
 			regidx = i;
 	}
 	if (regidx < 0) {
 		mutex_unlock(&register_mutex);
-		dev_err(&intf->dev, "too many cards registered.\n");
+		snd_printk(KERN_ERR PREFIX "too many cards registered.\n");
 		return -ENODEV;
 	}
 	devices[regidx] = device;
@@ -121,19 +122,20 @@ static int usb6fire_chip_probe(struct usb_interface *intf,
 
 	/* if we are here, card can be registered in alsa. */
 	if (usb_set_interface(device, 0, 0) != 0) {
-		dev_err(&intf->dev, "can't set first interface.\n");
+		snd_printk(KERN_ERR PREFIX "can't set first interface.\n");
 		return -EIO;
 	}
-	ret = snd_card_new(&intf->dev, index[regidx], id[regidx],
-			   THIS_MODULE, sizeof(struct sfire_chip), &card);
+	ret = snd_card_create(index[regidx], id[regidx], THIS_MODULE,
+			sizeof(struct sfire_chip), &card);
 	if (ret < 0) {
-		dev_err(&intf->dev, "cannot create alsa card.\n");
+		snd_printk(KERN_ERR PREFIX "cannot create alsa card.\n");
 		return ret;
 	}
 	strcpy(card->driver, "6FireUSB");
 	strcpy(card->shortname, "TerraTec DMX6FireUSB");
 	sprintf(card->longname, "%s at %d:%d", card->shortname,
 			device->bus->busnum, device->devnum);
+	snd_card_set_dev(card, &intf->dev);
 
 	chip = card->private_data;
 	chips[regidx] = chip;
@@ -143,40 +145,47 @@ static int usb6fire_chip_probe(struct usb_interface *intf,
 	chip->card = card;
 
 	ret = usb6fire_comm_init(chip);
-	if (ret < 0)
-		goto destroy_chip;
+	if (ret < 0) {
+		usb6fire_chip_destroy(chip);
+		return ret;
+	}
 
 	ret = usb6fire_midi_init(chip);
-	if (ret < 0)
-		goto destroy_chip;
+	if (ret < 0) {
+		usb6fire_chip_destroy(chip);
+		return ret;
+	}
 
 	ret = usb6fire_pcm_init(chip);
-	if (ret < 0)
-		goto destroy_chip;
+	if (ret < 0) {
+		usb6fire_chip_destroy(chip);
+		return ret;
+	}
 
 	ret = usb6fire_control_init(chip);
-	if (ret < 0)
-		goto destroy_chip;
+	if (ret < 0) {
+		usb6fire_chip_destroy(chip);
+		return ret;
+	}
 
 	ret = snd_card_register(card);
 	if (ret < 0) {
-		dev_err(&intf->dev, "cannot register card.");
-		goto destroy_chip;
+		snd_printk(KERN_ERR PREFIX "cannot register card.");
+		usb6fire_chip_destroy(chip);
+		return ret;
 	}
 	usb_set_intfdata(intf, chip);
 	return 0;
-
-destroy_chip:
-	usb6fire_chip_destroy(chip);
-	return ret;
 }
 
 static void usb6fire_chip_disconnect(struct usb_interface *intf)
 {
 	struct sfire_chip *chip;
+	struct snd_card *card;
 
 	chip = usb_get_intfdata(intf);
 	if (chip) { /* if !chip, fw upload has been performed */
+		card = chip->card;
 		chip->intf_count--;
 		if (!chip->intf_count) {
 			mutex_lock(&register_mutex);
@@ -191,7 +200,7 @@ static void usb6fire_chip_disconnect(struct usb_interface *intf)
 	}
 }
 
-static const struct usb_device_id device_table[] = {
+static struct usb_device_id device_table[] = {
 	{
 		.match_flags = USB_DEVICE_ID_MATCH_DEVICE,
 		.idVendor = 0x0ccd,

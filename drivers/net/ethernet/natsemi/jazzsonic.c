@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * jazzsonic.c
  *
@@ -25,6 +24,7 @@
 #include <linux/fcntl.h>
 #include <linux/gfp.h>
 #include <linux/interrupt.h>
+#include <linux/init.h>
 #include <linux/ioport.h>
 #include <linux/in.h>
 #include <linux/string.h>
@@ -38,6 +38,7 @@
 #include <linux/slab.h>
 
 #include <asm/bootinfo.h>
+#include <asm/system.h>
 #include <asm/pgtable.h>
 #include <asm/io.h>
 #include <asm/dma.h>
@@ -60,6 +61,14 @@ do {									\
 	*((volatile unsigned int *)dev->base_addr+(reg)) = (val);		\
 } while (0)
 
+
+/* use 0 for production, 1 for verification, >1 for debug */
+#ifdef SONIC_DEBUG
+static unsigned int sonic_debug = SONIC_DEBUG;
+#else
+static unsigned int sonic_debug = 1;
+#endif
+
 /*
  * We cannot use station (ethernet) address prefixes to detect the
  * sonic controller since these are board manufacturer depended.
@@ -75,7 +84,8 @@ static int jazzsonic_open(struct net_device* dev)
 {
 	int retval;
 
-	retval = request_irq(dev->irq, sonic_interrupt, 0, "sonic", dev);
+	retval = request_irq(dev->irq, sonic_interrupt, IRQF_DISABLED,
+				"sonic", dev);
 	if (retval) {
 		printk(KERN_ERR "%s: unable to get IRQ %d.\n",
 				dev->name, dev->irq);
@@ -103,12 +113,14 @@ static const struct net_device_ops sonic_netdev_ops = {
 	.ndo_get_stats		= sonic_get_stats,
 	.ndo_set_rx_mode	= sonic_multicast_list,
 	.ndo_tx_timeout		= sonic_tx_timeout,
+	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address	= eth_mac_addr,
 };
 
-static int sonic_probe1(struct net_device *dev)
+static int __devinit sonic_probe1(struct net_device *dev)
 {
+	static unsigned version_printed;
 	unsigned int silicon_revision;
 	unsigned int val;
 	struct sonic_local *lp = netdev_priv(dev);
@@ -124,16 +136,25 @@ static int sonic_probe1(struct net_device *dev)
 	 * the expected location.
 	 */
 	silicon_revision = SONIC_READ(SONIC_SR);
+	if (sonic_debug > 1)
+		printk("SONIC Silicon Revision = 0x%04x\n",silicon_revision);
+
 	i = 0;
 	while (known_revisions[i] != 0xffff &&
 	       known_revisions[i] != silicon_revision)
 		i++;
 
 	if (known_revisions[i] == 0xffff) {
-		pr_info("SONIC ethernet controller not found (0x%4x)\n",
-			silicon_revision);
+		printk("SONIC ethernet controller not found (0x%4x)\n",
+		       silicon_revision);
 		goto out;
 	}
+
+	if (sonic_debug  &&  version_printed++ == 0)
+		printk(version);
+
+	printk(KERN_INFO "%s: Sonic ethernet found at 0x%08lx, ",
+	       dev_name(lp->device), dev->base_addr);
 
 	/*
 	 * Put the sonic into software reset, then
@@ -155,13 +176,13 @@ static int sonic_probe1(struct net_device *dev)
 
 	/* Allocate the entire chunk of memory for the descriptors.
            Note that this cannot cross a 64K boundary. */
-	lp->descriptors = dma_alloc_coherent(lp->device,
-					     SIZEOF_SONIC_DESC *
-					     SONIC_BUS_SCALE(lp->dma_bitmode),
-					     &lp->descriptors_laddr,
-					     GFP_KERNEL);
-	if (lp->descriptors == NULL)
+	if ((lp->descriptors = dma_alloc_coherent(lp->device,
+				SIZEOF_SONIC_DESC * SONIC_BUS_SCALE(lp->dma_bitmode),
+				&lp->descriptors_laddr, GFP_KERNEL)) == NULL) {
+		printk(KERN_ERR "%s: couldn't alloc DMA memory for descriptors.\n",
+		       dev_name(lp->device));
 		goto out;
+	}
 
 	/* Now set up the pointers to point to the appropriate places */
 	lp->cda = lp->descriptors;
@@ -200,7 +221,7 @@ out:
  * Probe for a SONIC ethernet controller on a Mips Jazz board.
  * Actually probing is superfluous but we're paranoid.
  */
-static int jazz_sonic_probe(struct platform_device *pdev)
+static int __devinit jazz_sonic_probe(struct platform_device *pdev)
 {
 	struct net_device *dev;
 	struct sonic_local *lp;
@@ -227,15 +248,11 @@ static int jazz_sonic_probe(struct platform_device *pdev)
 	err = sonic_probe1(dev);
 	if (err)
 		goto out;
-
-	pr_info("SONIC ethernet @%08lx, MAC %pM, IRQ %d\n",
-		dev->base_addr, dev->dev_addr, dev->irq);
-
-	sonic_msg_init(dev);
-
 	err = register_netdev(dev);
 	if (err)
 		goto out1;
+
+	printk("%s: MAC %pM IRQ %d\n", dev->name, dev->dev_addr, dev->irq);
 
 	return 0;
 
@@ -248,11 +265,13 @@ out:
 }
 
 MODULE_DESCRIPTION("Jazz SONIC ethernet driver");
+module_param(sonic_debug, int, 0);
+MODULE_PARM_DESC(sonic_debug, "jazzsonic debug level (1-4)");
 MODULE_ALIAS("platform:jazzsonic");
 
 #include "sonic.c"
 
-static int jazz_sonic_device_remove(struct platform_device *pdev)
+static int __devexit jazz_sonic_device_remove (struct platform_device *pdev)
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 	struct sonic_local* lp = netdev_priv(dev);
@@ -268,9 +287,10 @@ static int jazz_sonic_device_remove(struct platform_device *pdev)
 
 static struct platform_driver jazz_sonic_driver = {
 	.probe	= jazz_sonic_probe,
-	.remove	= jazz_sonic_device_remove,
+	.remove	= __devexit_p(jazz_sonic_device_remove),
 	.driver	= {
 		.name	= jazz_sonic_string,
+		.owner	= THIS_MODULE,
 	},
 };
 

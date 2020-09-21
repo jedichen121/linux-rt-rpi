@@ -1,7 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2000-2005 Silicon Graphics, Inc.
  * All Rights Reserved.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it would be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write the Free Software Foundation,
+ * Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 #ifndef __XFS_SUPPORT_KMEM_H__
 #define __XFS_SUPPORT_KMEM_H__
@@ -15,12 +27,10 @@
  * General memory allocation interfaces
  */
 
-typedef unsigned __bitwise xfs_km_flags_t;
-#define KM_SLEEP	((__force xfs_km_flags_t)0x0001u)
-#define KM_NOSLEEP	((__force xfs_km_flags_t)0x0002u)
-#define KM_NOFS		((__force xfs_km_flags_t)0x0004u)
-#define KM_MAYFAIL	((__force xfs_km_flags_t)0x0008u)
-#define KM_ZERO		((__force xfs_km_flags_t)0x0010u)
+#define KM_SLEEP	0x0001u
+#define KM_NOSLEEP	0x0002u
+#define KM_NOFS		0x0004u
+#define KM_MAYFAIL	0x0008u
 
 /*
  * We use a special process flag to avoid recursive callbacks into
@@ -28,56 +38,37 @@ typedef unsigned __bitwise xfs_km_flags_t;
  * warnings, so we explicitly skip any generic ones (silly of us).
  */
 static inline gfp_t
-kmem_flags_convert(xfs_km_flags_t flags)
+kmem_flags_convert(unsigned int __nocast flags)
 {
 	gfp_t	lflags;
 
-	BUG_ON(flags & ~(KM_SLEEP|KM_NOSLEEP|KM_NOFS|KM_MAYFAIL|KM_ZERO));
+	BUG_ON(flags & ~(KM_SLEEP|KM_NOSLEEP|KM_NOFS|KM_MAYFAIL));
 
 	if (flags & KM_NOSLEEP) {
 		lflags = GFP_ATOMIC | __GFP_NOWARN;
 	} else {
 		lflags = GFP_KERNEL | __GFP_NOWARN;
-		if (flags & KM_NOFS)
+		if ((current->flags & PF_FSTRANS) || (flags & KM_NOFS))
 			lflags &= ~__GFP_FS;
 	}
-
-	/*
-	 * Default page/slab allocator behavior is to retry for ever
-	 * for small allocations. We can override this behavior by using
-	 * __GFP_RETRY_MAYFAIL which will tell the allocator to retry as long
-	 * as it is feasible but rather fail than retry forever for all
-	 * request sizes.
-	 */
-	if (flags & KM_MAYFAIL)
-		lflags |= __GFP_RETRY_MAYFAIL;
-
-	if (flags & KM_ZERO)
-		lflags |= __GFP_ZERO;
-
 	return lflags;
 }
 
-extern void *kmem_alloc(size_t, xfs_km_flags_t);
-extern void *kmem_alloc_large(size_t size, xfs_km_flags_t);
-extern void *kmem_realloc(const void *, size_t, xfs_km_flags_t);
-static inline void  kmem_free(const void *ptr)
+extern void *kmem_alloc(size_t, unsigned int __nocast);
+extern void *kmem_zalloc(size_t, unsigned int __nocast);
+extern void *kmem_realloc(const void *, size_t, size_t, unsigned int __nocast);
+extern void  kmem_free(const void *);
+
+static inline void *kmem_zalloc_large(size_t size)
 {
-	kvfree(ptr);
+	return vzalloc(size);
+}
+static inline void kmem_free_large(void *ptr)
+{
+	vfree(ptr);
 }
 
-
-static inline void *
-kmem_zalloc(size_t size, xfs_km_flags_t flags)
-{
-	return kmem_alloc(size, flags | KM_ZERO);
-}
-
-static inline void *
-kmem_zalloc_large(size_t size, xfs_km_flags_t flags)
-{
-	return kmem_alloc_large(size, flags | KM_ZERO);
-}
+extern void *kmem_zalloc_greedy(size_t *, size_t, size_t);
 
 /*
  * Zone interfaces
@@ -86,7 +77,6 @@ kmem_zalloc_large(size_t size, xfs_km_flags_t flags)
 #define KM_ZONE_HWALIGN	SLAB_HWCACHE_ALIGN
 #define KM_ZONE_RECLAIM	SLAB_RECLAIM_ACCOUNT
 #define KM_ZONE_SPREAD	SLAB_MEM_SPREAD
-#define KM_ZONE_ACCOUNT	SLAB_ACCOUNT
 
 #define kmem_zone	kmem_cache
 #define kmem_zone_t	struct kmem_cache
@@ -98,7 +88,7 @@ kmem_zone_init(int size, char *zone_name)
 }
 
 static inline kmem_zone_t *
-kmem_zone_init_flags(int size, char *zone_name, slab_flags_t flags,
+kmem_zone_init_flags(int size, char *zone_name, unsigned long flags,
 		     void (*construct)(void *))
 {
 	return kmem_cache_create(zone_name, size, 0, flags, construct);
@@ -113,15 +103,17 @@ kmem_zone_free(kmem_zone_t *zone, void *ptr)
 static inline void
 kmem_zone_destroy(kmem_zone_t *zone)
 {
-	kmem_cache_destroy(zone);
+	if (zone)
+		kmem_cache_destroy(zone);
 }
 
-extern void *kmem_zone_alloc(kmem_zone_t *, xfs_km_flags_t);
+extern void *kmem_zone_alloc(kmem_zone_t *, unsigned int __nocast);
+extern void *kmem_zone_zalloc(kmem_zone_t *, unsigned int __nocast);
 
-static inline void *
-kmem_zone_zalloc(kmem_zone_t *zone, xfs_km_flags_t flags)
+static inline int
+kmem_shake_allow(gfp_t gfp_mask)
 {
-	return kmem_zone_alloc(zone, flags | KM_ZERO);
+	return ((gfp_mask & __GFP_WAIT) && (gfp_mask & __GFP_FS));
 }
 
 #endif /* __XFS_SUPPORT_KMEM_H__ */

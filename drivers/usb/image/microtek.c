@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /* Driver for Microtek Scanmaker X6 USB scanner, and possibly others.
  *
  * (C) Copyright 2000 John Fremlin <vii@penguinpowered.com>
@@ -126,6 +125,7 @@
 #include <linux/errno.h>
 #include <linux/random.h>
 #include <linux/poll.h>
+#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/usb.h>
@@ -138,6 +138,10 @@
 
 #include "microtek.h"
 
+/*
+ * Version Information
+ */
+#define DRIVER_VERSION "v0.4.3"
 #define DRIVER_AUTHOR "John Fremlin <vii@penguinpowered.com>, Oliver Neukum <Oliver.Neukum@lrz.uni-muenchen.de>"
 #define DRIVER_DESC "Microtek Scanmaker X6 USB scanner driver"
 
@@ -296,7 +300,9 @@ static inline void mts_show_command(struct scsi_cmnd *srb)
 	MTS_DEBUG( "Command %s (%d bytes)\n", what, srb->cmd_len);
 
  out:
-	MTS_DEBUG( "  %10ph\n", srb->cmnd);
+	MTS_DEBUG( "  %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+	       srb->cmnd[0], srb->cmnd[1], srb->cmnd[2], srb->cmnd[3], srb->cmnd[4], srb->cmnd[5],
+	       srb->cmnd[6], srb->cmnd[7], srb->cmnd[8], srb->cmnd[9]);
 }
 
 #else
@@ -632,6 +638,7 @@ static struct scsi_host_template mts_scsi_host_template = {
 	.sg_tablesize =		SG_ALL,
 	.can_queue =		1,
 	.this_id =		-1,
+	.cmd_per_lun =		1,
 	.use_clustering =	1,
 	.emulated =		1,
 	.slave_alloc =		mts_slave_alloc,
@@ -721,10 +728,6 @@ static int mts_usb_probe(struct usb_interface *intf,
 
 	}
 
-	if (ep_in_current != &ep_in_set[2]) {
-		MTS_WARNING("couldn't find two input bulk endpoints. Bailing out.\n");
-		return -ENODEV;
-	}
 
 	if ( ep_out == -1 ) {
 		MTS_WARNING( "couldn't find an output bulk endpoint. Bailing out.\n" );

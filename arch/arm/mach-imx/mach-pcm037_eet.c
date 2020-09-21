@@ -11,12 +11,13 @@
 #include <linux/platform_device.h>
 #include <linux/spi/spi.h>
 
+#include <mach/common.h>
+#include <mach/iomux-mx3.h>
+
 #include <asm/mach-types.h>
 
 #include "pcm037.h"
-#include "common.h"
 #include "devices-imx31.h"
-#include "iomux-mx3.h"
 
 static unsigned int pcm037_eet_pins[] = {
 	/* Reserve and hardwire GPIO 57 high - S6E63D6 chipselect */
@@ -50,14 +51,17 @@ static struct spi_board_info pcm037_spi_dev[] = {
 		.modalias	= "dac124s085",
 		.max_speed_hz	= 400000,
 		.bus_num	= 0,
-		.chip_select	= 1,		/* Index in pcm037_spi1_cs[] */
+		.chip_select	= 0,		/* Index in pcm037_spi1_cs[] */
 		.mode		= SPI_CPHA,
 	},
 };
 
 /* Platform Data for MXC CSPI */
+static int pcm037_spi1_cs[] = {MXC_SPI_CS(1), IOMUX_TO_GPIO(MX31_PIN_KEY_COL7)};
+
 static const struct spi_imx_master pcm037_spi1_pdata __initconst = {
-	.num_chipselect = 2,
+	.chipselect = pcm037_spi1_cs,
+	.num_chipselect = ARRAY_SIZE(pcm037_spi1_cs),
 };
 
 /* GPIO-keys input device */
@@ -156,9 +160,9 @@ static const struct gpio_keys_platform_data
 	.rep		= 0, /* No auto-repeat */
 };
 
-int __init pcm037_eet_init_devices(void)
+static int __init eet_init_devices(void)
 {
-	if (pcm037_variant() != PCM037_EET)
+	if (!machine_is_pcm037() || pcm037_variant() != PCM037_EET)
 		return 0;
 
 	mxc_iomux_setup_multiple_pins(pcm037_eet_pins,
@@ -172,3 +176,4 @@ int __init pcm037_eet_init_devices(void)
 
 	return 0;
 }
+late_initcall(eet_init_devices);

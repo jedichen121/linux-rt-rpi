@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #include <mach/hardware.h>
 #include <asm/hardware/entry-macro-iomd.S>
 
@@ -11,3 +10,7 @@
 	orr	\base, \base, #ioc_base_low
 	.endif
 	.endm
+
+	.macro  arch_ret_to_user, tmp1, tmp2
+	.endm
+

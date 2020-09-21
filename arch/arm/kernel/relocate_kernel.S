@@ -1,15 +1,11 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * relocate_kernel.S - put the kernel image in place to boot
  */
 
-#include <linux/linkage.h>
-#include <asm/assembler.h>
 #include <asm/kexec.h>
 
-	.align	3	/* not needed for this code, but keeps fncpy() happy */
-
-ENTRY(relocate_new_kernel)
+	.globl relocate_new_kernel
+relocate_new_kernel:
 
 	ldr	r0,kexec_indirection_page
 	ldr	r1,kexec_start_address
@@ -61,7 +57,7 @@ ENTRY(relocate_new_kernel)
 	mov r0,#0
 	ldr r1,kexec_mach_type
 	ldr r2,kexec_boot_atags
- ARM(	ret lr	)
+ ARM(	mov pc, lr	)
  THUMB(	bx lr		)
 
 	.align
@@ -82,8 +78,6 @@ kexec_mach_type:
 	.globl kexec_boot_atags
 kexec_boot_atags:
 	.long	0x0
-
-ENDPROC(relocate_new_kernel)
 
 relocate_new_kernel_end:
 

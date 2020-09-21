@@ -25,6 +25,10 @@
 #include "opl3_voice.h"
 #include <sound/asoundef.h>
 
+extern char snd_opl3_regmap[MAX_OPL2_VOICES][4];
+
+extern int use_internal_drums;
+
 static void snd_opl3_note_off_unsafe(void *p, int note, int vel,
 				     struct snd_midi_channel *chan);
 /*
@@ -101,8 +105,6 @@ static void snd_opl3_calc_pitch(unsigned char *fnum, unsigned char *blocknum,
 		int pitchbend = chan->midi_pitchbend;
 		int segment;
 
-		if (pitchbend < -0x2000)
-			pitchbend = -0x2000;
 		if (pitchbend > 0x1FFF)
 			pitchbend = 0x1FFF;
 
@@ -127,8 +129,8 @@ static void debug_alloc(struct snd_opl3 *opl3, char *s, int voice) {
 
 	printk(KERN_DEBUG "time %.5i: %s [%.2i]: ", opl3->use_time, s, voice);
 	for (i = 0; i < opl3->max_voices; i++)
-		printk(KERN_CONT "%c", *(str + opl3->voices[i].state + 1));
-	printk(KERN_CONT "\n");
+		printk("%c", *(str + opl3->voices[i].state + 1));
+	printk("\n");
 }
 #endif
 
@@ -161,7 +163,7 @@ static int opl3_get_voice(struct snd_opl3 *opl3, int instr_4op,
 	struct best *bp;
 
 	for (i = 0; i < END; i++) {
-		best[i].time = (unsigned int)(-1); /* XXX MAX_?INT really */
+		best[i].time = (unsigned int)(-1); /* XXX MAX_?INT really */;
 		best[i].voice = -1;
 	}
 
@@ -234,10 +236,10 @@ static int opl3_get_voice(struct snd_opl3 *opl3, int instr_4op,
 /*
  * System timer interrupt function
  */
-void snd_opl3_timer_func(struct timer_list *t)
+void snd_opl3_timer_func(unsigned long data)
 {
 
-	struct snd_opl3 *opl3 = from_timer(opl3, t, tlist);
+	struct snd_opl3 *opl3 = (struct snd_opl3 *)data;
 	unsigned long flags;
 	int again = 0;
 	int i;
@@ -256,10 +258,12 @@ void snd_opl3_timer_func(struct timer_list *t)
 	spin_unlock_irqrestore(&opl3->voice_lock, flags);
 
 	spin_lock_irqsave(&opl3->sys_timer_lock, flags);
-	if (again)
-		mod_timer(&opl3->tlist, jiffies + 1);	/* invoke again */
-	else
+	if (again) {
+		opl3->tlist.expires = jiffies + 1;	/* invoke again */
+		add_timer(&opl3->tlist);
+	} else {
 		opl3->sys_timer_status = 0;
+	}
 	spin_unlock_irqrestore(&opl3->sys_timer_lock, flags);
 }
 
@@ -271,7 +275,8 @@ static void snd_opl3_start_timer(struct snd_opl3 *opl3)
 	unsigned long flags;
 	spin_lock_irqsave(&opl3->sys_timer_lock, flags);
 	if (! opl3->sys_timer_status) {
-		mod_timer(&opl3->tlist, jiffies + 1);
+		opl3->tlist.expires = jiffies + 1;
+		add_timer(&opl3->tlist);
 		opl3->sys_timer_status = 1;
 	}
 	spin_unlock_irqrestore(&opl3->sys_timer_lock, flags);
@@ -368,7 +373,6 @@ void snd_opl3_note_on(void *p, int note, int vel, struct snd_midi_channel *chan)
 			instr_4op = 1;
 			break;
 		}
-		/* fall through */
 	default:
 		spin_unlock_irqrestore(&opl3->voice_lock, flags);
 		return;
@@ -384,11 +388,6 @@ void snd_opl3_note_on(void *p, int note, int vel, struct snd_midi_channel *chan)
 	} else {
 		/* remap OSS voice */
 		voice = snd_opl3_oss_map[chan->number];		
-	}
-
-	if (voice < 0) {
-		spin_unlock_irqrestore(&opl3->voice_lock, flags);
-		return;
 	}
 
 	if (voice < MAX_OPL2_VOICES) {
@@ -718,6 +717,9 @@ void snd_opl3_note_off(void *p, int note, int vel,
  */
 void snd_opl3_key_press(void *p, int note, int vel, struct snd_midi_channel *chan)
 {
+  	struct snd_opl3 *opl3;
+
+	opl3 = p;
 #ifdef DEBUG_MIDI
 	snd_printk(KERN_DEBUG "Key pressure, ch#: %i, inst#: %i\n",
 		   chan->number, chan->midi_program);
@@ -729,6 +731,9 @@ void snd_opl3_key_press(void *p, int note, int vel, struct snd_midi_channel *cha
  */
 void snd_opl3_terminate_note(void *p, int note, struct snd_midi_channel *chan)
 {
+  	struct snd_opl3 *opl3;
+
+	opl3 = p;
 #ifdef DEBUG_MIDI
 	snd_printk(KERN_DEBUG "Terminate note, ch#: %i, inst#: %i\n",
 		   chan->number, chan->midi_program);
@@ -852,6 +857,9 @@ void snd_opl3_control(void *p, int type, struct snd_midi_channel *chan)
 void snd_opl3_nrpn(void *p, struct snd_midi_channel *chan,
 		   struct snd_midi_channel_set *chset)
 {
+  	struct snd_opl3 *opl3;
+
+	opl3 = p;
 #ifdef DEBUG_MIDI
 	snd_printk(KERN_DEBUG "NRPN, ch#: %i, inst#: %i\n",
 		   chan->number, chan->midi_program);
@@ -864,6 +872,9 @@ void snd_opl3_nrpn(void *p, struct snd_midi_channel *chan,
 void snd_opl3_sysex(void *p, unsigned char *buf, int len,
 		    int parsed, struct snd_midi_channel_set *chset)
 {
+  	struct snd_opl3 *opl3;
+
+	opl3 = p;
 #ifdef DEBUG_MIDI
 	snd_printk(KERN_DEBUG "SYSEX\n");
 #endif

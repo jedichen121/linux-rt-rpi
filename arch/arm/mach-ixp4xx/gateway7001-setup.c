@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/arm/mach-ixp4xx/gateway7001-setup.c
  *
@@ -98,9 +97,8 @@ static void __init gateway7001_init(void)
 MACHINE_START(GATEWAY7001, "Gateway 7001 AP")
 	/* Maintainer: Imre Kaloz <kaloz@openwrt.org> */
 	.map_io		= ixp4xx_map_io,
-	.init_early	= ixp4xx_init_early,
 	.init_irq	= ixp4xx_init_irq,
-	.init_time	= ixp4xx_timer_init,
+	.timer		= &ixp4xx_timer,
 	.atag_offset	= 0x100,
 	.init_machine	= gateway7001_init,
 #if defined(CONFIG_PCI)

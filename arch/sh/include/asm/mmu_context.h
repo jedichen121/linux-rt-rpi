@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 1999 Niibe Yutaka
  * Copyright (C) 2003 - 2007 Paul Mundt
@@ -11,9 +10,7 @@
 #ifdef __KERNEL__
 #include <cpu/mmu_context.h>
 #include <asm/tlbflush.h>
-#include <linux/uaccess.h>
-#include <linux/mm_types.h>
-
+#include <asm/uaccess.h>
 #include <asm/io.h>
 #include <asm-generic/mm_hooks.h>
 
@@ -49,9 +46,9 @@
 #define MMU_VPN_MASK	0xfffff000
 
 #if defined(CONFIG_SUPERH32)
-#include <asm/mmu_context_32.h>
+#include "mmu_context_32.h"
 #else
-#include <asm/mmu_context_64.h>
+#include "mmu_context_64.h"
 #endif
 
 /*
@@ -84,7 +81,7 @@ static inline void get_mmu_context(struct mm_struct *mm, unsigned int cpu)
 
 		/*
 		 * Fix version; Note that we avoid version #0
-		 * to distinguish NO_CONTEXT.
+		 * to distingush NO_CONTEXT.
 		 */
 		if (!asid)
 			asid = MMU_CONTEXT_FIRST_VERSION;
@@ -102,7 +99,7 @@ static inline int init_new_context(struct task_struct *tsk,
 {
 	int i;
 
-	for_each_online_cpu(i)
+	for (i = 0; i < num_online_cpus(); i++)
 		cpu_context(i, mm) = NO_CONTEXT;
 
 	return 0;

@@ -1,9 +1,8 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_M68K_UNALIGNED_H
 #define _ASM_M68K_UNALIGNED_H
 
 
-#ifdef CONFIG_CPU_HAS_NO_UNALIGNED
+#ifdef CONFIG_COLDFIRE
 #include <linux/unaligned/be_struct.h>
 #include <linux/unaligned/le_byteshift.h>
 #include <linux/unaligned/generic.h>
@@ -13,7 +12,7 @@
 
 #else
 /*
- * The m68k can do unaligned accesses itself.
+ * The m68k can do unaligned accesses itself. 
  */
 #include <linux/unaligned/access_ok.h>
 #include <linux/unaligned/generic.h>

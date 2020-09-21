@@ -27,6 +27,7 @@
 #include <linux/memblock.h>
 
 #include <asm/mmu.h>
+#include <asm/system.h>
 #include <asm/page.h>
 #include <asm/cacheflush.h>
 
@@ -41,7 +42,7 @@ int icache_44x_need_flush;
 
 unsigned long tlb_47x_boltmap[1024/8];
 
-static void ppc44x_update_tlb_hwater(void)
+static void __cpuinit ppc44x_update_tlb_hwater(void)
 {
 	extern unsigned int tlb_44x_patch_hwater_D[];
 	extern unsigned int tlb_44x_patch_hwater_I[];
@@ -134,7 +135,7 @@ static void __init ppc47x_update_boltmap(void)
 /*
  * "Pins" a 256MB TLB entry in AS0 for kernel lowmem for 47x type MMU
  */
-static void ppc47x_pin_tlb(unsigned int virt, unsigned int phys)
+static void __cpuinit ppc47x_pin_tlb(unsigned int virt, unsigned int phys)
 {
 	unsigned int rA;
 	int bolted;
@@ -229,7 +230,7 @@ void setup_initial_memory_limit(phys_addr_t first_memblock_base,
 }
 
 #ifdef CONFIG_SMP
-void __init mmu_init_secondary(int cpu)
+void __cpuinit mmu_init_secondary(int cpu)
 {
 	unsigned long addr;
 	unsigned long memstart = memstart_addr & ~(PPC_PIN_SIZE - 1);

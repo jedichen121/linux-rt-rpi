@@ -21,7 +21,7 @@
 
 #include "mpc10x.h"
 
-static const struct of_device_id of_bus_ids[] __initconst = {
+static __initdata struct of_device_id of_bus_ids[] = {
 	{ .type = "soc", },
 	{ .compatible = "simple-bus", },
 	{},
@@ -41,12 +41,12 @@ static int __init linkstation_add_bridge(struct device_node *dev)
 	struct pci_controller *hose;
 	const int *bus_range;
 
-	printk("Adding PCI host bridge %pOF\n", dev);
+	printk("Adding PCI host bridge %s\n", dev->full_name);
 
 	bus_range = of_get_property(dev, "bus-range", &len);
 	if (bus_range == NULL || len < 2 * sizeof(int))
-		printk(KERN_WARNING "Can't get bus-range for %pOF, assume"
-				" bus 0\n", dev);
+		printk(KERN_WARNING "Can't get bus-range for %s, assume"
+				" bus 0\n", dev->full_name);
 
 	hose = pcibios_alloc_controller(dev);
 	if (hose == NULL)
@@ -82,7 +82,8 @@ static void __init linkstation_init_IRQ(void)
 {
 	struct mpic *mpic;
 
-	mpic = mpic_alloc(NULL, 0, 0, 4, 0, " EPIC     ");
+	mpic = mpic_alloc(NULL, 0, MPIC_WANTS_RESET,
+			4, 32, " EPIC     ");
 	BUG_ON(mpic == NULL);
 
 	/* PCI IRQs */
@@ -100,7 +101,7 @@ static void __init linkstation_init_IRQ(void)
 extern void avr_uart_configure(void);
 extern void avr_uart_send(const char);
 
-static void __noreturn linkstation_restart(char *cmd)
+static void linkstation_restart(char *cmd)
 {
 	local_irq_disable();
 
@@ -113,7 +114,7 @@ static void __noreturn linkstation_restart(char *cmd)
 		avr_uart_send('G');	/* "kick" */
 }
 
-static void __noreturn linkstation_power_off(void)
+static void linkstation_power_off(void)
 {
 	local_irq_disable();
 
@@ -127,7 +128,7 @@ static void __noreturn linkstation_power_off(void)
 	/* NOTREACHED */
 }
 
-static void __noreturn linkstation_halt(void)
+static void linkstation_halt(void)
 {
 	linkstation_power_off();
 	/* NOTREACHED */
@@ -141,11 +142,12 @@ static void linkstation_show_cpuinfo(struct seq_file *m)
 
 static int __init linkstation_probe(void)
 {
-	if (!of_machine_is_compatible("linkstation"))
+	unsigned long root;
+
+	root = of_get_flat_dt_root();
+
+	if (!of_flat_dt_is_compatible(root, "linkstation"))
 		return 0;
-
-	pm_power_off = linkstation_power_off;
-
 	return 1;
 }
 
@@ -157,6 +159,7 @@ define_machine(linkstation){
 	.show_cpuinfo 		= linkstation_show_cpuinfo,
 	.get_irq 		= mpic_get_irq,
 	.restart 		= linkstation_restart,
+	.power_off 		= linkstation_power_off,
 	.halt	 		= linkstation_halt,
 	.calibrate_decr 	= generic_calibrate_decr,
 };

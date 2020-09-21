@@ -33,12 +33,8 @@
  */
 
 #include <linux/linkage.h>
-
 #include <asm/assembler.h>
-
-#include <mach/hardware.h>
-
-#include "iomap.h"
+#include <mach/io.h>
 #include "pm.h"
 
 		.text

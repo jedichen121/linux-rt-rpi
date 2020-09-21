@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  Driver for GRLIB serial ports (APBUART)
  *
@@ -72,8 +71,14 @@ static void apbuart_stop_rx(struct uart_port *port)
 	UART_PUT_CTRL(port, cr);
 }
 
+static void apbuart_enable_ms(struct uart_port *port)
+{
+	/* No modem status change interrupts for APBUART */
+}
+
 static void apbuart_rx_chars(struct uart_port *port)
 {
+	struct tty_struct *tty = port->state->port.tty;
 	unsigned int status, ch, rsr, flag;
 	unsigned int max_chars = port->fifosize;
 
@@ -121,9 +126,7 @@ static void apbuart_rx_chars(struct uart_port *port)
 		status = UART_GET_STATUS(port);
 	}
 
-	spin_unlock(&port->lock);
-	tty_flip_buffer_push(&port->state->port);
-	spin_lock(&port->lock);
+	tty_flip_buffer_push(tty);
 }
 
 static void apbuart_tx_chars(struct uart_port *port)
@@ -326,13 +329,14 @@ static int apbuart_verify_port(struct uart_port *port,
 	return ret;
 }
 
-static const struct uart_ops grlib_apbuart_ops = {
+static struct uart_ops grlib_apbuart_ops = {
 	.tx_empty = apbuart_tx_empty,
 	.set_mctrl = apbuart_set_mctrl,
 	.get_mctrl = apbuart_get_mctrl,
 	.stop_tx = apbuart_stop_tx,
 	.start_tx = apbuart_start_tx,
 	.stop_rx = apbuart_stop_rx,
+	.enable_ms = apbuart_enable_ms,
 	.break_ctl = apbuart_break_ctl,
 	.startup = apbuart_startup,
 	.shutdown = apbuart_shutdown,
@@ -550,7 +554,7 @@ static struct uart_driver grlib_apbuart_driver = {
 /* OF Platform Driver                                                       */
 /* ======================================================================== */
 
-static int apbuart_probe(struct platform_device *op)
+static int __devinit apbuart_probe(struct platform_device *op)
 {
 	int i;
 	struct uart_port *port = NULL;
@@ -573,7 +577,7 @@ static int apbuart_probe(struct platform_device *op)
 	return 0;
 }
 
-static const struct of_device_id apbuart_match[] = {
+static struct of_device_id __initdata apbuart_match[] = {
 	{
 	 .name = "GAISLER_APBUART",
 	 },
@@ -582,18 +586,18 @@ static const struct of_device_id apbuart_match[] = {
 	 },
 	{},
 };
-MODULE_DEVICE_TABLE(of, apbuart_match);
 
 static struct platform_driver grlib_apbuart_of_driver = {
 	.probe = apbuart_probe,
 	.driver = {
+		.owner = THIS_MODULE,
 		.name = "grlib-apbuart",
 		.of_match_table = apbuart_match,
 	},
 };
 
 
-static int __init grlib_apbuart_configure(void)
+static int grlib_apbuart_configure(void)
 {
 	struct device_node *np;
 	int line = 0;

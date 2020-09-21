@@ -24,13 +24,12 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <linux/of_address.h>
-#include <linux/of_irq.h>
 
 #include <asm/machdep.h>
 #include <asm/macio.h>
 #include <asm/pmac_feature.h>
 #include <asm/prom.h>
+#include <asm/pci-bridge.h>
 
 #undef DEBUG
 
@@ -133,18 +132,18 @@ static int macio_device_resume(struct device * dev)
 	return 0;
 }
 
-extern const struct attribute_group *macio_dev_groups[];
+extern struct device_attribute macio_dev_attrs[];
 
 struct bus_type macio_bus_type = {
        .name	= "macio",
        .match	= macio_bus_match,
-       .uevent = of_device_uevent_modalias,
+       .uevent = of_device_uevent,
        .probe	= macio_device_probe,
        .remove	= macio_device_remove,
        .shutdown = macio_device_shutdown,
        .suspend	= macio_device_suspend,
        .resume	= macio_device_resume,
-       .dev_groups = macio_dev_groups,
+       .dev_attrs = macio_dev_attrs,
 };
 
 static int __init macio_bus_driver_init(void)
@@ -236,7 +235,7 @@ static void macio_create_fixup_irq(struct macio_dev *dev, int index,
 	unsigned int irq;
 
 	irq = irq_create_mapping(NULL, line);
-	if (!irq) {
+	if (irq != NO_IRQ) {
 		dev->interrupt[index].start = irq;
 		dev->interrupt[index].flags = IORESOURCE_IRQ;
 		dev->interrupt[index].name = dev_name(&dev->ofdev.dev);
@@ -299,7 +298,7 @@ static void macio_setup_interrupts(struct macio_dev *dev)
 			break;
 		res = &dev->interrupt[j];
 		irq = irq_of_parse_and_map(np, i++);
-		if (!irq)
+		if (irq == NO_IRQ)
 			break;
 		res->start = irq;
 		res->flags = IORESOURCE_IRQ;
@@ -375,7 +374,6 @@ static struct macio_dev * macio_add_one_device(struct macio_chip *chip,
 	dev->ofdev.dev.of_node = np;
 	dev->ofdev.archdata.dma_mask = 0xffffffffUL;
 	dev->ofdev.dev.dma_mask = &dev->ofdev.archdata.dma_mask;
-	dev->ofdev.dev.coherent_dma_mask = dev->ofdev.archdata.dma_mask;
 	dev->ofdev.dev.parent = parent;
 	dev->ofdev.dev.bus = &macio_bus_type;
 	dev->ofdev.dev.release = macio_release_dev;
@@ -393,7 +391,6 @@ static struct macio_dev * macio_add_one_device(struct macio_chip *chip,
 	 * To get all the fields, copy all archdata
 	 */
 	dev->ofdev.dev.archdata = chip->lbus.pdev->dev.archdata;
-	dev->ofdev.dev.dma_ops = chip->lbus.pdev->dev.dma_ops;
 #endif /* CONFIG_PCI */
 
 #ifdef DEBUG
@@ -682,7 +679,7 @@ void macio_release_resources(struct macio_dev *dev)
 
 #ifdef CONFIG_PCI
 
-static int macio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+static int __devinit macio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	struct device_node* np;
 	struct macio_chip* chip;
@@ -742,7 +739,7 @@ static int macio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent
 	return 0;
 }
 
-static void macio_pci_remove(struct pci_dev* pdev)
+static void __devexit macio_pci_remove(struct pci_dev* pdev)
 {
 	panic("removing of macio-asic not supported !\n");
 }
@@ -751,7 +748,7 @@ static void macio_pci_remove(struct pci_dev* pdev)
  * MacIO is matched against any Apple ID, it's probe() function
  * will then decide wether it applies or not
  */
-static const struct pci_device_id pci_ids[] = { {
+static const struct pci_device_id __devinitdata pci_ids [] = { {
 	.vendor		= PCI_VENDOR_ID_APPLE,
 	.device		= PCI_ANY_ID,
 	.subvendor	= PCI_ANY_ID,

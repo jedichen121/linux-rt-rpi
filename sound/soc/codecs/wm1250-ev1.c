@@ -32,10 +32,10 @@ struct wm1250_priv {
 	struct gpio gpios[WM1250_EV1_NUM_GPIOS];
 };
 
-static int wm1250_ev1_set_bias_level(struct snd_soc_component *component,
+static int wm1250_ev1_set_bias_level(struct snd_soc_codec *codec,
 				     enum snd_soc_bias_level level)
 {
-	struct wm1250_priv *wm1250 = dev_get_drvdata(component->dev);
+	struct wm1250_priv *wm1250 = dev_get_drvdata(codec->dev);
 	int ena;
 
 	if (wm1250)
@@ -61,6 +61,8 @@ static int wm1250_ev1_set_bias_level(struct snd_soc_component *component,
 		break;
 	}
 
+	codec->dapm.bias_level = level;
+
 	return 0;
 }
 
@@ -77,82 +79,35 @@ static const struct snd_soc_dapm_route wm1250_ev1_dapm_routes[] = {
 	{ "WM1250 Output", NULL, "DAC" },
 };
 
-static int wm1250_ev1_hw_params(struct snd_pcm_substream *substream,
-				struct snd_pcm_hw_params *params,
-				struct snd_soc_dai *dai)
-{
-	struct wm1250_priv *wm1250 = snd_soc_component_get_drvdata(dai->component);
-
-	switch (params_rate(params)) {
-	case 8000:
-		gpio_set_value(wm1250->gpios[WM1250_EV1_GPIO_CLK_SEL0].gpio,
-			       1);
-		gpio_set_value(wm1250->gpios[WM1250_EV1_GPIO_CLK_SEL1].gpio,
-			       1);
-		break;
-	case 16000:
-		gpio_set_value(wm1250->gpios[WM1250_EV1_GPIO_CLK_SEL0].gpio,
-			       0);
-		gpio_set_value(wm1250->gpios[WM1250_EV1_GPIO_CLK_SEL1].gpio,
-			       1);
-		break;
-	case 32000:
-		gpio_set_value(wm1250->gpios[WM1250_EV1_GPIO_CLK_SEL0].gpio,
-			       1);
-		gpio_set_value(wm1250->gpios[WM1250_EV1_GPIO_CLK_SEL1].gpio,
-			       0);
-		break;
-	case 64000:
-		gpio_set_value(wm1250->gpios[WM1250_EV1_GPIO_CLK_SEL0].gpio,
-			       0);
-		gpio_set_value(wm1250->gpios[WM1250_EV1_GPIO_CLK_SEL1].gpio,
-			       0);
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	return 0;
-}
-
-static const struct snd_soc_dai_ops wm1250_ev1_ops = {
-	.hw_params = wm1250_ev1_hw_params,
-};
-
-#define WM1250_EV1_RATES (SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_16000 |\
-			  SNDRV_PCM_RATE_32000 | SNDRV_PCM_RATE_64000)
-
 static struct snd_soc_dai_driver wm1250_ev1_dai = {
 	.name = "wm1250-ev1",
 	.playback = {
 		.stream_name = "Playback",
 		.channels_min = 1,
-		.channels_max = 2,
-		.rates = WM1250_EV1_RATES,
+		.channels_max = 1,
+		.rates = SNDRV_PCM_RATE_8000,
 		.formats = SNDRV_PCM_FMTBIT_S16_LE,
 	},
 	.capture = {
 		.stream_name = "Capture",
 		.channels_min = 1,
-		.channels_max = 2,
-		.rates = WM1250_EV1_RATES,
+		.channels_max = 1,
+		.rates = SNDRV_PCM_RATE_8000,
 		.formats = SNDRV_PCM_FMTBIT_S16_LE,
 	},
-	.ops = &wm1250_ev1_ops,
 };
 
-static const struct snd_soc_component_driver soc_component_dev_wm1250_ev1 = {
-	.dapm_widgets		= wm1250_ev1_dapm_widgets,
-	.num_dapm_widgets	= ARRAY_SIZE(wm1250_ev1_dapm_widgets),
-	.dapm_routes		= wm1250_ev1_dapm_routes,
-	.num_dapm_routes	= ARRAY_SIZE(wm1250_ev1_dapm_routes),
-	.set_bias_level		= wm1250_ev1_set_bias_level,
-	.use_pmdown_time	= 1,
-	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
+static struct snd_soc_codec_driver soc_codec_dev_wm1250_ev1 = {
+	.dapm_widgets = wm1250_ev1_dapm_widgets,
+	.num_dapm_widgets = ARRAY_SIZE(wm1250_ev1_dapm_widgets),
+	.dapm_routes = wm1250_ev1_dapm_routes,
+	.num_dapm_routes = ARRAY_SIZE(wm1250_ev1_dapm_routes),
+
+	.set_bias_level = wm1250_ev1_set_bias_level,
+	.idle_bias_off = true,
 };
 
-static int wm1250_ev1_pdata(struct i2c_client *i2c)
+static int __devinit wm1250_ev1_pdata(struct i2c_client *i2c)
 {
 	struct wm1250_ev1_pdata *pdata = dev_get_platdata(&i2c->dev);
 	struct wm1250_priv *wm1250;
@@ -161,8 +116,9 @@ static int wm1250_ev1_pdata(struct i2c_client *i2c)
 	if (!pdata)
 		return 0;
 
-	wm1250 = devm_kzalloc(&i2c->dev, sizeof(*wm1250), GFP_KERNEL);
+	wm1250 = kzalloc(sizeof(*wm1250), GFP_KERNEL);
 	if (!wm1250) {
+		dev_err(&i2c->dev, "Unable to allocate private data\n");
 		ret = -ENOMEM;
 		goto err;
 	}
@@ -178,13 +134,15 @@ static int wm1250_ev1_pdata(struct i2c_client *i2c)
 	ret = gpio_request_array(wm1250->gpios, ARRAY_SIZE(wm1250->gpios));
 	if (ret != 0) {
 		dev_err(&i2c->dev, "Failed to get GPIOs: %d\n", ret);
-		goto err;
+		goto err_alloc;
 	}
 
 	dev_set_drvdata(&i2c->dev, wm1250);
 
 	return ret;
 
+err_alloc:
+	kfree(wm1250);
 err:
 	return ret;
 }
@@ -193,12 +151,14 @@ static void wm1250_ev1_free(struct i2c_client *i2c)
 {
 	struct wm1250_priv *wm1250 = dev_get_drvdata(&i2c->dev);
 
-	if (wm1250)
+	if (wm1250) {
 		gpio_free_array(wm1250->gpios, ARRAY_SIZE(wm1250->gpios));
+		kfree(wm1250);
+	}
 }
 
-static int wm1250_ev1_probe(struct i2c_client *i2c,
-			    const struct i2c_device_id *i2c_id)
+static int __devinit wm1250_ev1_probe(struct i2c_client *i2c,
+				      const struct i2c_device_id *i2c_id)
 {
 	int id, board, rev, ret;
 
@@ -224,7 +184,7 @@ static int wm1250_ev1_probe(struct i2c_client *i2c,
 	if (ret != 0)
 		return ret;
 
-	ret = devm_snd_soc_register_component(&i2c->dev, &soc_component_dev_wm1250_ev1,
+	ret = snd_soc_register_codec(&i2c->dev, &soc_codec_dev_wm1250_ev1,
 				     &wm1250_ev1_dai, 1);
 	if (ret != 0) {
 		dev_err(&i2c->dev, "Failed to register CODEC: %d\n", ret);
@@ -235,8 +195,9 @@ static int wm1250_ev1_probe(struct i2c_client *i2c,
 	return 0;
 }
 
-static int wm1250_ev1_remove(struct i2c_client *i2c)
+static int __devexit wm1250_ev1_remove(struct i2c_client *i2c)
 {
+	snd_soc_unregister_codec(&i2c->dev);
 	wm1250_ev1_free(i2c);
 
 	return 0;
@@ -251,13 +212,30 @@ MODULE_DEVICE_TABLE(i2c, wm1250_ev1_i2c_id);
 static struct i2c_driver wm1250_ev1_i2c_driver = {
 	.driver = {
 		.name = "wm1250-ev1",
+		.owner = THIS_MODULE,
 	},
 	.probe =    wm1250_ev1_probe,
-	.remove =   wm1250_ev1_remove,
+	.remove =   __devexit_p(wm1250_ev1_remove),
 	.id_table = wm1250_ev1_i2c_id,
 };
 
-module_i2c_driver(wm1250_ev1_i2c_driver);
+static int __init wm1250_ev1_modinit(void)
+{
+	int ret = 0;
+
+	ret = i2c_add_driver(&wm1250_ev1_i2c_driver);
+	if (ret != 0)
+		pr_err("Failed to register WM1250-EV1 I2C driver: %d\n", ret);
+
+	return ret;
+}
+module_init(wm1250_ev1_modinit);
+
+static void __exit wm1250_ev1_exit(void)
+{
+	i2c_del_driver(&wm1250_ev1_i2c_driver);
+}
+module_exit(wm1250_ev1_exit);
 
 MODULE_AUTHOR("Mark Brown <broonie@opensource.wolfsonmicro.com>");
 MODULE_DESCRIPTION("WM1250-EV1 audio I/O module driver");

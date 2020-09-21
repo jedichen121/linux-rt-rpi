@@ -29,6 +29,7 @@
 #include <linux/device.h>
 #include <linux/kthread.h>
 #include <linux/freezer.h>
+#include <asm/system.h>
 #include <asm/irq.h>
 
 #include <pcmcia/ss.h>
@@ -177,8 +178,8 @@ int pcmcia_register_socket(struct pcmcia_socket *socket)
 
 	wait_for_completion(&socket->thread_done);
 	if (!socket->thread) {
-		dev_warn(&socket->dev,
-			 "PCMCIA: warning: socket thread did not start\n");
+		dev_printk(KERN_WARNING, &socket->dev,
+			   "PCMCIA: warning: socket thread did not start\n");
 		return -EIO;
 	}
 
@@ -275,7 +276,7 @@ static int socket_reset(struct pcmcia_socket *skt)
 		msleep(unreset_check * 10);
 	}
 
-	dev_err(&skt->dev, "time out after reset\n");
+	dev_printk(KERN_ERR, &skt->dev, "time out after reset.\n");
 	return -ETIMEDOUT;
 }
 
@@ -325,8 +326,8 @@ static void socket_shutdown(struct pcmcia_socket *s)
 
 	s->ops->get_status(s, &status);
 	if (status & SS_POWERON) {
-		dev_err(&s->dev,
-			"*** DANGER *** unable to remove socket power\n");
+		dev_printk(KERN_ERR, &s->dev,
+			   "*** DANGER *** unable to remove socket power\n");
 	}
 
 	s->state &= ~SOCKET_INUSE;
@@ -356,13 +357,15 @@ static int socket_setup(struct pcmcia_socket *skt, int initial_delay)
 	}
 
 	if (status & SS_PENDING) {
-		dev_err(&skt->dev, "voltage interrogation timed out\n");
+		dev_printk(KERN_ERR, &skt->dev,
+			   "voltage interrogation timed out.\n");
 		return -ETIMEDOUT;
 	}
 
 	if (status & SS_CARDBUS) {
 		if (!(skt->features & SS_CAP_CARDBUS)) {
-			dev_err(&skt->dev, "cardbus cards are not supported\n");
+			dev_printk(KERN_ERR, &skt->dev,
+				"cardbus cards are not supported.\n");
 			return -EINVAL;
 		}
 		skt->state |= SOCKET_CARDBUS;
@@ -377,7 +380,7 @@ static int socket_setup(struct pcmcia_socket *skt, int initial_delay)
 	else if (!(status & SS_XVCARD))
 		skt->socket.Vcc = skt->socket.Vpp = 50;
 	else {
-		dev_err(&skt->dev, "unsupported voltage key\n");
+		dev_printk(KERN_ERR, &skt->dev, "unsupported voltage key.\n");
 		return -EIO;
 	}
 
@@ -394,7 +397,7 @@ static int socket_setup(struct pcmcia_socket *skt, int initial_delay)
 
 	skt->ops->get_status(skt, &status);
 	if (!(status & SS_POWERON)) {
-		dev_err(&skt->dev, "unable to apply power\n");
+		dev_printk(KERN_ERR, &skt->dev, "unable to apply power.\n");
 		return -EIO;
 	}
 
@@ -427,7 +430,8 @@ static int socket_insert(struct pcmcia_socket *skt)
 	if (ret == 0) {
 		skt->state |= SOCKET_PRESENT;
 
-		dev_notice(&skt->dev, "pccard: %s card inserted into slot %d\n",
+		dev_printk(KERN_NOTICE, &skt->dev,
+			   "pccard: %s card inserted into slot %d\n",
 			   (skt->state & SOCKET_CARDBUS) ? "CardBus" : "PCMCIA",
 			   skt->sock);
 
@@ -452,20 +456,17 @@ static int socket_insert(struct pcmcia_socket *skt)
 
 static int socket_suspend(struct pcmcia_socket *skt)
 {
-	if ((skt->state & SOCKET_SUSPEND) && !(skt->state & SOCKET_IN_RESUME))
+	if (skt->state & SOCKET_SUSPEND)
 		return -EBUSY;
 
 	mutex_lock(&skt->ops_mutex);
-	/* store state on first suspend, but not after spurious wakeups */
-	if (!(skt->state & SOCKET_IN_RESUME))
-		skt->suspended_state = skt->state;
+	skt->suspended_state = skt->state;
 
 	skt->socket = dead_socket;
 	skt->ops->set_socket(skt, &skt->socket);
 	if (skt->ops->suspend)
 		skt->ops->suspend(skt);
 	skt->state |= SOCKET_SUSPEND;
-	skt->state &= ~SOCKET_IN_RESUME;
 	mutex_unlock(&skt->ops_mutex);
 	return 0;
 }
@@ -478,17 +479,16 @@ static int socket_early_resume(struct pcmcia_socket *skt)
 	skt->ops->set_socket(skt, &skt->socket);
 	if (skt->state & SOCKET_PRESENT)
 		skt->resume_status = socket_setup(skt, resume_delay);
-	skt->state |= SOCKET_IN_RESUME;
 	mutex_unlock(&skt->ops_mutex);
 	return 0;
 }
 
 static int socket_late_resume(struct pcmcia_socket *skt)
 {
-	int ret = 0;
+	int ret;
 
 	mutex_lock(&skt->ops_mutex);
-	skt->state &= ~(SOCKET_SUSPEND | SOCKET_IN_RESUME);
+	skt->state &= ~SOCKET_SUSPEND;
 	mutex_unlock(&skt->ops_mutex);
 
 	if (!(skt->state & SOCKET_PRESENT)) {
@@ -512,31 +512,19 @@ static int socket_late_resume(struct pcmcia_socket *skt)
 		return socket_insert(skt);
 	}
 
-	if (!(skt->state & SOCKET_CARDBUS) && (skt->callback))
-		ret = skt->callback->early_resume(skt);
-	return ret;
-}
-
-/*
- * Finalize the resume. In case of a cardbus socket, we have
- * to rebind the devices as we can't be certain that it has been
- * replaced, or not.
- */
-static int socket_complete_resume(struct pcmcia_socket *skt)
-{
-	int ret = 0;
 #ifdef CONFIG_CARDBUS
 	if (skt->state & SOCKET_CARDBUS) {
 		/* We can't be sure the CardBus card is the same
 		 * as the one previously inserted. Therefore, remove
 		 * and re-add... */
 		cb_free(skt);
-		ret = cb_alloc(skt);
-		if (ret)
-			cb_free(skt);
+		cb_alloc(skt);
+		return 0;
 	}
 #endif
-	return ret;
+	if (!(skt->state & SOCKET_CARDBUS) && (skt->callback))
+		skt->callback->early_resume(skt);
+	return 0;
 }
 
 /*
@@ -546,20 +534,17 @@ static int socket_complete_resume(struct pcmcia_socket *skt)
  */
 static int socket_resume(struct pcmcia_socket *skt)
 {
-	int err;
 	if (!(skt->state & SOCKET_SUSPEND))
 		return -EBUSY;
 
 	socket_early_resume(skt);
-	err = socket_late_resume(skt);
-	if (!err)
-		err = socket_complete_resume(skt);
-	return err;
+	return socket_late_resume(skt);
 }
 
 static void socket_remove(struct pcmcia_socket *skt)
 {
-	dev_notice(&skt->dev, "pccard: card ejected from slot %d\n", skt->sock);
+	dev_printk(KERN_NOTICE, &skt->dev,
+		   "pccard: card ejected from slot %d\n", skt->sock);
 	socket_shutdown(skt);
 }
 
@@ -605,7 +590,8 @@ static int pccardd(void *__skt)
 	/* register with the device core */
 	ret = device_register(&skt->dev);
 	if (ret) {
-		dev_warn(&skt->dev, "PCMCIA: unable to register socket\n");
+		dev_printk(KERN_WARNING, &skt->dev,
+			   "PCMCIA: unable to register socket\n");
 		skt->thread = NULL;
 		complete(&skt->thread_done);
 		return 0;
@@ -624,6 +610,8 @@ static int pccardd(void *__skt)
 		unsigned long flags;
 		unsigned int events;
 		unsigned int sysfs_events;
+
+		set_current_state(TASK_INTERRUPTIBLE);
 
 		spin_lock_irqsave(&skt->thread_lock, flags);
 		events = skt->thread_events;
@@ -672,15 +660,11 @@ static int pccardd(void *__skt)
 		if (kthread_should_stop())
 			break;
 
-		set_current_state(TASK_INTERRUPTIBLE);
-
 		schedule();
-
-		/* make sure we are running */
-		__set_current_state(TASK_RUNNING);
-
 		try_to_freeze();
 	}
+	/* make sure we are running before we exit */
+	set_current_state(TASK_RUNNING);
 
 	/* shut down socket, if a device is still present */
 	if (skt->state & SOCKET_PRESENT) {
@@ -865,12 +849,6 @@ static int __used pcmcia_socket_dev_resume(struct device *dev)
 	return __pcmcia_pm_op(dev, socket_late_resume);
 }
 
-static void __used pcmcia_socket_dev_complete(struct device *dev)
-{
-	WARN(__pcmcia_pm_op(dev, socket_complete_resume),
-		"failed to complete resume");
-}
-
 static const struct dev_pm_ops pcmcia_socket_pm_ops = {
 	/* dev_resume may be called with IRQs enabled */
 	SET_SYSTEM_SLEEP_PM_OPS(NULL,
@@ -885,7 +863,6 @@ static const struct dev_pm_ops pcmcia_socket_pm_ops = {
 	.resume_noirq = pcmcia_socket_dev_resume_noirq,
 	.thaw_noirq = pcmcia_socket_dev_resume_noirq,
 	.restore_noirq = pcmcia_socket_dev_resume_noirq,
-	.complete = pcmcia_socket_dev_complete,
 };
 
 #define PCMCIA_SOCKET_CLASS_PM_OPS (&pcmcia_socket_pm_ops)

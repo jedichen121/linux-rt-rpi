@@ -29,32 +29,22 @@
  */
 
 #include <linux/export.h>
-#include <linux/highmem.h>
-
-#include <drm/drm_cache.h>
+#include "drmP.h"
 
 #if defined(CONFIG_X86)
-#include <asm/smp.h>
-
-/*
- * clflushopt is an unordered instruction which needs fencing with mfence or
- * sfence to avoid ordering issues.  For drm_clflush_page this fencing happens
- * in the caller.
- */
 static void
 drm_clflush_page(struct page *page)
 {
 	uint8_t *page_virtual;
 	unsigned int i;
-	const int size = boot_cpu_data.x86_clflush_size;
 
 	if (unlikely(page == NULL))
 		return;
 
-	page_virtual = kmap_atomic(page);
-	for (i = 0; i < PAGE_SIZE; i += size)
-		clflushopt(page_virtual + i);
-	kunmap_atomic(page_virtual);
+	page_virtual = kmap_atomic(page, KM_USER0);
+	for (i = 0; i < PAGE_SIZE; i += boot_cpu_data.x86_clflush_size)
+		clflush(page_virtual + i);
+	kunmap_atomic(page_virtual, KM_USER0);
 }
 
 static void drm_cache_flush_clflush(struct page *pages[],
@@ -67,28 +57,26 @@ static void drm_cache_flush_clflush(struct page *pages[],
 		drm_clflush_page(*pages++);
 	mb();
 }
+
+static void
+drm_clflush_ipi_handler(void *null)
+{
+	wbinvd();
+}
 #endif
 
-/**
- * drm_clflush_pages - Flush dcache lines of a set of pages.
- * @pages: List of pages to be flushed.
- * @num_pages: Number of pages in the array.
- *
- * Flush every data cache line entry that points to an address belonging
- * to a page in the array.
- */
 void
 drm_clflush_pages(struct page *pages[], unsigned long num_pages)
 {
 
 #if defined(CONFIG_X86)
-	if (static_cpu_has(X86_FEATURE_CLFLUSH)) {
+	if (cpu_has_clflush) {
 		drm_cache_flush_clflush(pages, num_pages);
 		return;
 	}
 
-	if (wbinvd_on_all_cpus())
-		pr_err("Timed out waiting for cache flush\n");
+	if (on_each_cpu(drm_clflush_ipi_handler, NULL, 1) != 0)
+		printk(KERN_ERR "Timed out waiting for cache flush.\n");
 
 #elif defined(__powerpc__)
 	unsigned long i;
@@ -99,78 +87,14 @@ drm_clflush_pages(struct page *pages[], unsigned long num_pages)
 		if (unlikely(page == NULL))
 			continue;
 
-		page_virtual = kmap_atomic(page);
+		page_virtual = kmap_atomic(page, KM_USER0);
 		flush_dcache_range((unsigned long)page_virtual,
 				   (unsigned long)page_virtual + PAGE_SIZE);
-		kunmap_atomic(page_virtual);
+		kunmap_atomic(page_virtual, KM_USER0);
 	}
 #else
-	pr_err("Architecture has no drm_cache.c support\n");
+	printk(KERN_ERR "Architecture has no drm_cache.c support\n");
 	WARN_ON_ONCE(1);
 #endif
 }
 EXPORT_SYMBOL(drm_clflush_pages);
-
-/**
- * drm_clflush_sg - Flush dcache lines pointing to a scather-gather.
- * @st: struct sg_table.
- *
- * Flush every data cache line entry that points to an address in the
- * sg.
- */
-void
-drm_clflush_sg(struct sg_table *st)
-{
-#if defined(CONFIG_X86)
-	if (static_cpu_has(X86_FEATURE_CLFLUSH)) {
-		struct sg_page_iter sg_iter;
-
-		mb();
-		for_each_sg_page(st->sgl, &sg_iter, st->nents, 0)
-			drm_clflush_page(sg_page_iter_page(&sg_iter));
-		mb();
-
-		return;
-	}
-
-	if (wbinvd_on_all_cpus())
-		pr_err("Timed out waiting for cache flush\n");
-#else
-	pr_err("Architecture has no drm_cache.c support\n");
-	WARN_ON_ONCE(1);
-#endif
-}
-EXPORT_SYMBOL(drm_clflush_sg);
-
-/**
- * drm_clflush_virt_range - Flush dcache lines of a region
- * @addr: Initial kernel memory address.
- * @length: Region size.
- *
- * Flush every data cache line entry that points to an address in the
- * region requested.
- */
-void
-drm_clflush_virt_range(void *addr, unsigned long length)
-{
-#if defined(CONFIG_X86)
-	if (static_cpu_has(X86_FEATURE_CLFLUSH)) {
-		const int size = boot_cpu_data.x86_clflush_size;
-		void *end = addr + length;
-		addr = (void *)(((unsigned long)addr) & -size);
-		mb();
-		for (; addr < end; addr += size)
-			clflushopt(addr);
-		clflushopt(end - 1); /* force serialisation */
-		mb();
-		return;
-	}
-
-	if (wbinvd_on_all_cpus())
-		pr_err("Timed out waiting for cache flush\n");
-#else
-	pr_err("Architecture has no drm_cache.c support\n");
-	WARN_ON_ONCE(1);
-#endif
-}
-EXPORT_SYMBOL(drm_clflush_virt_range);

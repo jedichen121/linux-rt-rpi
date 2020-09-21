@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /* ns87303.h: Configuration Register Description for the
  *            National Semiconductor PC87303 (SuperIO).
  *
@@ -80,6 +79,7 @@
 
 #include <linux/spinlock.h>
 
+#include <asm/system.h>
 #include <asm/io.h>
 
 extern spinlock_t ns87303_lock;

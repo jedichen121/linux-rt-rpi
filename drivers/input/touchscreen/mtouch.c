@@ -21,6 +21,7 @@
 #include <linux/slab.h>
 #include <linux/input.h>
 #include <linux/serio.h>
+#include <linux/init.h>
 
 #define DRIVER_DESC	"MicroTouch serial touchscreen driver"
 
@@ -178,7 +179,7 @@ static int mtouch_connect(struct serio *serio, struct serio_driver *drv)
  * The serio driver structure.
  */
 
-static const struct serio_device_id mtouch_serio_ids[] = {
+static struct serio_device_id mtouch_serio_ids[] = {
 	{
 		.type	= SERIO_RS232,
 		.proto	= SERIO_MICROTOUCH,
@@ -201,4 +202,19 @@ static struct serio_driver mtouch_drv = {
 	.disconnect	= mtouch_disconnect,
 };
 
-module_serio_driver(mtouch_drv);
+/*
+ * The functions for inserting/removing us as a module.
+ */
+
+static int __init mtouch_init(void)
+{
+	return serio_register_driver(&mtouch_drv);
+}
+
+static void __exit mtouch_exit(void)
+{
+	serio_unregister_driver(&mtouch_drv);
+}
+
+module_init(mtouch_init);
+module_exit(mtouch_exit);

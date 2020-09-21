@@ -1,16 +1,18 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
+ *  include/asm-s390/ebcdic.h
  *    EBCDIC -> ASCII, ASCII -> EBCDIC conversion routines.
  *
  *  S390 version
- *    Copyright IBM Corp. 1999
+ *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
  *    Author(s): Martin Schwidefsky <schwidefsky@de.ibm.com>
  */
 
 #ifndef _EBCDIC_H
 #define _EBCDIC_H
 
-#include <linux/types.h>
+#ifndef _S390_TYPES_H
+#include <types.h>
+#endif
 
 extern __u8 _ascebc_500[256];   /* ASCII -> EBCDIC 500 conversion table */
 extern __u8 _ebcasc_500[256];   /* EBCDIC 500 -> ASCII conversion table */

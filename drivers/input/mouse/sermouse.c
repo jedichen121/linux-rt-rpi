@@ -20,6 +20,10 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ *
+ * Should you need to contact me, the author, you can do so either by
+ * e-mail - mail your message to <vojtech@ucw.cz>, or by paper mail:
+ * Vojtech Pavlik, Simunkova 1594, Prague 8, 182 00 Czech Republic
  */
 
 #include <linux/delay.h>
@@ -28,6 +32,7 @@
 #include <linux/interrupt.h>
 #include <linux/input.h>
 #include <linux/serio.h>
+#include <linux/init.h>
 
 #define DRIVER_DESC	"Serial mouse driver"
 
@@ -139,8 +144,7 @@ static void sermouse_process_ms(struct sermouse *sermouse, signed char data)
 			switch (sermouse->type) {
 
 				case SERIO_MS:
-					sermouse->type = SERIO_MP;
-					/* fall through */
+					 sermouse->type = SERIO_MP;
 
 				case SERIO_MP:
 					if ((data >> 2) & 3) break;	/* M++ Wireless Extension packet. */
@@ -151,7 +155,6 @@ static void sermouse_process_ms(struct sermouse *sermouse, signed char data)
 				case SERIO_MZP:
 				case SERIO_MZPP:
 					input_report_key(dev, BTN_SIDE,   (data >> 5) & 1);
-					/* fall through */
 
 				case SERIO_MZ:
 					input_report_key(dev, BTN_MIDDLE, (data >> 4) & 1);
@@ -352,4 +355,15 @@ static struct serio_driver sermouse_drv = {
 	.disconnect	= sermouse_disconnect,
 };
 
-module_serio_driver(sermouse_drv);
+static int __init sermouse_init(void)
+{
+	return serio_register_driver(&sermouse_drv);
+}
+
+static void __exit sermouse_exit(void)
+{
+	serio_unregister_driver(&sermouse_drv);
+}
+
+module_init(sermouse_init);
+module_exit(sermouse_exit);

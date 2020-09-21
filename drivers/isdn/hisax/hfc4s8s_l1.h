@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /***************************************************************/
 /*  $Id: hfc4s8s_l1.h,v 1.1 2005/02/02 17:28:55 martinb1 Exp $ */
 /*                                                             */
@@ -16,10 +15,10 @@
 
 
 /*
- *  include Genero generated HFC-4S/8S header file hfc48scu.h
- *  for complete register description. This will define _HFC48SCU_H_
- *  to prevent redefinitions
- */
+*  include Genero generated HFC-4S/8S header file hfc48scu.h
+*  for complete register description. This will define _HFC48SCU_H_
+*  to prevent redefinitions
+*/
 
 // #include "hfc48scu.h"
 

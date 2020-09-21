@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: GPL-2.0
 #
 # Sibyte SB1250 / BCM1480 family of SOCs
 #
@@ -26,4 +25,3 @@ obj-$(CONFIG_SIBYTE_RHONE)	+= swarm/
 obj-$(CONFIG_SIBYTE_SENTOSA)	+= swarm/
 obj-$(CONFIG_SIBYTE_SWARM)	+= swarm/
 obj-$(CONFIG_SIBYTE_BIGSUR)	+= swarm/
-obj-$(CONFIG_SIBYTE_LITTLESUR)	+= swarm/

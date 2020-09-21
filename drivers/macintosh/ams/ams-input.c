@@ -19,11 +19,11 @@
 
 #include "ams.h"
 
-static bool joystick;
+static unsigned int joystick;
 module_param(joystick, bool, S_IRUGO);
 MODULE_PARM_DESC(joystick, "Enable the input class device on module load");
 
-static bool invert;
+static unsigned int invert;
 module_param(invert, bool, S_IWUSR | S_IRUGO);
 MODULE_PARM_DESC(invert, "Invert input data on X and Y axis");
 
@@ -91,7 +91,7 @@ static int ams_input_enable(void)
 		return error;
 	}
 
-	joystick = true;
+	joystick = 1;
 
 	return 0;
 }
@@ -104,7 +104,7 @@ static void ams_input_disable(void)
 		ams_info.idev = NULL;
 	}
 
-	joystick = false;
+	joystick = 0;
 }
 
 static ssize_t ams_input_show_joystick(struct device *dev,
@@ -118,12 +118,8 @@ static ssize_t ams_input_store_joystick(struct device *dev,
 {
 	unsigned long enable;
 	int error = 0;
-	int ret;
 
-	ret = kstrtoul(buf, 0, &enable);
-	if (ret)
-		return ret;
-	if (enable > 1)
+	if (strict_strtoul(buf, 0, &enable) || enable > 1)
 		return -EINVAL;
 
 	mutex_lock(&ams_input_mutex);

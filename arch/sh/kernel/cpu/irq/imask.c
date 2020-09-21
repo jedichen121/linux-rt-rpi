@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/sh/kernel/cpu/irq/imask.c
  *
@@ -20,6 +19,7 @@
 #include <linux/cache.h>
 #include <linux/irq.h>
 #include <linux/bitmap.h>
+#include <asm/system.h>
 #include <asm/irq.h>
 
 /* Bitmap of IRQ masked */

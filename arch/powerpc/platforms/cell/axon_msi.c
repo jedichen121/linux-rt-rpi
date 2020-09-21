@@ -15,14 +15,13 @@
 #include <linux/msi.h>
 #include <linux/export.h>
 #include <linux/of_platform.h>
+#include <linux/debugfs.h>
 #include <linux/slab.h>
 
-#include <asm/debugfs.h>
 #include <asm/dcr.h>
 #include <asm/machdep.h>
 #include <asm/prom.h>
 
-#include "cell.h"
 
 /*
  * MSIC registers, specified as offsets from dcr_base
@@ -68,7 +67,7 @@
 
 
 struct axon_msic {
-	struct irq_domain *irq_domain;
+	struct irq_host *irq_host;
 	__le32 *fifo_virt;
 	dma_addr_t fifo_phys;
 	dcr_host_t dcr_host;
@@ -93,10 +92,10 @@ static void msic_dcr_write(struct axon_msic *msic, unsigned int dcr_n, u32 val)
 	dcr_write(msic->dcr_host, dcr_n, val);
 }
 
-static void axon_msi_cascade(struct irq_desc *desc)
+static void axon_msi_cascade(unsigned int irq, struct irq_desc *desc)
 {
 	struct irq_chip *chip = irq_desc_get_chip(desc);
-	struct axon_msic *msic = irq_desc_get_handler_data(desc);
+	struct axon_msic *msic = irq_get_handler_data(irq);
 	u32 write_offset, msi;
 	int idx;
 	int retry = 0;
@@ -115,7 +114,7 @@ static void axon_msi_cascade(struct irq_desc *desc)
 		pr_devel("axon_msi: woff %x roff %x msi %x\n",
 			  write_offset, msic->read_offset, msi);
 
-		if (msi < nr_irqs && irq_get_chip_data(msi) == msic) {
+		if (msi < NR_IRQS && irq_get_chip_data(msi) == msic) {
 			generic_handle_irq(msi);
 			msic->fifo_virt[idx] = cpu_to_le32(0xffffffff);
 		} else {
@@ -153,7 +152,7 @@ static void axon_msi_cascade(struct irq_desc *desc)
 
 static struct axon_msic *find_msi_translator(struct pci_dev *dev)
 {
-	struct irq_domain *irq_domain;
+	struct irq_host *irq_host;
 	struct device_node *dn, *tmp;
 	const phandle *ph;
 	struct axon_msic *msic = NULL;
@@ -185,19 +184,27 @@ static struct axon_msic *find_msi_translator(struct pci_dev *dev)
 		goto out_error;
 	}
 
-	irq_domain = irq_find_host(dn);
-	if (!irq_domain) {
-		dev_dbg(&dev->dev, "axon_msi: no irq_domain found for node %pOF\n",
-			dn);
+	irq_host = irq_find_host(dn);
+	if (!irq_host) {
+		dev_dbg(&dev->dev, "axon_msi: no irq_host found for node %s\n",
+			dn->full_name);
 		goto out_error;
 	}
 
-	msic = irq_domain->host_data;
+	msic = irq_host->host_data;
 
 out_error:
 	of_node_put(dn);
 
 	return msic;
+}
+
+static int axon_msi_check_device(struct pci_dev *dev, int nvec, int type)
+{
+	if (!find_msi_translator(dev))
+		return -ENODEV;
+
+	return 0;
 }
 
 static int setup_msi_msg_address(struct pci_dev *dev, struct msi_msg *msg)
@@ -213,7 +220,7 @@ static int setup_msi_msg_address(struct pci_dev *dev, struct msi_msg *msg)
 		return -ENODEV;
 	}
 
-	entry = first_pci_msi_entry(dev);
+	entry = list_first_entry(&dev->msi_list, struct msi_desc, list);
 
 	for (; dn; dn = of_get_next_parent(dn)) {
 		if (entry->msi_attrib.is_64) {
@@ -269,9 +276,12 @@ static int axon_msi_setup_msi_irqs(struct pci_dev *dev, int nvec, int type)
 	if (rc)
 		return rc;
 
-	for_each_pci_msi_entry(entry, dev) {
-		virq = irq_create_direct_mapping(msic->irq_domain);
-		if (!virq) {
+	/* We rely on being able to stash a virq in a u16 */
+	BUILD_BUG_ON(NR_IRQS > 65536);
+
+	list_for_each_entry(entry, &dev->msi_list, list) {
+		virq = irq_create_direct_mapping(msic->irq_host);
+		if (virq == NO_IRQ) {
 			dev_warn(&dev->dev,
 				 "axon_msi: virq allocation failed!\n");
 			return -1;
@@ -280,7 +290,7 @@ static int axon_msi_setup_msi_irqs(struct pci_dev *dev, int nvec, int type)
 
 		irq_set_msi_desc(virq, entry);
 		msg.data = virq;
-		pci_write_msi_msg(virq, &msg);
+		write_msi_msg(virq, &msg);
 	}
 
 	return 0;
@@ -292,8 +302,8 @@ static void axon_msi_teardown_msi_irqs(struct pci_dev *dev)
 
 	dev_dbg(&dev->dev, "axon_msi: tearing down msi irqs\n");
 
-	for_each_pci_msi_entry(entry, dev) {
-		if (!entry->irq)
+	list_for_each_entry(entry, &dev->msi_list, list) {
+		if (entry->irq == NO_IRQ)
 			continue;
 
 		irq_set_msi_desc(entry->irq, NULL);
@@ -302,13 +312,13 @@ static void axon_msi_teardown_msi_irqs(struct pci_dev *dev)
 }
 
 static struct irq_chip msic_irq_chip = {
-	.irq_mask	= pci_msi_mask_irq,
-	.irq_unmask	= pci_msi_unmask_irq,
-	.irq_shutdown	= pci_msi_mask_irq,
+	.irq_mask	= mask_msi_irq,
+	.irq_unmask	= unmask_msi_irq,
+	.irq_shutdown	= mask_msi_irq,
 	.name		= "AXON-MSI",
 };
 
-static int msic_host_map(struct irq_domain *h, unsigned int virq,
+static int msic_host_map(struct irq_host *h, unsigned int virq,
 			 irq_hw_number_t hw)
 {
 	irq_set_chip_data(virq, h->host_data);
@@ -317,7 +327,7 @@ static int msic_host_map(struct irq_domain *h, unsigned int virq,
 	return 0;
 }
 
-static const struct irq_domain_ops msic_host_ops = {
+static struct irq_host_ops msic_host_ops = {
 	.map	= msic_host_map,
 };
 
@@ -326,8 +336,8 @@ static void axon_msi_shutdown(struct platform_device *device)
 	struct axon_msic *msic = dev_get_drvdata(&device->dev);
 	u32 tmp;
 
-	pr_devel("axon_msi: disabling %pOF\n",
-		 irq_domain_get_of_node(msic->irq_domain));
+	pr_devel("axon_msi: disabling %s\n",
+		  msic->irq_host->of_node->full_name);
 	tmp  = dcr_read(msic->dcr_host, MSIC_CTRL_REG);
 	tmp &= ~MSIC_CTRL_ENABLE & ~MSIC_CTRL_IRQ_ENABLE;
 	msic_dcr_write(msic, MSIC_CTRL_REG, tmp);
@@ -340,12 +350,12 @@ static int axon_msi_probe(struct platform_device *device)
 	unsigned int virq;
 	int dcr_base, dcr_len;
 
-	pr_devel("axon_msi: setting up dn %pOF\n", dn);
+	pr_devel("axon_msi: setting up dn %s\n", dn->full_name);
 
-	msic = kzalloc(sizeof(*msic), GFP_KERNEL);
+	msic = kzalloc(sizeof(struct axon_msic), GFP_KERNEL);
 	if (!msic) {
-		printk(KERN_ERR "axon_msi: couldn't allocate msic for %pOF\n",
-		       dn);
+		printk(KERN_ERR "axon_msi: couldn't allocate msic for %s\n",
+		       dn->full_name);
 		goto out;
 	}
 
@@ -354,41 +364,43 @@ static int axon_msi_probe(struct platform_device *device)
 
 	if (dcr_base == 0 || dcr_len == 0) {
 		printk(KERN_ERR
-		       "axon_msi: couldn't parse dcr properties on %pOF\n",
-			dn);
+		       "axon_msi: couldn't parse dcr properties on %s\n",
+			dn->full_name);
 		goto out_free_msic;
 	}
 
 	msic->dcr_host = dcr_map(dn, dcr_base, dcr_len);
 	if (!DCR_MAP_OK(msic->dcr_host)) {
-		printk(KERN_ERR "axon_msi: dcr_map failed for %pOF\n",
-		       dn);
+		printk(KERN_ERR "axon_msi: dcr_map failed for %s\n",
+		       dn->full_name);
 		goto out_free_msic;
 	}
 
 	msic->fifo_virt = dma_alloc_coherent(&device->dev, MSIC_FIFO_SIZE_BYTES,
 					     &msic->fifo_phys, GFP_KERNEL);
 	if (!msic->fifo_virt) {
-		printk(KERN_ERR "axon_msi: couldn't allocate fifo for %pOF\n",
-		       dn);
+		printk(KERN_ERR "axon_msi: couldn't allocate fifo for %s\n",
+		       dn->full_name);
 		goto out_free_msic;
 	}
 
 	virq = irq_of_parse_and_map(dn, 0);
-	if (!virq) {
-		printk(KERN_ERR "axon_msi: irq parse and map failed for %pOF\n",
-		       dn);
+	if (virq == NO_IRQ) {
+		printk(KERN_ERR "axon_msi: irq parse and map failed for %s\n",
+		       dn->full_name);
 		goto out_free_fifo;
 	}
 	memset(msic->fifo_virt, 0xff, MSIC_FIFO_SIZE_BYTES);
 
-	/* We rely on being able to stash a virq in a u16, so limit irqs to < 65536 */
-	msic->irq_domain = irq_domain_add_nomap(dn, 65536, &msic_host_ops, msic);
-	if (!msic->irq_domain) {
-		printk(KERN_ERR "axon_msi: couldn't allocate irq_domain for %pOF\n",
-		       dn);
+	msic->irq_host = irq_alloc_host(dn, IRQ_HOST_MAP_NOMAP,
+					NR_IRQS, &msic_host_ops, 0);
+	if (!msic->irq_host) {
+		printk(KERN_ERR "axon_msi: couldn't allocate irq_host for %s\n",
+		       dn->full_name);
 		goto out_free_fifo;
 	}
+
+	msic->irq_host->host_data = msic;
 
 	irq_set_handler_data(virq, msic);
 	irq_set_chained_handler(virq, axon_msi_cascade);
@@ -407,12 +419,13 @@ static int axon_msi_probe(struct platform_device *device)
 
 	dev_set_drvdata(&device->dev, msic);
 
-	cell_pci_controller_ops.setup_msi_irqs = axon_msi_setup_msi_irqs;
-	cell_pci_controller_ops.teardown_msi_irqs = axon_msi_teardown_msi_irqs;
+	ppc_md.setup_msi_irqs = axon_msi_setup_msi_irqs;
+	ppc_md.teardown_msi_irqs = axon_msi_teardown_msi_irqs;
+	ppc_md.msi_check_device = axon_msi_check_device;
 
 	axon_msi_debug_setup(dn, msic);
 
-	printk(KERN_DEBUG "axon_msi: setup MSIC on %pOF\n", dn);
+	printk(KERN_DEBUG "axon_msi: setup MSIC on %s\n", dn->full_name);
 
 	return 0;
 
@@ -438,6 +451,7 @@ static struct platform_driver axon_msi_driver = {
 	.shutdown	= axon_msi_shutdown,
 	.driver = {
 		.name = "axon-msi",
+		.owner = THIS_MODULE,
 		.of_match_table = axon_msi_device_id,
 	},
 };

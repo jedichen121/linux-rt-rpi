@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ALPHA_T2__H__
 #define __ALPHA_T2__H__
 
@@ -8,6 +7,7 @@
 #include <linux/types.h>
 #include <linux/spinlock.h>
 #include <asm/compiler.h>
+#include <asm/system.h>
 
 /*
  * T2 is the internal name for the core logic chipset which provides

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_KDEBUG_H
 #define __ASM_SH_KDEBUG_H
 
@@ -10,9 +9,5 @@ enum die_val {
 	DIE_BREAKPOINT,
 	DIE_SSTEP,
 };
-
-/* arch/sh/kernel/dumpstack.c */
-extern void printk_address(unsigned long address, int reliable);
-extern void dump_mem(const char *str, unsigned long bottom, unsigned long top);
 
 #endif /* __ASM_SH_KDEBUG_H */

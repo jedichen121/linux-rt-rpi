@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * IRQ flags defines.
  *
@@ -10,9 +9,6 @@
 
 #ifndef _ASM_IA64_IRQFLAGS_H
 #define _ASM_IA64_IRQFLAGS_H
-
-#include <asm/pal.h>
-#include <asm/kregs.h>
 
 #ifdef CONFIG_IA64_DEBUG_IRQ
 extern unsigned long last_cli_ip;
@@ -91,7 +87,6 @@ static inline bool arch_irqs_disabled(void)
 
 static inline void arch_safe_halt(void)
 {
-	arch_local_irq_enable();
 	ia64_pal_halt_light();	/* PAL_HALT_LIGHT */
 }
 

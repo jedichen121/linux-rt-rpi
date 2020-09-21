@@ -21,6 +21,7 @@
  *
  */      
 
+#include <asm/io.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/init.h>
@@ -39,7 +40,7 @@ struct hoontech_spec {
 	unsigned short boxconfig[4];
 };
 
-static void snd_ice1712_stdsp24_gpio_write(struct snd_ice1712 *ice, unsigned char byte)
+static void __devinit snd_ice1712_stdsp24_gpio_write(struct snd_ice1712 *ice, unsigned char byte)
 {
 	byte |= ICE1712_STDSP24_CLOCK_BIT;
 	udelay(100);
@@ -52,7 +53,7 @@ static void snd_ice1712_stdsp24_gpio_write(struct snd_ice1712 *ice, unsigned cha
 	snd_ice1712_write(ice, ICE1712_IREG_GPIO_DATA, byte);
 }
 
-static void snd_ice1712_stdsp24_darear(struct snd_ice1712 *ice, int activate)
+static void __devinit snd_ice1712_stdsp24_darear(struct snd_ice1712 *ice, int activate)
 {
 	struct hoontech_spec *spec = ice->spec;
 	mutex_lock(&ice->gpio_mutex);
@@ -61,7 +62,7 @@ static void snd_ice1712_stdsp24_darear(struct snd_ice1712 *ice, int activate)
 	mutex_unlock(&ice->gpio_mutex);
 }
 
-static void snd_ice1712_stdsp24_mute(struct snd_ice1712 *ice, int activate)
+static void __devinit snd_ice1712_stdsp24_mute(struct snd_ice1712 *ice, int activate)
 {
 	struct hoontech_spec *spec = ice->spec;
 	mutex_lock(&ice->gpio_mutex);
@@ -70,7 +71,7 @@ static void snd_ice1712_stdsp24_mute(struct snd_ice1712 *ice, int activate)
 	mutex_unlock(&ice->gpio_mutex);
 }
 
-static void snd_ice1712_stdsp24_insel(struct snd_ice1712 *ice, int activate)
+static void __devinit snd_ice1712_stdsp24_insel(struct snd_ice1712 *ice, int activate)
 {
 	struct hoontech_spec *spec = ice->spec;
 	mutex_lock(&ice->gpio_mutex);
@@ -79,7 +80,7 @@ static void snd_ice1712_stdsp24_insel(struct snd_ice1712 *ice, int activate)
 	mutex_unlock(&ice->gpio_mutex);
 }
 
-static void snd_ice1712_stdsp24_box_channel(struct snd_ice1712 *ice, int box, int chn, int activate)
+static void __devinit snd_ice1712_stdsp24_box_channel(struct snd_ice1712 *ice, int box, int chn, int activate)
 {
 	struct hoontech_spec *spec = ice->spec;
 
@@ -129,7 +130,7 @@ static void snd_ice1712_stdsp24_box_channel(struct snd_ice1712 *ice, int box, in
 	mutex_unlock(&ice->gpio_mutex);
 }
 
-static void snd_ice1712_stdsp24_box_midi(struct snd_ice1712 *ice, int box, int master)
+static void __devinit snd_ice1712_stdsp24_box_midi(struct snd_ice1712 *ice, int box, int master)
 {
 	struct hoontech_spec *spec = ice->spec;
 
@@ -157,7 +158,7 @@ static void snd_ice1712_stdsp24_box_midi(struct snd_ice1712 *ice, int box, int m
 	mutex_unlock(&ice->gpio_mutex);
 }
 
-static void snd_ice1712_stdsp24_midi2(struct snd_ice1712 *ice, int activate)
+static void __devinit snd_ice1712_stdsp24_midi2(struct snd_ice1712 *ice, int activate)
 {
 	struct hoontech_spec *spec = ice->spec;
 	mutex_lock(&ice->gpio_mutex);
@@ -166,7 +167,7 @@ static void snd_ice1712_stdsp24_midi2(struct snd_ice1712 *ice, int activate)
 	mutex_unlock(&ice->gpio_mutex);
 }
 
-static int hoontech_init(struct snd_ice1712 *ice, bool staudio)
+static int __devinit snd_ice1712_hoontech_init(struct snd_ice1712 *ice)
 {
 	struct hoontech_spec *spec;
 	int box, chn;
@@ -203,10 +204,7 @@ static int hoontech_init(struct snd_ice1712 *ice, bool staudio)
 	ICE1712_STDSP24_3_INSEL(spec->boxbits, 0);
 
 	/* let's go - activate only functions in first box */
-	if (staudio)
-		spec->config = ICE1712_STDSP24_MUTE;
-	else
-		spec->config = 0;
+	spec->config = 0;
 			    /* ICE1712_STDSP24_MUTE |
 			       ICE1712_STDSP24_INSEL |
 			       ICE1712_STDSP24_DAREAR; */
@@ -229,16 +227,9 @@ static int hoontech_init(struct snd_ice1712 *ice, bool staudio)
 				     ICE1712_STDSP24_BOX_CHN4 |
 				     ICE1712_STDSP24_BOX_MIDI1 |
 				     ICE1712_STDSP24_BOX_MIDI2;
-	if (staudio) {
-		spec->boxconfig[1] =
-		spec->boxconfig[2] =
-		spec->boxconfig[3] = spec->boxconfig[0];
-	} else {
-		spec->boxconfig[1] =
-		spec->boxconfig[2] =
-		spec->boxconfig[3] = 0;
-	}
-
+	spec->boxconfig[1] = 
+	spec->boxconfig[2] = 
+	spec->boxconfig[3] = 0;
 	snd_ice1712_stdsp24_darear(ice,
 		(spec->config & ICE1712_STDSP24_DAREAR) ? 1 : 0);
 	snd_ice1712_stdsp24_mute(ice,
@@ -256,16 +247,6 @@ static int hoontech_init(struct snd_ice1712 *ice, bool staudio)
 	}
 
 	return 0;
-}
-
-static int snd_ice1712_hoontech_init(struct snd_ice1712 *ice)
-{
-	return hoontech_init(ice, false);
-}
-
-static int snd_ice1712_staudio_init(struct snd_ice1712 *ice)
-{
-	return hoontech_init(ice, true);
 }
 
 /*
@@ -286,10 +267,10 @@ static void stdsp24_ak4524_lock(struct snd_akm4xxx *ak, int chip)
 	snd_ice1712_write(ice, ICE1712_IREG_GPIO_WRITE_MASK, ~tmp);
 }
 
-static int snd_ice1712_value_init(struct snd_ice1712 *ice)
+static int __devinit snd_ice1712_value_init(struct snd_ice1712 *ice)
 {
 	/* Hoontech STDSP24 with modified hardware */
-	static const struct snd_akm4xxx akm_stdsp24_mv = {
+	static struct snd_akm4xxx akm_stdsp24_mv __devinitdata = {
 		.num_adcs = 2,
 		.num_dacs = 2,
 		.type = SND_AK4524,
@@ -298,7 +279,7 @@ static int snd_ice1712_value_init(struct snd_ice1712 *ice)
 		}
 	};
 
-	static const struct snd_ak4xxx_private akm_stdsp24_mv_priv = {
+	static struct snd_ak4xxx_private akm_stdsp24_mv_priv __devinitdata = {
 		.caddr = 2,
 		.cif = 1, /* CIF high */
 		.data_mask = ICE1712_STDSP24_SERIAL_DATA,
@@ -329,10 +310,14 @@ static int snd_ice1712_value_init(struct snd_ice1712 *ice)
 		return err;
 
 	/* ak4524 controls */
-	return snd_ice1712_akm4xxx_build_controls(ice);
+	err = snd_ice1712_akm4xxx_build_controls(ice);
+	if (err < 0)
+		return err;
+
+	return 0;
 }
 
-static int snd_ice1712_ez8_init(struct snd_ice1712 *ice)
+static int __devinit snd_ice1712_ez8_init(struct snd_ice1712 *ice)
 {
 	ice->gpio.write_mask = ice->eeprom.gpiomask;
 	ice->gpio.direction = ice->eeprom.gpiodir;
@@ -344,7 +329,7 @@ static int snd_ice1712_ez8_init(struct snd_ice1712 *ice)
 
 
 /* entry point */
-struct snd_ice1712_card_info snd_ice1712_hoontech_cards[] = {
+struct snd_ice1712_card_info snd_ice1712_hoontech_cards[] __devinitdata = {
 	{
 		.subvendor = ICE1712_SUBDEVICE_STDSP24,
 		.name = "Hoontech SoundTrack Audio DSP24",
@@ -370,15 +355,6 @@ struct snd_ice1712_card_info snd_ice1712_hoontech_cards[] = {
 		.name = "Event Electronics EZ8",
 		.model = "ez8",
 		.chip_init = snd_ice1712_ez8_init,
-	},
-	{
-		/* STAudio ADCIII has the same SSID as Hoontech StA DSP24,
-		 * thus identified only via the explicit model option
-		 */
-		.subvendor = ICE1712_SUBDEVICE_STAUDIO_ADCIII,	/* a dummy id */
-		.name = "STAudio ADCIII",
-		.model = "staudio",
-		.chip_init = snd_ice1712_staudio_init,
 	},
 	{ } /* terminator */
 };

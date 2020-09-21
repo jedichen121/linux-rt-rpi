@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  Native support for the I/O-Warrior USB devices
  *
@@ -16,14 +15,17 @@
 
 #include <linux/module.h>
 #include <linux/usb.h>
+#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
 #include <linux/mutex.h>
 #include <linux/poll.h>
 #include <linux/usb/iowarrior.h>
 
+/* Version Information */
+#define DRIVER_VERSION "v0.4.0"
 #define DRIVER_AUTHOR "Christian Lucht <lucht@codemercs.com>"
-#define DRIVER_DESC "USB IO-Warrior driver"
+#define DRIVER_DESC "USB IO-Warrior driver (Linux 2.6.x)"
 
 #define USB_VENDOR_ID_CODEMERCS		1984
 /* low speed iowarrior */
@@ -50,12 +52,19 @@
 */
 #define MAX_WRITES_IN_FLIGHT 4
 
+/* Use our own dbg macro */
+#undef dbg
+#define dbg( format, arg... ) do { if( debug ) printk( KERN_DEBUG __FILE__ ": " format "\n" , ## arg ); } while ( 0 )
+
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL");
 
 /* Module parameters */
 static DEFINE_MUTEX(iowarrior_mutex);
+static int debug = 0;
+module_param(debug, bool, 0644);
+MODULE_PARM_DESC(debug, "debug=1 enables debugging messages");
 
 static struct usb_driver iowarrior_driver;
 static DEFINE_MUTEX(iowarrior_open_disc_lock);
@@ -81,13 +90,13 @@ struct iowarrior {
 	atomic_t write_busy;		/* number of write-urbs submitted */
 	atomic_t read_idx;
 	atomic_t intr_idx;
+	spinlock_t intr_idx_lock;	/* protects intr_idx */
 	atomic_t overflow_flag;		/* signals an index 'rollover' */
 	int present;			/* this is 1 as long as the device is connected */
 	int opened;			/* this is 1 if the device is currently open */
 	char chip_serial[9];		/* the serial number string of the chip connected */
 	int report_size;		/* number of bytes in a report */
 	u16 product_id;
-	struct usb_anchor submitted;
 };
 
 /*--------------*/
@@ -166,6 +175,7 @@ static void iowarrior_callback(struct urb *urb)
 		goto exit;
 	}
 
+	spin_lock(&dev->intr_idx_lock);
 	intr_idx = atomic_read(&dev->intr_idx);
 	/* aux_idx become previous intr_idx */
 	aux_idx = (intr_idx == 0) ? (MAX_INTERRUPT_BUFFER - 1) : (intr_idx - 1);
@@ -180,6 +190,7 @@ static void iowarrior_callback(struct urb *urb)
 		    (dev->read_queue + offset, urb->transfer_buffer,
 		     dev->report_size)) {
 			/* equal values on interface 0 will be ignored */
+			spin_unlock(&dev->intr_idx_lock);
 			goto exit;
 		}
 	}
@@ -200,6 +211,7 @@ static void iowarrior_callback(struct urb *urb)
 	*(dev->read_queue + offset + (dev->report_size)) = dev->serial_number++;
 
 	atomic_set(&dev->intr_idx, aux_idx);
+	spin_unlock(&dev->intr_idx_lock);
 	/* tell the blocking read about the new data */
 	wake_up_interruptible(&dev->read_wait);
 
@@ -224,8 +236,8 @@ static void iowarrior_write_callback(struct urb *urb)
 	if (status &&
 	    !(status == -ENOENT ||
 	      status == -ECONNRESET || status == -ESHUTDOWN)) {
-		dev_dbg(&dev->interface->dev,
-			"nonzero write bulk status received: %d\n", status);
+		dbg("%s - nonzero write bulk status received: %d",
+		    __func__, status);
 	}
 	/* free up our allocated buffer */
 	usb_free_coherent(urb->dev, urb->transfer_buffer_length,
@@ -240,11 +252,10 @@ static void iowarrior_write_callback(struct urb *urb)
  */
 static inline void iowarrior_delete(struct iowarrior *dev)
 {
-	dev_dbg(&dev->interface->dev, "minor %d\n", dev->minor);
+	dbg("%s - minor %d", __func__, dev->minor);
 	kfree(dev->int_in_buffer);
 	usb_free_urb(dev->int_in_urb);
 	kfree(dev->read_queue);
-	usb_put_intf(dev->interface);
 	kfree(dev);
 }
 
@@ -275,11 +286,10 @@ static ssize_t iowarrior_read(struct file *file, char __user *buffer,
 	dev = file->private_data;
 
 	/* verify that the device wasn't unplugged */
-	if (!dev || !dev->present)
+	if (dev == NULL || !dev->present)
 		return -ENODEV;
 
-	dev_dbg(&dev->interface->dev, "minor %d, count = %zd\n",
-		dev->minor, count);
+	dbg("%s - minor %d, count = %zd", __func__, dev->minor, count);
 
 	/* read count must be packet size (+ time stamp) */
 	if ((count != dev->report_size)
@@ -290,7 +300,7 @@ static ssize_t iowarrior_read(struct file *file, char __user *buffer,
 	do {
 		atomic_set(&dev->overflow_flag, 0);
 		if ((read_idx = read_index(dev)) == -1) {
-			/* queue empty */
+			/* queue emty */
 			if (file->f_flags & O_NONBLOCK)
 				return -EAGAIN;
 			else {
@@ -347,8 +357,7 @@ static ssize_t iowarrior_write(struct file *file,
 		retval = -ENODEV;
 		goto exit;
 	}
-	dev_dbg(&dev->interface->dev, "minor %d, count = %zd\n",
-		dev->minor, count);
+	dbg("%s - minor %d, count = %zd", __func__, dev->minor, count);
 	/* if count is 0 we're already done */
 	if (count == 0) {
 		retval = 0;
@@ -365,9 +374,14 @@ static ssize_t iowarrior_write(struct file *file,
 	case USB_DEVICE_ID_CODEMERCS_IOWPV2:
 	case USB_DEVICE_ID_CODEMERCS_IOW40:
 		/* IOW24 and IOW40 use a synchronous call */
-		buf = memdup_user(user_buffer, count);
-		if (IS_ERR(buf)) {
-			retval = PTR_ERR(buf);
+		buf = kmalloc(count, GFP_KERNEL);
+		if (!buf) {
+			retval = -ENOMEM;
+			goto exit;
+		}
+		if (copy_from_user(buf, user_buffer, count)) {
+			retval = -EFAULT;
+			kfree(buf);
 			goto exit;
 		}
 		retval = usb_set_report(dev->interface, 2, 0, buf, count);
@@ -405,14 +419,14 @@ static ssize_t iowarrior_write(struct file *file,
 		int_out_urb = usb_alloc_urb(0, GFP_KERNEL);
 		if (!int_out_urb) {
 			retval = -ENOMEM;
+			dbg("%s Unable to allocate urb ", __func__);
 			goto error_no_urb;
 		}
 		buf = usb_alloc_coherent(dev->udev, dev->report_size,
 					 GFP_KERNEL, &int_out_urb->transfer_dma);
 		if (!buf) {
 			retval = -ENOMEM;
-			dev_dbg(&dev->interface->dev,
-				"Unable to allocate buffer\n");
+			dbg("%s Unable to allocate buffer ", __func__);
 			goto error_no_buffer;
 		}
 		usb_fill_int_urb(int_out_urb, dev->udev,
@@ -426,13 +440,10 @@ static ssize_t iowarrior_write(struct file *file,
 			retval = -EFAULT;
 			goto error;
 		}
-		usb_anchor_urb(int_out_urb, &dev->submitted);
 		retval = usb_submit_urb(int_out_urb, GFP_KERNEL);
 		if (retval) {
-			dev_dbg(&dev->interface->dev,
-				"submit error %d for urb nr.%d\n",
-				retval, atomic_read(&dev->write_busy));
-			usb_unanchor_urb(int_out_urb);
+			dbg("%s submit error %d for urb nr.%d", __func__,
+			    retval, atomic_read(&dev->write_busy));
 			goto error;
 		}
 		/* submit was ok */
@@ -474,8 +485,9 @@ static long iowarrior_ioctl(struct file *file, unsigned int cmd,
 	int io_res;		/* checks for bytes read/written and copy_to/from_user results */
 
 	dev = file->private_data;
-	if (!dev)
+	if (dev == NULL) {
 		return -ENODEV;
+	}
 
 	buffer = kzalloc(dev->report_size, GFP_KERNEL);
 	if (!buffer)
@@ -491,8 +503,8 @@ static long iowarrior_ioctl(struct file *file, unsigned int cmd,
 		goto error_out;
 	}
 
-	dev_dbg(&dev->interface->dev, "minor %d, cmd 0x%.4x, arg %ld\n",
-		dev->minor, cmd, arg);
+	dbg("%s - minor %d, cmd 0x%.4x, arg %ld", __func__, dev->minor, cmd,
+	    arg);
 
 	retval = 0;
 	io_res = 0;
@@ -548,7 +560,7 @@ static long iowarrior_ioctl(struct file *file, unsigned int cmd,
 			info.revision = le16_to_cpu(dev->udev->descriptor.bcdDevice);
 
 			/* 0==UNKNOWN, 1==LOW(usb1.1) ,2=FULL(usb1.1), 3=HIGH(usb2.0) */
-			info.speed = dev->udev->speed;
+			info.speed = le16_to_cpu(dev->udev->speed);
 			info.if_num = dev->interface->cur_altsetting->desc.bInterfaceNumber;
 			info.report_size = dev->report_size;
 
@@ -590,14 +602,16 @@ static int iowarrior_open(struct inode *inode, struct file *file)
 	int subminor;
 	int retval = 0;
 
+	dbg("%s", __func__);
+
 	mutex_lock(&iowarrior_mutex);
 	subminor = iminor(inode);
 
 	interface = usb_find_interface(&iowarrior_driver, subminor);
 	if (!interface) {
 		mutex_unlock(&iowarrior_mutex);
-		printk(KERN_ERR "%s - error, can't find device for minor %d\n",
-		       __func__, subminor);
+		err("%s - error, can't find device for minor %d", __func__,
+		    subminor);
 		return -ENODEV;
 	}
 
@@ -645,10 +659,11 @@ static int iowarrior_release(struct inode *inode, struct file *file)
 	int retval = 0;
 
 	dev = file->private_data;
-	if (!dev)
+	if (dev == NULL) {
 		return -ENODEV;
+	}
 
-	dev_dbg(&dev->interface->dev, "minor %d\n", dev->minor);
+	dbg("%s - minor %d", __func__, dev->minor);
 
 	/* lock our device */
 	mutex_lock(&dev->mutex);
@@ -657,7 +672,7 @@ static int iowarrior_release(struct inode *inode, struct file *file)
 		retval = -ENODEV;	/* close called more than once */
 		mutex_unlock(&dev->mutex);
 	} else {
-		dev->opened = 0;	/* we're closing now */
+		dev->opened = 0;	/* we're closeing now */
 		retval = 0;
 		if (dev->present) {
 			/*
@@ -677,25 +692,25 @@ static int iowarrior_release(struct inode *inode, struct file *file)
 	return retval;
 }
 
-static __poll_t iowarrior_poll(struct file *file, poll_table * wait)
+static unsigned iowarrior_poll(struct file *file, poll_table * wait)
 {
 	struct iowarrior *dev = file->private_data;
-	__poll_t mask = 0;
+	unsigned int mask = 0;
 
 	if (!dev->present)
-		return EPOLLERR | EPOLLHUP;
+		return POLLERR | POLLHUP;
 
 	poll_wait(file, &dev->read_wait, wait);
 	poll_wait(file, &dev->write_wait, wait);
 
 	if (!dev->present)
-		return EPOLLERR | EPOLLHUP;
+		return POLLERR | POLLHUP;
 
 	if (read_index(dev) != -1)
-		mask |= EPOLLIN | EPOLLRDNORM;
+		mask |= POLLIN | POLLRDNORM;
 
 	if (atomic_read(&dev->write_busy) < MAX_WRITES_IN_FLIGHT)
-		mask |= EPOLLOUT | EPOLLWRNORM;
+		mask |= POLLOUT | POLLWRNORM;
 	return mask;
 }
 
@@ -719,7 +734,7 @@ static const struct file_operations iowarrior_fops = {
 	.llseek = noop_llseek,
 };
 
-static char *iowarrior_devnode(struct device *dev, umode_t *mode)
+static char *iowarrior_devnode(struct device *dev, mode_t *mode)
 {
 	return kasprintf(GFP_KERNEL, "usb/%s", dev_name(dev));
 }
@@ -750,49 +765,44 @@ static int iowarrior_probe(struct usb_interface *interface,
 	struct usb_device *udev = interface_to_usbdev(interface);
 	struct iowarrior *dev = NULL;
 	struct usb_host_interface *iface_desc;
+	struct usb_endpoint_descriptor *endpoint;
+	int i;
 	int retval = -ENOMEM;
-	int res;
 
 	/* allocate memory for our device state and initialize it */
 	dev = kzalloc(sizeof(struct iowarrior), GFP_KERNEL);
-	if (!dev)
+	if (dev == NULL) {
+		dev_err(&interface->dev, "Out of memory\n");
 		return retval;
+	}
 
 	mutex_init(&dev->mutex);
 
 	atomic_set(&dev->intr_idx, 0);
 	atomic_set(&dev->read_idx, 0);
+	spin_lock_init(&dev->intr_idx_lock);
 	atomic_set(&dev->overflow_flag, 0);
 	init_waitqueue_head(&dev->read_wait);
 	atomic_set(&dev->write_busy, 0);
 	init_waitqueue_head(&dev->write_wait);
 
 	dev->udev = udev;
-	dev->interface = usb_get_intf(interface);
+	dev->interface = interface;
 
 	iface_desc = interface->cur_altsetting;
 	dev->product_id = le16_to_cpu(udev->descriptor.idProduct);
 
-	init_usb_anchor(&dev->submitted);
+	/* set up the endpoint information */
+	for (i = 0; i < iface_desc->desc.bNumEndpoints; ++i) {
+		endpoint = &iface_desc->endpoint[i].desc;
 
-	res = usb_find_last_int_in_endpoint(iface_desc, &dev->int_in_endpoint);
-	if (res) {
-		dev_err(&interface->dev, "no interrupt-in endpoint found\n");
-		retval = res;
-		goto error;
+		if (usb_endpoint_is_int_in(endpoint))
+			dev->int_in_endpoint = endpoint;
+		if (usb_endpoint_is_int_out(endpoint))
+			/* this one will match for the IOWarrior56 only */
+			dev->int_out_endpoint = endpoint;
 	}
-
-	if (dev->product_id == USB_DEVICE_ID_CODEMERCS_IOW56) {
-		res = usb_find_last_int_out_endpoint(iface_desc,
-				&dev->int_out_endpoint);
-		if (res) {
-			dev_err(&interface->dev, "no interrupt-out endpoint found\n");
-			retval = res;
-			goto error;
-		}
-	}
-
-	/* we have to check the report_size often, so remember it in the endianness suitable for our machine */
+	/* we have to check the report_size often, so remember it in the endianess suitable for our machine */
 	dev->report_size = usb_endpoint_maxp(dev->int_in_endpoint);
 	if ((dev->interface->cur_altsetting->desc.bInterfaceNumber == 0) &&
 	    (dev->product_id == USB_DEVICE_ID_CODEMERCS_IOW56))
@@ -801,11 +811,15 @@ static int iowarrior_probe(struct usb_interface *interface,
 
 	/* create the urb and buffer for reading */
 	dev->int_in_urb = usb_alloc_urb(0, GFP_KERNEL);
-	if (!dev->int_in_urb)
+	if (!dev->int_in_urb) {
+		dev_err(&interface->dev, "Couldn't allocate interrupt_in_urb\n");
 		goto error;
+	}
 	dev->int_in_buffer = kmalloc(dev->report_size, GFP_KERNEL);
-	if (!dev->int_in_buffer)
+	if (!dev->int_in_buffer) {
+		dev_err(&interface->dev, "Couldn't allocate int_in_buffer\n");
 		goto error;
+	}
 	usb_fill_int_urb(dev->int_in_urb, dev->udev,
 			 usb_rcvintpipe(dev->udev,
 					dev->int_in_endpoint->bEndpointAddress),
@@ -816,8 +830,10 @@ static int iowarrior_probe(struct usb_interface *interface,
 	dev->read_queue =
 	    kmalloc(((dev->report_size + 1) * MAX_INTERRUPT_BUFFER),
 		    GFP_KERNEL);
-	if (!dev->read_queue)
+	if (!dev->read_queue) {
+		dev_err(&interface->dev, "Couldn't allocate read_queue\n");
 		goto error;
+	}
 	/* Get the serial-number of the chip */
 	memset(dev->chip_serial, 0x00, sizeof(dev->chip_serial));
 	usb_string(udev, udev->descriptor.iSerialNumber, dev->chip_serial,
@@ -874,9 +890,8 @@ static void iowarrior_disconnect(struct usb_interface *interface)
 	usb_set_intfdata(interface, NULL);
 
 	minor = dev->minor;
-	mutex_unlock(&iowarrior_open_disc_lock);
-	/* give back our minor - this will call close() locks need to be dropped at this point*/
 
+	/* give back our minor */
 	usb_deregister_dev(interface, &iowarrior_class);
 
 	mutex_lock(&dev->mutex);
@@ -884,19 +899,19 @@ static void iowarrior_disconnect(struct usb_interface *interface)
 	/* prevent device read, write and ioctl */
 	dev->present = 0;
 
+	mutex_unlock(&dev->mutex);
+	mutex_unlock(&iowarrior_open_disc_lock);
+
 	if (dev->opened) {
 		/* There is a process that holds a filedescriptor to the device ,
 		   so we only shutdown read-/write-ops going on.
 		   Deleting the device is postponed until close() was called.
 		 */
 		usb_kill_urb(dev->int_in_urb);
-		usb_kill_anchored_urbs(&dev->submitted);
 		wake_up_interruptible(&dev->read_wait);
 		wake_up_interruptible(&dev->write_wait);
-		mutex_unlock(&dev->mutex);
 	} else {
 		/* no process is using the device, cleanup now */
-		mutex_unlock(&dev->mutex);
 		iowarrior_delete(dev);
 	}
 

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Simulated SCSI driver.
  *
@@ -89,8 +88,8 @@ simscsi_setup (char *s)
 	if (strlen(s) > MAX_ROOT_LEN) {
 		printk(KERN_ERR "simscsi_setup: prefix too long---using default %s\n",
 		       simscsi_root);
-	} else
-		simscsi_root = s;
+	}
+	simscsi_root = s;
 	return 1;
 }
 
@@ -369,4 +368,13 @@ simscsi_init(void)
 	scsi_host_put(host);
 	return error;
 }
-device_initcall(simscsi_init);
+
+static void __exit
+simscsi_exit(void)
+{
+	scsi_remove_host(host);
+	scsi_host_put(host);
+}
+
+module_init(simscsi_init);
+module_exit(simscsi_exit);

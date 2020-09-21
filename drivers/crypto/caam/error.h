@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * CAAM Error Reporting code header
  *
@@ -8,9 +7,5 @@
 #ifndef CAAM_ERROR_H
 #define CAAM_ERROR_H
 #define CAAM_ERROR_STR_MAX 302
-void caam_jr_strstatus(struct device *jrdev, u32 status);
-
-void caam_dump_sg(const char *level, const char *prefix_str, int prefix_type,
-		  int rowsize, int groupsize, struct scatterlist *sg,
-		  size_t tlen, bool ascii);
+extern char *caam_jr_strstatus(char *outstr, u32 status);
 #endif /* CAAM_ERROR_H */

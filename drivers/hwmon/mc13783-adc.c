@@ -1,5 +1,5 @@
 /*
- * Driver for the ADC on Freescale Semiconductor MC13783 and MC13892 PMICs.
+ * Driver for the Freescale Semiconductor MC13783 adc.
  *
  * Copyright 2004-2007 Freescale Semiconductor, Inc. All Rights Reserved.
  * Copyright (C) 2009 Sascha Hauer, Pengutronix
@@ -18,41 +18,34 @@
  * Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include <linux/mfd/mc13xxx.h>
+#include <linux/mfd/mc13783.h>
 #include <linux/platform_device.h>
 #include <linux/hwmon-sysfs.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/hwmon.h>
 #include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/err.h>
 
-#define DRIVER_NAME	"mc13783-adc"
-
-/* platform device id driver data */
-#define MC13783_ADC_16CHANS	1
-#define MC13783_ADC_BPDIV2	2
+#define MC13783_ADC_NAME	"mc13783-adc"
 
 struct mc13783_adc_priv {
 	struct mc13xxx *mc13xxx;
 	struct device *hwmon_dev;
-	char name[PLATFORM_NAME_SIZE];
 };
 
-static ssize_t name_show(struct device *dev, struct device_attribute *devattr,
-			 char *buf)
+static ssize_t mc13783_adc_show_name(struct device *dev, struct device_attribute
+			      *devattr, char *buf)
 {
-	struct mc13783_adc_priv *priv = dev_get_drvdata(dev);
-
-	return sprintf(buf, "%s\n", priv->name);
+	return sprintf(buf, "mc13783_adc\n");
 }
 
 static int mc13783_adc_read(struct device *dev,
 		struct device_attribute *devattr, unsigned int *val)
 {
-	struct mc13783_adc_priv *priv = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct mc13783_adc_priv *priv = platform_get_drvdata(pdev);
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	unsigned int channel = attr->index;
 	unsigned int sample[4];
@@ -60,13 +53,9 @@ static int mc13783_adc_read(struct device *dev,
 
 	ret = mc13xxx_adc_do_conversion(priv->mc13xxx,
 			MC13XXX_ADC_MODE_MULT_CHAN,
-			channel, 0, 0, sample);
+			channel, sample);
 	if (ret)
 		return ret;
-
-	/* ADIN7 subchannels */
-	if (channel >= 16)
-		channel = 7;
 
 	channel &= 0x7;
 
@@ -79,21 +68,16 @@ static ssize_t mc13783_adc_read_bp(struct device *dev,
 		struct device_attribute *devattr, char *buf)
 {
 	unsigned val;
-	struct platform_device *pdev = to_platform_device(dev);
-	kernel_ulong_t driver_data = platform_get_device_id(pdev)->driver_data;
 	int ret = mc13783_adc_read(dev, devattr, &val);
 
 	if (ret)
 		return ret;
 
-	if (driver_data & MC13783_ADC_BPDIV2)
-		val = DIV_ROUND_CLOSEST(val * 9, 2);
-	else
-		/*
-		 * BP (channel 2) reports with offset 2.4V to the actual value
-		 * to fit the input range of the ADC.  unit = 2.25mV = 9/4 mV.
-		 */
-		val = DIV_ROUND_CLOSEST(val * 9, 4) + 2400;
+	/*
+	 * BP (channel 2) reports with offset 2.4V to the actual value to fit
+	 * the input range of the ADC.  unit = 2.25mV = 9/4 mV.
+	 */
+	val = DIV_ROUND_CLOSEST(val * 9, 4) + 2400;
 
 	return sprintf(buf, "%u\n", val);
 }
@@ -116,58 +100,7 @@ static ssize_t mc13783_adc_read_gp(struct device *dev,
 	return sprintf(buf, "%u\n", val);
 }
 
-static ssize_t mc13783_adc_read_uid(struct device *dev,
-		struct device_attribute *devattr, char *buf)
-{
-	unsigned int val;
-	struct platform_device *pdev = to_platform_device(dev);
-	kernel_ulong_t driver_data = platform_get_device_id(pdev)->driver_data;
-	int ret = mc13783_adc_read(dev, devattr, &val);
-
-	if (ret)
-		return ret;
-
-	if (driver_data & MC13783_ADC_BPDIV2)
-		/* MC13892 have 1/2 divider, input range is [0, 4.800V] */
-		val = DIV_ROUND_CLOSEST(val * 4800, 1024);
-	else
-		/* MC13783 have 0.9 divider, input range is [0, 2.555V] */
-		val = DIV_ROUND_CLOSEST(val * 2555, 1024);
-
-	return sprintf(buf, "%u\n", val);
-}
-
-static ssize_t mc13783_adc_read_temp(struct device *dev,
-		struct device_attribute *devattr, char *buf)
-{
-	unsigned int val;
-	struct platform_device *pdev = to_platform_device(dev);
-	kernel_ulong_t driver_data = platform_get_device_id(pdev)->driver_data;
-	int ret = mc13783_adc_read(dev, devattr, &val);
-
-	if (ret)
-		return ret;
-
-	if (driver_data & MC13783_ADC_BPDIV2) {
-		/*
-		 * MC13892:
-		 * Die Temperature Read Out Code at 25C 680
-		 * Temperature change per LSB +0.4244C
-		 */
-		ret = DIV_ROUND_CLOSEST(-2635920 + val * 4244, 10);
-	} else {
-		/*
-		 * MC13783:
-		 * Die Temperature Read Out Code at 25C 282
-		 * Temperature change per LSB -1.14C
-		 */
-		ret = 346480 - 1140 * val;
-	}
-
-	return sprintf(buf, "%d\n", ret);
-}
-
-static DEVICE_ATTR_RO(name);
+static DEVICE_ATTR(name, S_IRUGO, mc13783_adc_show_name, NULL);
 static SENSOR_DEVICE_ATTR(in2_input, S_IRUGO, mc13783_adc_read_bp, NULL, 2);
 static SENSOR_DEVICE_ATTR(in5_input, S_IRUGO, mc13783_adc_read_gp, NULL, 5);
 static SENSOR_DEVICE_ATTR(in6_input, S_IRUGO, mc13783_adc_read_gp, NULL, 6);
@@ -180,27 +113,13 @@ static SENSOR_DEVICE_ATTR(in12_input, S_IRUGO, mc13783_adc_read_gp, NULL, 12);
 static SENSOR_DEVICE_ATTR(in13_input, S_IRUGO, mc13783_adc_read_gp, NULL, 13);
 static SENSOR_DEVICE_ATTR(in14_input, S_IRUGO, mc13783_adc_read_gp, NULL, 14);
 static SENSOR_DEVICE_ATTR(in15_input, S_IRUGO, mc13783_adc_read_gp, NULL, 15);
-static SENSOR_DEVICE_ATTR(in16_input, S_IRUGO, mc13783_adc_read_uid, NULL, 16);
-static SENSOR_DEVICE_ATTR(temp1_input, S_IRUGO,
-			  mc13783_adc_read_temp, NULL, 17);
 
-static struct attribute *mc13783_attr_base[] = {
+static struct attribute *mc13783_attr[] = {
 	&dev_attr_name.attr,
 	&sensor_dev_attr_in2_input.dev_attr.attr,
 	&sensor_dev_attr_in5_input.dev_attr.attr,
 	&sensor_dev_attr_in6_input.dev_attr.attr,
 	&sensor_dev_attr_in7_input.dev_attr.attr,
-	&sensor_dev_attr_in16_input.dev_attr.attr,
-	&sensor_dev_attr_temp1_input.dev_attr.attr,
-	NULL
-};
-
-static const struct attribute_group mc13783_group_base = {
-	.attrs = mc13783_attr_base,
-};
-
-/* these are only used if MC13783_ADC_16CHANS is provided in driver data */
-static struct attribute *mc13783_attr_16chans[] = {
 	&sensor_dev_attr_in8_input.dev_attr.attr,
 	&sensor_dev_attr_in9_input.dev_attr.attr,
 	&sensor_dev_attr_in10_input.dev_attr.attr,
@@ -208,8 +127,8 @@ static struct attribute *mc13783_attr_16chans[] = {
 	NULL
 };
 
-static const struct attribute_group mc13783_group_16chans = {
-	.attrs = mc13783_attr_16chans,
+static const struct attribute_group mc13783_group = {
+	.attrs = mc13783_attr,
 };
 
 /* last four channels may be occupied by the touchscreen */
@@ -237,37 +156,24 @@ static int __init mc13783_adc_probe(struct platform_device *pdev)
 {
 	struct mc13783_adc_priv *priv;
 	int ret;
-	const struct platform_device_id *id = platform_get_device_id(pdev);
-	char *dash;
 
-	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
 	priv->mc13xxx = dev_get_drvdata(pdev->dev.parent);
-	snprintf(priv->name, ARRAY_SIZE(priv->name), "%s", id->name);
-	dash = strchr(priv->name, '-');
-	if (dash)
-		*dash = '\0';
 
 	platform_set_drvdata(pdev, priv);
 
 	/* Register sysfs hooks */
-	ret = sysfs_create_group(&pdev->dev.kobj, &mc13783_group_base);
+	ret = sysfs_create_group(&pdev->dev.kobj, &mc13783_group);
 	if (ret)
-		return ret;
-
-	if (id->driver_data & MC13783_ADC_16CHANS) {
-		ret = sysfs_create_group(&pdev->dev.kobj,
-				&mc13783_group_16chans);
-		if (ret)
-			goto out_err_create_16chans;
-	}
+		goto out_err_create1;
 
 	if (!mc13783_adc_use_touchscreen(pdev)) {
 		ret = sysfs_create_group(&pdev->dev.kobj, &mc13783_group_ts);
 		if (ret)
-			goto out_err_create_ts;
+			goto out_err_create2;
 	}
 
 	priv->hwmon_dev = hwmon_device_register(&pdev->dev);
@@ -278,63 +184,63 @@ static int __init mc13783_adc_probe(struct platform_device *pdev)
 		goto out_err_register;
 	}
 
+
 	return 0;
 
 out_err_register:
 
 	if (!mc13783_adc_use_touchscreen(pdev))
 		sysfs_remove_group(&pdev->dev.kobj, &mc13783_group_ts);
-out_err_create_ts:
+out_err_create2:
 
-	if (id->driver_data & MC13783_ADC_16CHANS)
-		sysfs_remove_group(&pdev->dev.kobj, &mc13783_group_16chans);
-out_err_create_16chans:
+	sysfs_remove_group(&pdev->dev.kobj, &mc13783_group);
+out_err_create1:
 
-	sysfs_remove_group(&pdev->dev.kobj, &mc13783_group_base);
+	platform_set_drvdata(pdev, NULL);
+	kfree(priv);
+
 	return ret;
 }
 
-static int mc13783_adc_remove(struct platform_device *pdev)
+static int __devexit mc13783_adc_remove(struct platform_device *pdev)
 {
 	struct mc13783_adc_priv *priv = platform_get_drvdata(pdev);
-	kernel_ulong_t driver_data = platform_get_device_id(pdev)->driver_data;
 
 	hwmon_device_unregister(priv->hwmon_dev);
 
 	if (!mc13783_adc_use_touchscreen(pdev))
 		sysfs_remove_group(&pdev->dev.kobj, &mc13783_group_ts);
 
-	if (driver_data & MC13783_ADC_16CHANS)
-		sysfs_remove_group(&pdev->dev.kobj, &mc13783_group_16chans);
+	sysfs_remove_group(&pdev->dev.kobj, &mc13783_group);
 
-	sysfs_remove_group(&pdev->dev.kobj, &mc13783_group_base);
+	platform_set_drvdata(pdev, NULL);
+	kfree(priv);
 
 	return 0;
 }
 
-static const struct platform_device_id mc13783_adc_idtable[] = {
-	{
-		.name = "mc13783-adc",
-		.driver_data = MC13783_ADC_16CHANS,
-	}, {
-		.name = "mc13892-adc",
-		.driver_data = MC13783_ADC_BPDIV2,
-	}, {
-		/* sentinel */
-	}
-};
-MODULE_DEVICE_TABLE(platform, mc13783_adc_idtable);
-
 static struct platform_driver mc13783_adc_driver = {
-	.remove		= mc13783_adc_remove,
+	.remove 	= __devexit_p(mc13783_adc_remove),
 	.driver		= {
-		.name	= DRIVER_NAME,
+		.owner	= THIS_MODULE,
+		.name	= MC13783_ADC_NAME,
 	},
-	.id_table	= mc13783_adc_idtable,
 };
 
-module_platform_driver_probe(mc13783_adc_driver, mc13783_adc_probe);
+static int __init mc13783_adc_init(void)
+{
+	return platform_driver_probe(&mc13783_adc_driver, mc13783_adc_probe);
+}
+
+static void __exit mc13783_adc_exit(void)
+{
+	platform_driver_unregister(&mc13783_adc_driver);
+}
+
+module_init(mc13783_adc_init);
+module_exit(mc13783_adc_exit);
 
 MODULE_DESCRIPTION("MC13783 ADC driver");
 MODULE_AUTHOR("Luotao Fu <l.fu@pengutronix.de>");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:" MC13783_ADC_NAME);

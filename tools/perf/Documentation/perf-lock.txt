@@ -8,7 +8,7 @@ perf-lock - Analyze lock events
 SYNOPSIS
 --------
 [verse]
-'perf lock' {record|report|script|info}
+'perf lock' {record|report|trace}
 
 DESCRIPTION
 -----------
@@ -20,12 +20,9 @@ and statistics with this 'perf lock' command.
   produces the file "perf.data" which contains tracing
   results of lock events.
 
+  'perf lock trace' shows raw lock events.
+
   'perf lock report' reports statistical data.
-
-  'perf lock script' shows raw lock events.
-
-  'perf lock info' shows metadata like threads or addresses
-  of lock instances.
 
 COMMON OPTIONS
 --------------
@@ -42,28 +39,13 @@ COMMON OPTIONS
 --dump-raw-trace::
         Dump raw trace in ASCII.
 
--f::
---force::
-	Don't complan, do it.
-
 REPORT OPTIONS
 --------------
 
 -k::
 --key=<value>::
         Sorting key. Possible values: acquired (default), contended,
-	avg_wait, wait_total, wait_max, wait_min.
-
-INFO OPTIONS
-------------
-
--t::
---threads::
-	dump thread list in perf.data
-
--m::
---map::
-	dump map of lock instances (address:name table)
+        wait_total, wait_max, wait_min.
 
 SEE ALSO
 --------

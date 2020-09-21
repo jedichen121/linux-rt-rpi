@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_ELF_H
 #define __ASM_SH_ELF_H
 
@@ -184,8 +183,7 @@ do {									\
 } while (0)
 #endif
 
-#define SET_PERSONALITY(ex) \
-	set_personality(PER_LINUX_32BIT | (current->personality & (~PER_MASK)))
+#define SET_PERSONALITY(ex) set_personality(PER_LINUX_32BIT)
 
 #ifdef CONFIG_VSYSCALL
 /* vDSO has arch_setup_additional_pages */
@@ -204,9 +202,9 @@ extern void __kernel_vsyscall;
 	if (vdso_enabled)					\
 		NEW_AUX_ENT(AT_SYSINFO_EHDR, VDSO_BASE);	\
 	else							\
-		NEW_AUX_ENT(AT_IGNORE, 0)
+		NEW_AUX_ENT(AT_IGNORE, 0);
 #else
-#define VSYSCALL_AUX_ENT	NEW_AUX_ENT(AT_IGNORE, 0)
+#define VSYSCALL_AUX_ENT
 #endif /* CONFIG_VSYSCALL */
 
 #ifdef CONFIG_SH_FPU

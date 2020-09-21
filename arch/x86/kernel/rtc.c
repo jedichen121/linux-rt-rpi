@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * RTC related functions
  */
@@ -13,8 +12,7 @@
 #include <asm/vsyscall.h>
 #include <asm/x86_init.h>
 #include <asm/time.h>
-#include <asm/intel-mid.h>
-#include <asm/setup.h>
+#include <asm/mrst.h>
 
 #ifdef CONFIG_X86_32
 /*
@@ -38,41 +36,77 @@ EXPORT_SYMBOL(rtc_lock);
  * nowtime is written into the registers of the CMOS clock, it will
  * jump to the next second precisely 500 ms later. Check the Motorola
  * MC146818A or Dallas DS12887 data sheet for details.
+ *
+ * BUG: This routine does not handle hour overflow properly; it just
+ *      sets the minutes. Usually you'll only notice that after reboot!
  */
-int mach_set_rtc_mmss(const struct timespec64 *now)
+int mach_set_rtc_mmss(unsigned long nowtime)
 {
-	unsigned long long nowtime = now->tv_sec;
-	struct rtc_time tm;
+	int real_seconds, real_minutes, cmos_minutes;
+	unsigned char save_control, save_freq_select;
+	unsigned long flags;
 	int retval = 0;
 
-	rtc_time64_to_tm(nowtime, &tm);
-	if (!rtc_valid_tm(&tm)) {
-		retval = mc146818_set_time(&tm);
-		if (retval)
-			printk(KERN_ERR "%s: RTC write failed with error %d\n",
-			       __func__, retval);
+	spin_lock_irqsave(&rtc_lock, flags);
+
+	 /* tell the clock it's being set */
+	save_control = CMOS_READ(RTC_CONTROL);
+	CMOS_WRITE((save_control|RTC_SET), RTC_CONTROL);
+
+	/* stop and reset prescaler */
+	save_freq_select = CMOS_READ(RTC_FREQ_SELECT);
+	CMOS_WRITE((save_freq_select|RTC_DIV_RESET2), RTC_FREQ_SELECT);
+
+	cmos_minutes = CMOS_READ(RTC_MINUTES);
+	if (!(save_control & RTC_DM_BINARY) || RTC_ALWAYS_BCD)
+		cmos_minutes = bcd2bin(cmos_minutes);
+
+	/*
+	 * since we're only adjusting minutes and seconds,
+	 * don't interfere with hour overflow. This avoids
+	 * messing with unknown time zones but requires your
+	 * RTC not to be off by more than 15 minutes
+	 */
+	real_seconds = nowtime % 60;
+	real_minutes = nowtime / 60;
+	/* correct for half hour time zone */
+	if (((abs(real_minutes - cmos_minutes) + 15)/30) & 1)
+		real_minutes += 30;
+	real_minutes %= 60;
+
+	if (abs(real_minutes - cmos_minutes) < 30) {
+		if (!(save_control & RTC_DM_BINARY) || RTC_ALWAYS_BCD) {
+			real_seconds = bin2bcd(real_seconds);
+			real_minutes = bin2bcd(real_minutes);
+		}
+		CMOS_WRITE(real_seconds, RTC_SECONDS);
+		CMOS_WRITE(real_minutes, RTC_MINUTES);
 	} else {
-		printk(KERN_ERR
-		       "%s: Invalid RTC value: write of %llx to RTC failed\n",
-			__func__, nowtime);
-		retval = -EINVAL;
+		printk_once(KERN_NOTICE
+		       "set_rtc_mmss: can't update from %d to %d\n",
+		       cmos_minutes, real_minutes);
+		retval = -1;
 	}
+
+	/* The following flags have to be released exactly in this order,
+	 * otherwise the DS12887 (popular MC146818A clone with integrated
+	 * battery and quartz) will not reset the oscillator and will not
+	 * update precisely 500 ms later. You won't find this mentioned in
+	 * the Dallas Semiconductor data sheets, but who believes data
+	 * sheets anyway ...                           -- Markus Kuhn
+	 */
+	CMOS_WRITE(save_control, RTC_CONTROL);
+	CMOS_WRITE(save_freq_select, RTC_FREQ_SELECT);
+
+	spin_unlock_irqrestore(&rtc_lock, flags);
+
 	return retval;
 }
 
-void mach_get_cmos_time(struct timespec64 *now)
+unsigned long mach_get_cmos_time(void)
 {
 	unsigned int status, year, mon, day, hour, min, sec, century = 0;
 	unsigned long flags;
-
-	/*
-	 * If pm_trace abused the RTC as storage, set the timespec to 0,
-	 * which tells the caller that this RTC value is unusable.
-	 */
-	if (!pm_trace_rtc_valid()) {
-		now->tv_sec = now->tv_nsec = 0;
-		return;
-	}
 
 	spin_lock_irqsave(&rtc_lock, flags);
 
@@ -115,11 +149,11 @@ void mach_get_cmos_time(struct timespec64 *now)
 	if (century) {
 		century = bcd2bin(century);
 		year += century * 100;
+		printk(KERN_INFO "Extended CMOS year: %d\n", century * 100);
 	} else
 		year += CMOS_YEARS_OFFS;
 
-	now->tv_sec = mktime64(year, mon, day, hour, min, sec);
-	now->tv_nsec = 0;
+	return mktime(year, mon, day, hour, min, sec);
 }
 
 /* Routines for accessing the CMOS RAM/RTC. */
@@ -145,16 +179,27 @@ void rtc_cmos_write(unsigned char val, unsigned char addr)
 }
 EXPORT_SYMBOL(rtc_cmos_write);
 
-int update_persistent_clock64(struct timespec64 now)
+int update_persistent_clock(struct timespec now)
 {
-	return x86_platform.set_wallclock(&now);
+	return x86_platform.set_wallclock(now.tv_sec);
 }
 
 /* not static: needed by APM */
-void read_persistent_clock64(struct timespec64 *ts)
+void read_persistent_clock(struct timespec *ts)
 {
-	x86_platform.get_wallclock(ts);
+	unsigned long retval;
+
+	retval = x86_platform.get_wallclock();
+
+	ts->tv_sec = retval;
+	ts->tv_nsec = 0;
 }
+
+unsigned long long native_read_tsc(void)
+{
+	return __native_read_tsc();
+}
+EXPORT_SYMBOL(native_read_tsc);
 
 
 static struct resource rtc_resources[] = {
@@ -180,7 +225,7 @@ static struct platform_device rtc_device = {
 static __init int add_rtc_cmos(void)
 {
 #ifdef CONFIG_PNP
-	static const char * const ids[] __initconst =
+	static const char *ids[] __initconst =
 	    { "PNP0b00", "PNP0b01", "PNP0b02", };
 	struct pnp_dev *dev;
 	struct pnp_id *id;
@@ -195,7 +240,11 @@ static __init int add_rtc_cmos(void)
 		}
 	}
 #endif
-	if (!x86_platform.legacy.rtc)
+	if (of_have_populated_dt())
+		return 0;
+
+	/* Intel MID platforms don't have ioport rtc */
+	if (mrst_identify_cpu())
 		return -ENODEV;
 
 	platform_device_register(&rtc_device);

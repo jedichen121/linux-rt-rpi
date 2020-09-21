@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Super block/filesystem wide operations
  *
@@ -21,8 +20,10 @@
 #include <linux/file.h>
 #include <linux/vfs.h>
 #include <linux/slab.h>
-#include <linux/pid_namespace.h>
-#include <linux/uaccess.h>
+
+#include <asm/system.h>
+#include <asm/uaccess.h>
+
 #include <linux/fs.h>
 #include <linux/vmalloc.h>
 
@@ -48,7 +49,7 @@ static struct inode *coda_alloc_inode(struct super_block *sb)
 		return NULL;
 	memset(&ei->c_fid, 0, sizeof(struct CodaFid));
 	ei->c_flags = 0;
-	ei->c_uid = GLOBAL_ROOT_UID;
+	ei->c_uid = 0;
 	ei->c_cached_perm = 0;
 	spin_lock_init(&ei->c_lock);
 	return &ei->vfs_inode;
@@ -57,6 +58,7 @@ static struct inode *coda_alloc_inode(struct super_block *sb)
 static void coda_i_callback(struct rcu_head *head)
 {
 	struct inode *inode = container_of(head, struct inode, i_rcu);
+	INIT_LIST_HEAD(&inode->i_dentry);
 	kmem_cache_free(coda_inode_cachep, ITOC(inode));
 }
 
@@ -72,12 +74,12 @@ static void init_once(void *foo)
 	inode_init_once(&ei->vfs_inode);
 }
 
-int __init coda_init_inodecache(void)
+int coda_init_inodecache(void)
 {
 	coda_inode_cachep = kmem_cache_create("coda_inode_cache",
-				sizeof(struct coda_inode_info), 0,
-				SLAB_RECLAIM_ACCOUNT|SLAB_MEM_SPREAD|
-				SLAB_ACCOUNT, init_once);
+				sizeof(struct coda_inode_info),
+				0, SLAB_RECLAIM_ACCOUNT|SLAB_MEM_SPREAD,
+				init_once);
 	if (coda_inode_cachep == NULL)
 		return -ENOMEM;
 	return 0;
@@ -85,18 +87,12 @@ int __init coda_init_inodecache(void)
 
 void coda_destroy_inodecache(void)
 {
-	/*
-	 * Make sure all delayed rcu free inodes are flushed before we
-	 * destroy cache.
-	 */
-	rcu_barrier();
 	kmem_cache_destroy(coda_inode_cachep);
 }
 
 static int coda_remount(struct super_block *sb, int *flags, char *data)
 {
-	sync_filesystem(sb);
-	*flags |= SB_NOATIME;
+	*flags |= MS_NOATIME;
 	return 0;
 }
 
@@ -113,41 +109,43 @@ static const struct super_operations coda_super_operations =
 
 static int get_device_index(struct coda_mount_data *data)
 {
-	struct fd f;
+	struct file *file;
 	struct inode *inode;
 	int idx;
 
-	if (data == NULL) {
-		pr_warn("%s: Bad mount data\n", __func__);
+	if(data == NULL) {
+		printk("coda_read_super: Bad mount data\n");
 		return -1;
 	}
 
-	if (data->version != CODA_MOUNT_VERSION) {
-		pr_warn("%s: Bad mount version\n", __func__);
+	if(data->version != CODA_MOUNT_VERSION) {
+		printk("coda_read_super: Bad mount version\n");
 		return -1;
 	}
 
-	f = fdget(data->fd);
-	if (!f.file)
-		goto Ebadf;
-	inode = file_inode(f.file);
-	if (!S_ISCHR(inode->i_mode) || imajor(inode) != CODA_PSDEV_MAJOR) {
-		fdput(f);
-		goto Ebadf;
+	file = fget(data->fd);
+	inode = NULL;
+	if(file)
+		inode = file->f_path.dentry->d_inode;
+	
+	if(!inode || !S_ISCHR(inode->i_mode) ||
+	   imajor(inode) != CODA_PSDEV_MAJOR) {
+		if(file)
+			fput(file);
+
+		printk("coda_read_super: Bad file\n");
+		return -1;
 	}
 
 	idx = iminor(inode);
-	fdput(f);
+	fput(file);
 
-	if (idx < 0 || idx >= MAX_CODADEVS) {
-		pr_warn("%s: Bad minor number\n", __func__);
+	if(idx < 0 || idx >= MAX_CODADEVS) {
+		printk("coda_read_super: Bad minor number\n");
 		return -1;
 	}
 
 	return idx;
-Ebadf:
-	pr_warn("%s: Bad file\n", __func__);
-	return -1;
 }
 
 static int coda_fill_super(struct super_block *sb, void *data, int silent)
@@ -158,68 +156,64 @@ static int coda_fill_super(struct super_block *sb, void *data, int silent)
 	int error;
 	int idx;
 
-	if (task_active_pid_ns(current) != &init_pid_ns)
-		return -EINVAL;
-
 	idx = get_device_index((struct coda_mount_data *) data);
 
 	/* Ignore errors in data, for backward compatibility */
 	if(idx == -1)
 		idx = 0;
 	
-	pr_info("%s: device index: %i\n", __func__,  idx);
+	printk(KERN_INFO "coda_read_super: device index: %i\n", idx);
 
 	vc = &coda_comms[idx];
 	mutex_lock(&vc->vc_mutex);
 
 	if (!vc->vc_inuse) {
-		pr_warn("%s: No pseudo device\n", __func__);
+		printk("coda_read_super: No pseudo device\n");
 		error = -EINVAL;
 		goto unlock_out;
 	}
 
 	if (vc->vc_sb) {
-		pr_warn("%s: Device already mounted\n", __func__);
+		printk("coda_read_super: Device already mounted\n");
 		error = -EBUSY;
 		goto unlock_out;
 	}
+
+	error = bdi_setup_and_register(&vc->bdi, "coda", BDI_CAP_MAP_COPY);
+	if (error)
+		goto unlock_out;
 
 	vc->vc_sb = sb;
 	mutex_unlock(&vc->vc_mutex);
 
 	sb->s_fs_info = vc;
-	sb->s_flags |= SB_NOATIME;
+	sb->s_flags |= MS_NOATIME;
 	sb->s_blocksize = 4096;	/* XXXXX  what do we put here?? */
 	sb->s_blocksize_bits = 12;
 	sb->s_magic = CODA_SUPER_MAGIC;
 	sb->s_op = &coda_super_operations;
 	sb->s_d_op = &coda_dentry_operations;
-
-	error = super_setup_bdi(sb);
-	if (error)
-		goto error;
+	sb->s_bdi = &vc->bdi;
 
 	/* get root fid from Venus: this needs the root inode */
 	error = venus_rootfid(sb, &fid);
 	if ( error ) {
-		pr_warn("%s: coda_get_rootfid failed with %d\n",
-			__func__, error);
+	        printk("coda_read_super: coda_get_rootfid failed with %d\n",
+		       error);
 		goto error;
 	}
-	pr_info("%s: rootfid is %s\n", __func__, coda_f2s(&fid));
+	printk("coda_read_super: rootfid is %s\n", coda_f2s(&fid));
 	
 	/* make root inode */
-        root = coda_cnode_make(&fid, sb);
-        if (IS_ERR(root)) {
-		error = PTR_ERR(root);
-		pr_warn("Failure of coda_cnode_make for root: error %d\n",
-			error);
-		goto error;
+        error = coda_cnode_make(&root, &fid, sb);
+        if ( error || !root ) {
+	    printk("Failure of coda_cnode_make for root: error %d\n", error);
+	    goto error;
 	} 
 
-	pr_info("%s: rootinode is %ld dev %s\n",
-		__func__, root->i_ino, root->i_sb->s_id);
-	sb->s_root = d_make_root(root);
+	printk("coda_read_super: rootinode is %ld dev %s\n", 
+	       root->i_ino, root->i_sb->s_id);
+	sb->s_root = d_alloc_root(root);
 	if (!sb->s_root) {
 		error = -EINVAL;
 		goto error;
@@ -227,7 +221,11 @@ static int coda_fill_super(struct super_block *sb, void *data, int silent)
 	return 0;
 
 error:
+	if (root)
+		iput(root);
+
 	mutex_lock(&vc->vc_mutex);
+	bdi_destroy(&vc->bdi);
 	vc->vc_sb = NULL;
 	sb->s_fs_info = NULL;
 unlock_out:
@@ -239,38 +237,38 @@ static void coda_put_super(struct super_block *sb)
 {
 	struct venus_comm *vcp = coda_vcp(sb);
 	mutex_lock(&vcp->vc_mutex);
+	bdi_destroy(&vcp->bdi);
 	vcp->vc_sb = NULL;
 	sb->s_fs_info = NULL;
 	mutex_unlock(&vcp->vc_mutex);
 
-	pr_info("Bye bye.\n");
+	printk("Coda: Bye bye.\n");
 }
 
 static void coda_evict_inode(struct inode *inode)
 {
-	truncate_inode_pages_final(&inode->i_data);
-	clear_inode(inode);
+	truncate_inode_pages(&inode->i_data, 0);
+	end_writeback(inode);
 	coda_cache_clear_inode(inode);
 }
 
-int coda_getattr(const struct path *path, struct kstat *stat,
-		 u32 request_mask, unsigned int flags)
+int coda_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
 {
-	int err = coda_revalidate_inode(d_inode(path->dentry));
+	int err = coda_revalidate_inode(dentry);
 	if (!err)
-		generic_fillattr(d_inode(path->dentry), stat);
+		generic_fillattr(dentry->d_inode, stat);
 	return err;
 }
 
 int coda_setattr(struct dentry *de, struct iattr *iattr)
 {
-	struct inode *inode = d_inode(de);
+	struct inode *inode = de->d_inode;
 	struct coda_vattr vattr;
 	int error;
 
 	memset(&vattr, 0, sizeof(vattr)); 
 
-	inode->i_ctime = current_time(inode);
+	inode->i_ctime = CURRENT_TIME_SEC;
 	coda_iattr_to_vattr(iattr, &vattr);
 	vattr.va_type = C_VNON; /* cannot set type */
 
@@ -328,5 +326,4 @@ struct file_system_type coda_fs_type = {
 	.kill_sb	= kill_anon_super,
 	.fs_flags	= FS_BINARY_MOUNTDATA,
 };
-MODULE_ALIAS_FS("coda");
 

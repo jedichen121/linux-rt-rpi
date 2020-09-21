@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/slab.h>
@@ -87,7 +86,7 @@ exit:
 }
 
 /* Read out the SERDES registers */
-static int ql_read_serdes_reg(struct ql_adapter *qdev, u32 reg, u32 *data)
+static int ql_read_serdes_reg(struct ql_adapter *qdev, u32 reg, u32 * data)
 {
 	int status;
 
@@ -145,23 +144,42 @@ static int ql_get_serdes_regs(struct ql_adapter *qdev,
 	xaui_direct_valid = xaui_indirect_valid = 1;
 
 	/* The XAUI needs to be read out per port */
-	status = ql_read_other_func_serdes_reg(qdev,
-			XG_SERDES_XAUI_HSS_PCS_START, &temp);
-	if (status)
-		temp = XG_SERDES_ADDR_XAUI_PWR_DOWN;
+	if (qdev->func & 1) {
+		/* We are NIC 2	*/
+		status = ql_read_other_func_serdes_reg(qdev,
+				XG_SERDES_XAUI_HSS_PCS_START, &temp);
+		if (status)
+			temp = XG_SERDES_ADDR_XAUI_PWR_DOWN;
+		if ((temp & XG_SERDES_ADDR_XAUI_PWR_DOWN) ==
+					XG_SERDES_ADDR_XAUI_PWR_DOWN)
+			xaui_indirect_valid = 0;
 
-	if ((temp & XG_SERDES_ADDR_XAUI_PWR_DOWN) ==
-				XG_SERDES_ADDR_XAUI_PWR_DOWN)
-		xaui_indirect_valid = 0;
+		status = ql_read_serdes_reg(qdev,
+				XG_SERDES_XAUI_HSS_PCS_START, &temp);
+		if (status)
+			temp = XG_SERDES_ADDR_XAUI_PWR_DOWN;
 
-	status = ql_read_serdes_reg(qdev, XG_SERDES_XAUI_HSS_PCS_START, &temp);
+		if ((temp & XG_SERDES_ADDR_XAUI_PWR_DOWN) ==
+					XG_SERDES_ADDR_XAUI_PWR_DOWN)
+			xaui_direct_valid = 0;
+	} else {
+		/* We are NIC 1	*/
+		status = ql_read_other_func_serdes_reg(qdev,
+				XG_SERDES_XAUI_HSS_PCS_START, &temp);
+		if (status)
+			temp = XG_SERDES_ADDR_XAUI_PWR_DOWN;
+		if ((temp & XG_SERDES_ADDR_XAUI_PWR_DOWN) ==
+					XG_SERDES_ADDR_XAUI_PWR_DOWN)
+			xaui_indirect_valid = 0;
 
-	if (status)
-		temp = XG_SERDES_ADDR_XAUI_PWR_DOWN;
-
-	if ((temp & XG_SERDES_ADDR_XAUI_PWR_DOWN) ==
-				XG_SERDES_ADDR_XAUI_PWR_DOWN)
-		xaui_direct_valid = 0;
+		status = ql_read_serdes_reg(qdev,
+				XG_SERDES_XAUI_HSS_PCS_START, &temp);
+		if (status)
+			temp = XG_SERDES_ADDR_XAUI_PWR_DOWN;
+		if ((temp & XG_SERDES_ADDR_XAUI_PWR_DOWN) ==
+					XG_SERDES_ADDR_XAUI_PWR_DOWN)
+			xaui_direct_valid = 0;
+	}
 
 	/*
 	 * XFI register is shared so only need to read one
@@ -346,7 +364,7 @@ exit:
 /* Read the 400 xgmac control/statistics registers
  * skipping unused locations.
  */
-static int ql_get_xgmac_regs(struct ql_adapter *qdev, u32 *buf,
+static int ql_get_xgmac_regs(struct ql_adapter *qdev, u32 * buf,
 					unsigned int other_function)
 {
 	int status = 0;
@@ -387,7 +405,7 @@ static int ql_get_xgmac_regs(struct ql_adapter *qdev, u32 *buf,
 	return status;
 }
 
-static int ql_get_ets_regs(struct ql_adapter *qdev, u32 *buf)
+static int ql_get_ets_regs(struct ql_adapter *qdev, u32 * buf)
 {
 	int status = 0;
 	int i;
@@ -405,7 +423,7 @@ static int ql_get_ets_regs(struct ql_adapter *qdev, u32 *buf)
 	return status;
 }
 
-static void ql_get_intr_states(struct ql_adapter *qdev, u32 *buf)
+static void ql_get_intr_states(struct ql_adapter *qdev, u32 * buf)
 {
 	int i;
 
@@ -416,7 +434,7 @@ static void ql_get_intr_states(struct ql_adapter *qdev, u32 *buf)
 	}
 }
 
-static int ql_get_cam_entries(struct ql_adapter *qdev, u32 *buf)
+static int ql_get_cam_entries(struct ql_adapter *qdev, u32 * buf)
 {
 	int i, status;
 	u32 value[3];
@@ -453,7 +471,7 @@ err:
 	return status;
 }
 
-static int ql_get_routing_entries(struct ql_adapter *qdev, u32 *buf)
+static int ql_get_routing_entries(struct ql_adapter *qdev, u32 * buf)
 {
 	int status;
 	u32 value, i;
@@ -478,7 +496,7 @@ err:
 }
 
 /* Read the MPI Processor shadow registers */
-static int ql_get_mpi_shadow_regs(struct ql_adapter *qdev, u32 *buf)
+static int ql_get_mpi_shadow_regs(struct ql_adapter *qdev, u32 * buf)
 {
 	u32 i;
 	int status;
@@ -497,7 +515,7 @@ end:
 }
 
 /* Read the MPI Processor core registers */
-static int ql_get_mpi_regs(struct ql_adapter *qdev, u32 *buf,
+static int ql_get_mpi_regs(struct ql_adapter *qdev, u32 * buf,
 				u32 offset, u32 count)
 {
 	int i, status = 0;
@@ -706,7 +724,7 @@ static void ql_build_coredump_seg_header(
 	seg_hdr->cookie = MPI_COREDUMP_COOKIE;
 	seg_hdr->segNum = seg_number;
 	seg_hdr->segSize = seg_size;
-	strncpy(seg_hdr->description, desc, (sizeof(seg_hdr->description)) - 1);
+	memcpy(seg_hdr->description, desc, (sizeof(seg_hdr->description)) - 1);
 }
 
 /*
@@ -722,8 +740,8 @@ int ql_core_dump(struct ql_adapter *qdev, struct ql_mpi_coredump *mpi_coredump)
 	int i;
 
 	if (!mpi_coredump) {
-		netif_err(qdev, drv, qdev->ndev, "No memory allocated\n");
-		return -EINVAL;
+		netif_err(qdev, drv, qdev->ndev, "No memory available\n");
+		return -ENOMEM;
 	}
 
 	/* Try to get the spinlock, but dont worry if
@@ -747,7 +765,7 @@ int ql_core_dump(struct ql_adapter *qdev, struct ql_mpi_coredump *mpi_coredump)
 		sizeof(struct mpi_coredump_global_header);
 	mpi_coredump->mpi_global_header.imageSize =
 		sizeof(struct ql_mpi_coredump);
-	strncpy(mpi_coredump->mpi_global_header.idString, "MPI Coredump",
+	memcpy(mpi_coredump->mpi_global_header.idString, "MPI Coredump",
 		sizeof(mpi_coredump->mpi_global_header.idString));
 
 	/* Get generic NIC reg dump */
@@ -1224,8 +1242,8 @@ static void ql_get_core_dump(struct ql_adapter *qdev)
 	ql_queue_fw_error(qdev);
 }
 
-static void ql_gen_reg_dump(struct ql_adapter *qdev,
-			    struct ql_reg_dump *mpi_coredump)
+void ql_gen_reg_dump(struct ql_adapter *qdev,
+			struct ql_reg_dump *mpi_coredump)
 {
 	int i, status;
 
@@ -1237,7 +1255,7 @@ static void ql_gen_reg_dump(struct ql_adapter *qdev,
 		sizeof(struct mpi_coredump_global_header);
 	mpi_coredump->mpi_global_header.imageSize =
 		sizeof(struct ql_reg_dump);
-	strncpy(mpi_coredump->mpi_global_header.idString, "MPI Coredump",
+	memcpy(mpi_coredump->mpi_global_header.idString, "MPI Coredump",
 		sizeof(mpi_coredump->mpi_global_header.idString));
 
 
@@ -1806,8 +1824,10 @@ void ql_dump_hw_cb(struct ql_adapter *qdev, int size, u32 bit, u16 q_id)
 	pr_err("%s: Enter\n", __func__);
 
 	ptr = kmalloc(size, GFP_ATOMIC);
-	if (ptr == NULL)
+	if (ptr == NULL) {
+		pr_err("%s: Couldn't allocate a buffer\n", __func__);
 		return;
+	}
 
 	if (ql_write_cfg(qdev, ptr, size, bit, q_id)) {
 		pr_err("%s: Failed to upload control block!\n", __func__);

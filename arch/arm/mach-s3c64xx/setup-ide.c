@@ -1,9 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0
-//
-// Copyright (c) 2010 Samsung Electronics Co., Ltd.
-//		http://www.samsung.com/
-//
-// S3C64XX setup information for IDE
+/* linux/arch/arm/mach-s3c64xx/setup-ide.c
+ *
+ * Copyright (c) 2010 Samsung Electronics Co., Ltd.
+ *		http://www.samsung.com/
+ *
+ * S3C64XX setup information for IDE
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+*/
 
 #include <linux/kernel.h>
 #include <linux/gpio.h>
@@ -12,8 +17,7 @@
 #include <mach/map.h>
 #include <mach/regs-clock.h>
 #include <plat/gpio-cfg.h>
-#include <mach/gpio-samsung.h>
-#include <linux/platform_data/ata-samsung_cf.h>
+#include <plat/ata.h>
 
 void s3c64xx_ide_setup_gpio(void)
 {

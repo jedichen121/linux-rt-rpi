@@ -285,13 +285,13 @@ static const struct sil24_cerr_info {
 	[PORT_CERR_INCONSISTENT] = { AC_ERR_HSM, ATA_EH_RESET,
 				     "protocol mismatch" },
 	[PORT_CERR_DIRECTION]	= { AC_ERR_HSM, ATA_EH_RESET,
-				    "data direction mismatch" },
+				    "data directon mismatch" },
 	[PORT_CERR_UNDERRUN]	= { AC_ERR_HSM, ATA_EH_RESET,
 				    "ran out of SGEs while writing" },
 	[PORT_CERR_OVERRUN]	= { AC_ERR_HSM, ATA_EH_RESET,
 				    "ran out of SGEs while reading" },
 	[PORT_CERR_PKT_PROT]	= { AC_ERR_HSM, ATA_EH_RESET,
-				    "invalid data direction for ATAPI CDB" },
+				    "invalid data directon for ATAPI CDB" },
 	[PORT_CERR_SGT_BOUNDARY] = { AC_ERR_SYSTEM, ATA_EH_RESET,
 				     "SGT not on qword boundary" },
 	[PORT_CERR_SGT_TGTABRT]	= { AC_ERR_HOST_BUS, ATA_EH_RESET,
@@ -353,10 +353,8 @@ static void sil24_error_handler(struct ata_port *ap);
 static void sil24_post_internal_cmd(struct ata_queued_cmd *qc);
 static int sil24_port_start(struct ata_port *ap);
 static int sil24_init_one(struct pci_dev *pdev, const struct pci_device_id *ent);
-#ifdef CONFIG_PM_SLEEP
-static int sil24_pci_device_resume(struct pci_dev *pdev);
-#endif
 #ifdef CONFIG_PM
+static int sil24_pci_device_resume(struct pci_dev *pdev);
 static int sil24_port_resume(struct ata_port *ap);
 #endif
 
@@ -377,7 +375,7 @@ static struct pci_driver sil24_pci_driver = {
 	.id_table		= sil24_pci_tbl,
 	.probe			= sil24_init_one,
 	.remove			= ata_pci_remove_one,
-#ifdef CONFIG_PM_SLEEP
+#ifdef CONFIG_PM
 	.suspend		= ata_pci_device_suspend,
 	.resume			= sil24_pci_device_resume,
 #endif
@@ -388,7 +386,6 @@ static struct scsi_host_template sil24_sht = {
 	.can_queue		= SIL24_MAX_CMDS,
 	.sg_tablesize		= SIL24_MAX_SGE,
 	.dma_boundary		= ATA_DMA_BOUNDARY,
-	.tag_alloc_policy	= BLK_TAG_ALLOC_FIFO,
 };
 
 static struct ata_port_operations sil24_ops = {
@@ -420,7 +417,7 @@ static struct ata_port_operations sil24_ops = {
 #endif
 };
 
-static bool sata_sil24_msi;    /* Disable MSI */
+static int sata_sil24_msi;    /* Disable MSI */
 module_param_named(msi, sata_sil24_msi, bool, S_IRUGO);
 MODULE_PARM_DESC(msi, "Enable MSI (Default: false)");
 
@@ -509,6 +506,8 @@ static int sil24_scr_read(struct ata_link *link, unsigned sc_reg, u32 *val)
 	void __iomem *scr_addr = sil24_port_base(link->ap) + PORT_SCONTROL;
 
 	if (sc_reg < ARRAY_SIZE(sil24_scr_map)) {
+		void __iomem *addr;
+		addr = scr_addr + sil24_scr_map[sc_reg] * 4;
 		*val = readl(scr_addr + sil24_scr_map[sc_reg] * 4);
 		return 0;
 	}
@@ -520,6 +519,8 @@ static int sil24_scr_write(struct ata_link *link, unsigned sc_reg, u32 val)
 	void __iomem *scr_addr = sil24_port_base(link->ap) + PORT_SCONTROL;
 
 	if (sc_reg < ARRAY_SIZE(sil24_scr_map)) {
+		void __iomem *addr;
+		addr = scr_addr + sil24_scr_map[sc_reg] * 4;
 		writel(val, scr_addr + sil24_scr_map[sc_reg] * 4);
 		return 0;
 	}
@@ -849,7 +850,7 @@ static void sil24_qc_prep(struct ata_queued_cmd *qc)
 	struct sil24_sge *sge;
 	u16 ctrl = 0;
 
-	cb = &pp->cmd_block[sil24_tag(qc->hw_tag)];
+	cb = &pp->cmd_block[sil24_tag(qc->tag)];
 
 	if (!ata_is_atapi(qc->tf.protocol)) {
 		prb = &cb->ata.prb;
@@ -891,7 +892,7 @@ static unsigned int sil24_qc_issue(struct ata_queued_cmd *qc)
 	struct ata_port *ap = qc->ap;
 	struct sil24_port_priv *pp = ap->private_data;
 	void __iomem *port = sil24_port_base(ap);
-	unsigned int tag = sil24_tag(qc->hw_tag);
+	unsigned int tag = sil24_tag(qc->tag);
 	dma_addr_t paddr;
 	void __iomem *activate;
 
@@ -911,7 +912,7 @@ static unsigned int sil24_qc_issue(struct ata_queued_cmd *qc)
 
 static bool sil24_qc_fill_rtf(struct ata_queued_cmd *qc)
 {
-	sil24_read_tf(qc->ap, qc->hw_tag, &qc->result_tf);
+	sil24_read_tf(qc->ap, qc->tag, &qc->result_tf);
 	return true;
 }
 
@@ -1155,8 +1156,8 @@ static irqreturn_t sil24_interrupt(int irq, void *dev_instance)
 	status = readl(host_base + HOST_IRQ_STAT);
 
 	if (status == 0xffffffff) {
-		dev_err(host->dev, "IRQ status == 0xffffffff, "
-			"PCI fault or device removal?\n");
+		printk(KERN_ERR DRV_NAME ": IRQ status == 0xffffffff, "
+		       "PCI fault or device removal?\n");
 		goto out;
 	}
 
@@ -1312,10 +1313,10 @@ static int sil24_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	host->iomap = iomap;
 
 	/* configure and activate the device */
-	if (!dma_set_mask(&pdev->dev, DMA_BIT_MASK(64))) {
-		rc = dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(64));
+	if (!pci_set_dma_mask(pdev, DMA_BIT_MASK(64))) {
+		rc = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64));
 		if (rc) {
-			rc = dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(32));
+			rc = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32));
 			if (rc) {
 				dev_err(&pdev->dev,
 					"64-bit DMA enable failed\n");
@@ -1323,12 +1324,12 @@ static int sil24_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 			}
 		}
 	} else {
-		rc = dma_set_mask(&pdev->dev, DMA_BIT_MASK(32));
+		rc = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
 		if (rc) {
 			dev_err(&pdev->dev, "32-bit DMA enable failed\n");
 			return rc;
 		}
-		rc = dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(32));
+		rc = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32));
 		if (rc) {
 			dev_err(&pdev->dev,
 				"32-bit consistent DMA enable failed\n");
@@ -1353,10 +1354,10 @@ static int sil24_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 				 &sil24_sht);
 }
 
-#ifdef CONFIG_PM_SLEEP
+#ifdef CONFIG_PM
 static int sil24_pci_device_resume(struct pci_dev *pdev)
 {
-	struct ata_host *host = pci_get_drvdata(pdev);
+	struct ata_host *host = dev_get_drvdata(&pdev->dev);
 	void __iomem *host_base = host->iomap[SIL24_HOST_BAR];
 	int rc;
 
@@ -1373,9 +1374,7 @@ static int sil24_pci_device_resume(struct pci_dev *pdev)
 
 	return 0;
 }
-#endif
 
-#ifdef CONFIG_PM
 static int sil24_port_resume(struct ata_port *ap)
 {
 	sil24_config_pmp(ap, ap->nr_pmp_links);
@@ -1383,9 +1382,20 @@ static int sil24_port_resume(struct ata_port *ap)
 }
 #endif
 
-module_pci_driver(sil24_pci_driver);
+static int __init sil24_init(void)
+{
+	return pci_register_driver(&sil24_pci_driver);
+}
+
+static void __exit sil24_exit(void)
+{
+	pci_unregister_driver(&sil24_pci_driver);
+}
 
 MODULE_AUTHOR("Tejun Heo");
 MODULE_DESCRIPTION("Silicon Image 3124/3132 SATA low-level driver");
 MODULE_LICENSE("GPL");
 MODULE_DEVICE_TABLE(pci, sil24_pci_tbl);
+
+module_init(sil24_init);
+module_exit(sil24_exit);

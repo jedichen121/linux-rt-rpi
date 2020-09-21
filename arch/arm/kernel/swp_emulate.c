@@ -21,29 +21,26 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/proc_fs.h>
-#include <linux/seq_file.h>
 #include <linux/sched.h>
-#include <linux/sched/mm.h>
 #include <linux/syscalls.h>
 #include <linux/perf_event.h>
 
 #include <asm/opcodes.h>
-#include <asm/system_info.h>
 #include <asm/traps.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 
 /*
  * Error-checking SWP macros implemented using ldrex{b}/strex{b}
  */
 #define __user_swpX_asm(data, addr, res, temp, B)		\
 	__asm__ __volatile__(					\
-	"0:	ldrex"B"	%2, [%3]\n"			\
-	"1:	strex"B"	%0, %1, [%3]\n"			\
+	"	mov		%2, %1\n"			\
+	"0:	ldrex"B"	%1, [%3]\n"			\
+	"1:	strex"B"	%0, %2, [%3]\n"			\
 	"	cmp		%0, #0\n"			\
-	"	moveq		%1, %2\n"			\
 	"	movne		%0, %4\n"			\
 	"2:\n"							\
-	"	.section	 .text.fixup,\"ax\"\n"		\
+	"	.section	 .fixup,\"ax\"\n"		\
 	"	.align		2\n"				\
 	"3:	mov		%0, %5\n"			\
 	"	b		2b\n"				\
@@ -82,14 +79,26 @@ static unsigned long abtcounter;
 static pid_t         previous_pid;
 
 #ifdef CONFIG_PROC_FS
-static int proc_status_show(struct seq_file *m, void *v)
+static int proc_read_status(char *page, char **start, off_t off, int count,
+			    int *eof, void *data)
 {
-	seq_printf(m, "Emulated SWP:\t\t%lu\n", swpcounter);
-	seq_printf(m, "Emulated SWPB:\t\t%lu\n", swpbcounter);
-	seq_printf(m, "Aborted SWP{B}:\t\t%lu\n", abtcounter);
+	char *p = page;
+	int len;
+
+	p += sprintf(p, "Emulated SWP:\t\t%lu\n", swpcounter);
+	p += sprintf(p, "Emulated SWPB:\t\t%lu\n", swpbcounter);
+	p += sprintf(p, "Aborted SWP{B}:\t\t%lu\n", abtcounter);
 	if (previous_pid != 0)
-		seq_printf(m, "Last process:\t\t%d\n", previous_pid);
-	return 0;
+		p += sprintf(p, "Last process:\t\t%d\n", previous_pid);
+
+	len = (p - page) - off;
+	if (len < 0)
+		len = 0;
+
+	*eof = (len <= count) ? 1 : 0;
+	*start = page + off;
+
+	return len;
 }
 #endif
 
@@ -100,13 +109,10 @@ static void set_segfault(struct pt_regs *regs, unsigned long addr)
 {
 	siginfo_t info;
 
-	clear_siginfo(&info);
-	down_read(&current->mm->mmap_sem);
 	if (find_vma(current->mm, addr) == NULL)
 		info.si_code = SEGV_MAPERR;
 	else
 		info.si_code = SEGV_ACCERR;
-	up_read(&current->mm->mmap_sem);
 
 	info.si_signo = SIGSEGV;
 	info.si_errno = 0;
@@ -131,14 +137,19 @@ static int emulate_swpX(unsigned int address, unsigned int *data,
 
 	while (1) {
 		unsigned long temp;
-		unsigned int __ua_flags;
 
-		__ua_flags = uaccess_save_and_enable();
+		/*
+		 * Barrier required between accessing protected resource and
+		 * releasing a lock for it. Legacy code might not have done
+		 * this, and we cannot determine that this is not the case
+		 * being emulated, so insert always.
+		 */
+		smp_mb();
+
 		if (type == TYPE_SWPB)
 			__user_swpb_asm(*data, address, res, temp);
 		else
 			__user_swp_asm(*data, address, res, temp);
-		uaccess_restore(__ua_flags);
 
 		if (likely(res != -EAGAIN) || signal_pending(current))
 			break;
@@ -147,6 +158,13 @@ static int emulate_swpX(unsigned int address, unsigned int *data,
 	}
 
 	if (res == 0) {
+		/*
+		 * Barrier also required between acquiring a lock for a
+		 * protected resource and accessing the resource. Inserted for
+		 * same reason as above.
+		 */
+		smp_mb();
+
 		if (type == TYPE_SWPB)
 			swpbcounter++;
 		else
@@ -245,16 +263,18 @@ static struct undef_hook swp_hook = {
  */
 static int __init swp_emulation_init(void)
 {
-	if (cpu_architecture() < CPU_ARCH_ARMv7)
-		return 0;
-
 #ifdef CONFIG_PROC_FS
-	if (!proc_create_single("cpu/swp_emulation", S_IRUGO, NULL,
-			proc_status_show))
+	struct proc_dir_entry *res;
+
+	res = create_proc_entry("cpu/swp_emulation", S_IRUGO, NULL);
+
+	if (!res)
 		return -ENOMEM;
+
+	res->read_proc = proc_read_status;
 #endif /* CONFIG_PROC_FS */
 
-	pr_notice("Registering SWP/SWPB emulation handler\n");
+	printk(KERN_NOTICE "Registering SWP/SWPB emulation handler\n");
 	register_undef_hook(&swp_hook);
 
 	return 0;

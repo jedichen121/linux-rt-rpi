@@ -55,6 +55,7 @@ void snd_dma_program(unsigned long dma,
 		enable_dma(dma);
 	release_dma_lock(flags);
 }
+
 EXPORT_SYMBOL(snd_dma_program);
 
 /**
@@ -72,6 +73,7 @@ void snd_dma_disable(unsigned long dma)
 	disable_dma(dma);
 	release_dma_lock(flags);
 }
+
 EXPORT_SYMBOL(snd_dma_disable);
 
 /**
@@ -79,7 +81,7 @@ EXPORT_SYMBOL(snd_dma_disable);
  * @dma: the dma number
  * @size: the dma transfer size
  *
- * Return: The current pointer in DMA transfer buffer in bytes.
+ * Returns the current pointer in DMA tranfer buffer in bytes
  */
 unsigned int snd_dma_pointer(unsigned long dma, unsigned int size)
 {
@@ -104,11 +106,12 @@ unsigned int snd_dma_pointer(unsigned long dma, unsigned int size)
 		result = result1;
 #ifdef CONFIG_SND_DEBUG
 	if (result > size)
-		pr_err("ALSA: pointer (0x%x) for DMA #%ld is greater than transfer size (0x%x)\n", result, dma, size);
+		snd_printk(KERN_ERR "pointer (0x%x) for DMA #%ld is greater than transfer size (0x%x)\n", result, dma, size);
 #endif
 	if (result >= size || result == 0)
 		return 0;
 	else
 		return size - result;
 }
+
 EXPORT_SYMBOL(snd_dma_pointer);

@@ -14,8 +14,6 @@
 #ifndef __CPU_SH7786_H__
 #define __CPU_SH7786_H__
 
-#include <linux/io.h>
-
 enum {
 	/* PA */
 	GPIO_PA7, GPIO_PA6, GPIO_PA5, GPIO_PA4,
@@ -34,14 +32,16 @@ enum {
 	GPIO_PD3, GPIO_PD2, GPIO_PD1, GPIO_PD0,
 
 	/* PE */
-	GPIO_PE7, GPIO_PE6,
+	GPIO_PE5, GPIO_PE4, GPIO_PE3, GPIO_PE2,
+	GPIO_PE1, GPIO_PE0,
 
 	/* PF */
 	GPIO_PF7, GPIO_PF6, GPIO_PF5, GPIO_PF4,
 	GPIO_PF3, GPIO_PF2, GPIO_PF1, GPIO_PF0,
 
 	/* PG */
-	GPIO_PG7, GPIO_PG6, GPIO_PG5,
+	GPIO_PG7, GPIO_PG6, GPIO_PG5, GPIO_PG4,
+	GPIO_PG3, GPIO_PG2, GPIO_PG1, GPIO_PG0,
 
 	/* PH */
 	GPIO_PH7, GPIO_PH6, GPIO_PH5, GPIO_PH4,
@@ -49,7 +49,7 @@ enum {
 
 	/* PJ */
 	GPIO_PJ7, GPIO_PJ6, GPIO_PJ5, GPIO_PJ4,
-	GPIO_PJ3, GPIO_PJ2, GPIO_PJ1,
+	GPIO_PJ3, GPIO_PJ2, GPIO_PJ1, GPIO_PJ0,
 
 	/* DU */
 	GPIO_FN_DCLKIN, GPIO_FN_DCLKOUT, GPIO_FN_ODDF,
@@ -132,10 +132,5 @@ enum {
 	/* INTC */
 	GPIO_FN_IRL7, GPIO_FN_IRL6, GPIO_FN_IRL5, GPIO_FN_IRL4,
 };
-
-static inline u32 sh7786_mm_sel(void)
-{
-	return __raw_readl((const volatile void __iomem *)0xFC400020) & 0x7;
-}
 
 #endif /* __CPU_SH7786_H__ */

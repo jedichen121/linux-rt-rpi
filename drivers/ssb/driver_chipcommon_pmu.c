@@ -8,16 +8,13 @@
  * Licensed under the GNU/GPL. See COPYING for details.
  */
 
-#include "ssb_private.h"
-
 #include <linux/ssb/ssb.h>
 #include <linux/ssb/ssb_regs.h>
 #include <linux/ssb/ssb_driver_chipcommon.h>
 #include <linux/delay.h>
 #include <linux/export.h>
-#ifdef CONFIG_BCM47XX
-#include <linux/bcm47xx_nvram.h>
-#endif
+
+#include "ssb_private.h"
 
 static u32 ssb_chipco_pll_read(struct ssb_chipcommon *cc, u32 offset)
 {
@@ -95,6 +92,10 @@ static void ssb_pmu0_pllinit_r0(struct ssb_chipcommon *cc,
 	u32 pmuctl, tmp, pllctl;
 	unsigned int i;
 
+	if ((bus->chip_id == 0x5354) && !crystalfreq) {
+		/* The 5354 crystal freq is 25MHz */
+		crystalfreq = 25000;
+	}
 	if (crystalfreq)
 		e = pmu0_plltab_find_entry(crystalfreq);
 	if (!e)
@@ -110,8 +111,8 @@ static void ssb_pmu0_pllinit_r0(struct ssb_chipcommon *cc,
 		return;
 	}
 
-	dev_info(cc->dev->dev, "Programming PLL to %u.%03u MHz\n",
-		 crystalfreq / 1000, crystalfreq % 1000);
+	ssb_printk(KERN_INFO PFX "Programming PLL to %u.%03u MHz\n",
+		   (crystalfreq / 1000), (crystalfreq % 1000));
 
 	/* First turn the PLL off. */
 	switch (bus->chip_id) {
@@ -128,7 +129,7 @@ static void ssb_pmu0_pllinit_r0(struct ssb_chipcommon *cc,
 			      ~(1 << SSB_PMURES_5354_BB_PLL_PU));
 		break;
 	default:
-		WARN_ON(1);
+		SSB_WARN_ON(1);
 	}
 	for (i = 1500; i; i--) {
 		tmp = chipco_read32(cc, SSB_CHIPCO_CLKCTLST);
@@ -138,7 +139,7 @@ static void ssb_pmu0_pllinit_r0(struct ssb_chipcommon *cc,
 	}
 	tmp = chipco_read32(cc, SSB_CHIPCO_CLKCTLST);
 	if (tmp & SSB_CHIPCO_CLKCTLST_HAVEHT)
-		dev_emerg(cc->dev->dev, "Failed to turn the PLL off!\n");
+		ssb_printk(KERN_EMERG PFX "Failed to turn the PLL off!\n");
 
 	/* Set PDIV in PLL control 0. */
 	pllctl = ssb_chipco_pll_read(cc, SSB_PMU0_PLLCTL0);
@@ -249,8 +250,8 @@ static void ssb_pmu1_pllinit_r0(struct ssb_chipcommon *cc,
 		return;
 	}
 
-	dev_info(cc->dev->dev, "Programming PLL to %u.%03u MHz\n",
-		 crystalfreq / 1000, crystalfreq % 1000);
+	ssb_printk(KERN_INFO PFX "Programming PLL to %u.%03u MHz\n",
+		   (crystalfreq / 1000), (crystalfreq % 1000));
 
 	/* First turn the PLL off. */
 	switch (bus->chip_id) {
@@ -265,7 +266,7 @@ static void ssb_pmu1_pllinit_r0(struct ssb_chipcommon *cc,
 		buffer_strength = 0x222222;
 		break;
 	default:
-		WARN_ON(1);
+		SSB_WARN_ON(1);
 	}
 	for (i = 1500; i; i--) {
 		tmp = chipco_read32(cc, SSB_CHIPCO_CLKCTLST);
@@ -275,7 +276,7 @@ static void ssb_pmu1_pllinit_r0(struct ssb_chipcommon *cc,
 	}
 	tmp = chipco_read32(cc, SSB_CHIPCO_CLKCTLST);
 	if (tmp & SSB_CHIPCO_CLKCTLST_HAVEHT)
-		dev_emerg(cc->dev->dev, "Failed to turn the PLL off!\n");
+		ssb_printk(KERN_EMERG PFX "Failed to turn the PLL off!\n");
 
 	/* Set p1div and p2div. */
 	pllctl = ssb_chipco_pll_read(cc, SSB_PMU1_PLLCTL0);
@@ -320,11 +321,7 @@ static void ssb_pmu_pll_init(struct ssb_chipcommon *cc)
 	u32 crystalfreq = 0; /* in kHz. 0 = keep default freq. */
 
 	if (bus->bustype == SSB_BUSTYPE_SSB) {
-#ifdef CONFIG_BCM47XX
-		char buf[20];
-		if (bcm47xx_nvram_getenv("xtalfreq", buf, sizeof(buf)) >= 0)
-			crystalfreq = simple_strtoul(buf, NULL, 0);
-#endif
+		/* TODO: The user may override the crystal frequency. */
 	}
 
 	switch (bus->chip_id) {
@@ -333,11 +330,7 @@ static void ssb_pmu_pll_init(struct ssb_chipcommon *cc)
 		ssb_pmu1_pllinit_r0(cc, crystalfreq);
 		break;
 	case 0x4328:
-		ssb_pmu0_pllinit_r0(cc, crystalfreq);
-		break;
 	case 0x5354:
-		if (crystalfreq == 0)
-			crystalfreq = 25000;
 		ssb_pmu0_pllinit_r0(cc, crystalfreq);
 		break;
 	case 0x4322:
@@ -346,11 +339,10 @@ static void ssb_pmu_pll_init(struct ssb_chipcommon *cc)
 			chipco_write32(cc, SSB_CHIPCO_PLLCTL_DATA, 0x380005C0);
 		}
 		break;
-	case 43222:
-		break;
 	default:
-		dev_err(cc->dev->dev, "ERROR: PLL init unknown for device %04X\n",
-			bus->chip_id);
+		ssb_printk(KERN_ERR PFX
+			   "ERROR: PLL init unknown for device %04X\n",
+			   bus->chip_id);
 	}
 }
 
@@ -435,7 +427,6 @@ static void ssb_pmu_resources_init(struct ssb_chipcommon *cc)
 		 min_msk = 0xCBB;
 		 break;
 	case 0x4322:
-	case 43222:
 		/* We keep the default settings:
 		 * min_msk = 0xCBB
 		 * max_msk = 0x7FFFF
@@ -471,8 +462,9 @@ static void ssb_pmu_resources_init(struct ssb_chipcommon *cc)
 		max_msk = 0xFFFFF;
 		break;
 	default:
-		dev_err(cc->dev->dev, "ERROR: PMU resource config unknown for device %04X\n",
-			bus->chip_id);
+		ssb_printk(KERN_ERR PFX
+			   "ERROR: PMU resource config unknown for device %04X\n",
+			   bus->chip_id);
 	}
 
 	if (updown_tab) {
@@ -501,7 +493,7 @@ static void ssb_pmu_resources_init(struct ssb_chipcommon *cc)
 					      ~(depend_tab[i].depend));
 				break;
 			default:
-				WARN_ON(1);
+				SSB_WARN_ON(1);
 			}
 		}
 	}
@@ -524,8 +516,8 @@ void ssb_pmu_init(struct ssb_chipcommon *cc)
 	pmucap = chipco_read32(cc, SSB_CHIPCO_PMU_CAP);
 	cc->pmu.rev = (pmucap & SSB_CHIPCO_PMU_CAP_REVISION);
 
-	dev_dbg(cc->dev->dev, "Found rev %u PMU (capabilities 0x%08X)\n",
-		cc->pmu.rev, pmucap);
+	ssb_dprintk(KERN_DEBUG PFX "Found rev %u PMU (capabilities 0x%08X)\n",
+		    cc->pmu.rev, pmucap);
 
 	if (cc->pmu.rev == 1)
 		chipco_mask32(cc, SSB_CHIPCO_PMU_CTL,
@@ -568,12 +560,12 @@ void ssb_pmu_set_ldo_voltage(struct ssb_chipcommon *cc,
 			mask = 0x3F;
 			break;
 		default:
-			WARN_ON(1);
+			SSB_WARN_ON(1);
 			return;
 		}
 		break;
 	case 0x4312:
-		if (WARN_ON(id != LDO_PAREF))
+		if (SSB_WARN_ON(id != LDO_PAREF))
 			return;
 		addr = 0;
 		shift = 21;
@@ -615,102 +607,3 @@ void ssb_pmu_set_ldo_paref(struct ssb_chipcommon *cc, bool on)
 
 EXPORT_SYMBOL(ssb_pmu_set_ldo_voltage);
 EXPORT_SYMBOL(ssb_pmu_set_ldo_paref);
-
-static u32 ssb_pmu_get_alp_clock_clk0(struct ssb_chipcommon *cc)
-{
-	u32 crystalfreq;
-	const struct pmu0_plltab_entry *e = NULL;
-
-	crystalfreq = (chipco_read32(cc, SSB_CHIPCO_PMU_CTL) &
-		       SSB_CHIPCO_PMU_CTL_XTALFREQ)  >> SSB_CHIPCO_PMU_CTL_XTALFREQ_SHIFT;
-	e = pmu0_plltab_find_entry(crystalfreq);
-	BUG_ON(!e);
-	return e->freq * 1000;
-}
-
-u32 ssb_pmu_get_alp_clock(struct ssb_chipcommon *cc)
-{
-	struct ssb_bus *bus = cc->dev->bus;
-
-	switch (bus->chip_id) {
-	case 0x5354:
-		return ssb_pmu_get_alp_clock_clk0(cc);
-	default:
-		dev_err(cc->dev->dev, "ERROR: PMU alp clock unknown for device %04X\n",
-			bus->chip_id);
-		return 0;
-	}
-}
-
-u32 ssb_pmu_get_cpu_clock(struct ssb_chipcommon *cc)
-{
-	struct ssb_bus *bus = cc->dev->bus;
-
-	switch (bus->chip_id) {
-	case 0x5354:
-		/* 5354 chip uses a non programmable PLL of frequency 240MHz */
-		return 240000000;
-	default:
-		dev_err(cc->dev->dev, "ERROR: PMU cpu clock unknown for device %04X\n",
-			bus->chip_id);
-		return 0;
-	}
-}
-
-u32 ssb_pmu_get_controlclock(struct ssb_chipcommon *cc)
-{
-	struct ssb_bus *bus = cc->dev->bus;
-
-	switch (bus->chip_id) {
-	case 0x5354:
-		return 120000000;
-	default:
-		dev_err(cc->dev->dev, "ERROR: PMU controlclock unknown for device %04X\n",
-			bus->chip_id);
-		return 0;
-	}
-}
-
-void ssb_pmu_spuravoid_pllupdate(struct ssb_chipcommon *cc, int spuravoid)
-{
-	u32 pmu_ctl = 0;
-
-	switch (cc->dev->bus->chip_id) {
-	case 0x4322:
-		ssb_chipco_pll_write(cc, SSB_PMU1_PLLCTL0, 0x11100070);
-		ssb_chipco_pll_write(cc, SSB_PMU1_PLLCTL1, 0x1014140a);
-		ssb_chipco_pll_write(cc, SSB_PMU1_PLLCTL5, 0x88888854);
-		if (spuravoid == 1)
-			ssb_chipco_pll_write(cc, SSB_PMU1_PLLCTL2, 0x05201828);
-		else
-			ssb_chipco_pll_write(cc, SSB_PMU1_PLLCTL2, 0x05001828);
-		pmu_ctl = SSB_CHIPCO_PMU_CTL_PLL_UPD;
-		break;
-	case 43222:
-		if (spuravoid == 1) {
-			ssb_chipco_pll_write(cc, SSB_PMU1_PLLCTL0, 0x11500008);
-			ssb_chipco_pll_write(cc, SSB_PMU1_PLLCTL1, 0x0C000C06);
-			ssb_chipco_pll_write(cc, SSB_PMU1_PLLCTL2, 0x0F600a08);
-			ssb_chipco_pll_write(cc, SSB_PMU1_PLLCTL3, 0x00000000);
-			ssb_chipco_pll_write(cc, SSB_PMU1_PLLCTL4, 0x2001E920);
-			ssb_chipco_pll_write(cc, SSB_PMU1_PLLCTL5, 0x88888815);
-		} else {
-			ssb_chipco_pll_write(cc, SSB_PMU1_PLLCTL0, 0x11100008);
-			ssb_chipco_pll_write(cc, SSB_PMU1_PLLCTL1, 0x0c000c06);
-			ssb_chipco_pll_write(cc, SSB_PMU1_PLLCTL2, 0x03000a08);
-			ssb_chipco_pll_write(cc, SSB_PMU1_PLLCTL3, 0x00000000);
-			ssb_chipco_pll_write(cc, SSB_PMU1_PLLCTL4, 0x200005c0);
-			ssb_chipco_pll_write(cc, SSB_PMU1_PLLCTL5, 0x88888855);
-		}
-		pmu_ctl = SSB_CHIPCO_PMU_CTL_PLL_UPD;
-		break;
-	default:
-		dev_err(cc->dev->dev,
-			"Unknown spuravoidance settings for chip 0x%04X, not changing PLL\n",
-			cc->dev->bus->chip_id);
-		return;
-	}
-
-	chipco_set32(cc, SSB_CHIPCO_PMU_CTL, pmu_ctl);
-}
-EXPORT_SYMBOL_GPL(ssb_pmu_spuravoid_pllupdate);

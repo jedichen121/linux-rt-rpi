@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * PIO blacklist.  Some drives incorrectly report their maximal PIO mode,
  * at least in respect to CMD640.  Here we keep info on some known drives.
@@ -8,7 +7,6 @@
  */
 
 #include <linux/string.h>
-#include <linux/ide.h>
 
 static struct ide_pio_info {
 	const char	*name;

@@ -91,7 +91,7 @@ process_line(struct conf_writedata *cnf)
 /* write conf file -> boot or send cfg line to card */
 /****************************************************/
 static ssize_t
-hysdn_conf_write(struct file *file, const char __user *buf, size_t count, loff_t *off)
+hysdn_conf_write(struct file *file, const char __user *buf, size_t count, loff_t * off)
 {
 	struct conf_writedata *cnf;
 	int i;
@@ -229,12 +229,23 @@ static int
 hysdn_conf_open(struct inode *ino, struct file *filep)
 {
 	hysdn_card *card;
+	struct proc_dir_entry *pd;
 	struct conf_writedata *cnf;
 	char *cp, *tmp;
 
 	/* now search the addressed card */
 	mutex_lock(&hysdn_conf_mutex);
-	card = PDE_DATA(ino);
+	card = card_root;
+	while (card) {
+		pd = card->procconf;
+		if (pd == PDE(ino))
+			break;
+		card = card->next;	/* search next entry */
+	}
+	if (!card) {
+		mutex_unlock(&hysdn_conf_mutex);
+		return (-ENODEV);	/* device is unknown/invalid */
+	}
 	if (card->debug_flags & (LOG_PROC_OPEN | LOG_PROC_ALL))
 		hysdn_addlog(card, "config open for uid=%d gid=%d mode=0x%x",
 			     filep->f_cred->fsuid, filep->f_cred->fsgid,
@@ -306,9 +317,21 @@ hysdn_conf_close(struct inode *ino, struct file *filep)
 	hysdn_card *card;
 	struct conf_writedata *cnf;
 	int retval = 0;
+	struct proc_dir_entry *pd;
 
 	mutex_lock(&hysdn_conf_mutex);
-	card = PDE_DATA(ino);
+	/* search the addressed card */
+	card = card_root;
+	while (card) {
+		pd = card->procconf;
+		if (pd == PDE(ino))
+			break;
+		card = card->next;	/* search next entry */
+	}
+	if (!card) {
+		mutex_unlock(&hysdn_conf_mutex);
+		return (-ENODEV);	/* device is unknown/invalid */
+	}
 	if (card->debug_flags & (LOG_PROC_OPEN | LOG_PROC_ALL))
 		hysdn_addlog(card, "config close for uid=%d gid=%d mode=0x%x",
 			     filep->f_cred->fsuid, filep->f_cred->fsgid,
@@ -343,7 +366,7 @@ static const struct file_operations conf_fops =
 	.read           = hysdn_conf_read,
 	.write          = hysdn_conf_write,
 	.open           = hysdn_conf_open,
-	.release        = hysdn_conf_close,
+	.release        = hysdn_conf_close,                                       
 };
 
 /*****************************/
@@ -371,11 +394,10 @@ hysdn_procconf_init(void)
 	while (card) {
 
 		sprintf(conf_name, "%s%d", PROC_CONF_BASENAME, card->myid);
-		if ((card->procconf = (void *) proc_create_data(conf_name,
-							   S_IFREG | S_IRUGO | S_IWUSR,
-							   hysdn_proc_entry,
-							   &conf_fops,
-							   card)) != NULL) {
+		if ((card->procconf = (void *) proc_create(conf_name,
+						S_IFREG | S_IRUGO | S_IWUSR,
+						hysdn_proc_entry,
+						&conf_fops)) != NULL) {
 			hysdn_proclog_init(card);	/* init the log file entry */
 		}
 		card = card->next;	/* next entry */

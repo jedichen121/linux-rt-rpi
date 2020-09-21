@@ -1,8 +1,7 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ALPHA_IRQFLAGS_H
 #define __ALPHA_IRQFLAGS_H
 
-#include <asm/pal.h>
+#include <asm/system.h>
 
 #define IPL_MIN		0
 #define IPL_SW0		1

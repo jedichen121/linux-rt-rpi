@@ -1,14 +1,13 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Q40 master Chip Control
- * RTC stuff merged for compactness.
+ * RTC stuff merged for compactnes..
 */
 
 #ifndef _Q40_MASTER_H
 #define _Q40_MASTER_H
 
 #include <asm/raw_io.h>
-#include <asm/kmap.h>
+
 
 #define q40_master_addr 0xff000000
 
@@ -61,7 +60,7 @@
 #define Q40_RTC_WRITE  128
 
 /* define some Q40 specific ints */
-#include <asm/q40ints.h>
+#include "q40ints.h"
 
 /* misc defs */
 #define DAC_LEFT  ((unsigned char *)0xff008000)

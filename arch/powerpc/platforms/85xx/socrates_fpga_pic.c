@@ -9,8 +9,6 @@
  */
 
 #include <linux/irq.h>
-#include <linux/of_address.h>
-#include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/io.h>
 
@@ -53,7 +51,7 @@ static struct socrates_fpga_irq_info fpga_irqs[SOCRATES_FPGA_NUM_IRQS] = {
 static DEFINE_RAW_SPINLOCK(socrates_fpga_pic_lock);
 
 static void __iomem *socrates_fpga_pic_iobase;
-static struct irq_domain *socrates_fpga_pic_irq_host;
+static struct irq_host *socrates_fpga_pic_irq_host;
 static unsigned int socrates_fpga_irqs[3];
 
 static inline uint32_t socrates_fpga_pic_read(int reg)
@@ -78,7 +76,7 @@ static inline unsigned int socrates_fpga_pic_get_irq(unsigned int irq)
 			break;
 	}
 	if (i == 3)
-		return 0;
+		return NO_IRQ;
 
 	raw_spin_lock_irqsave(&socrates_fpga_pic_lock, flags);
 	cause = socrates_fpga_pic_read(FPGA_PIC_IRQMASK(i));
@@ -91,10 +89,9 @@ static inline unsigned int socrates_fpga_pic_get_irq(unsigned int irq)
 			(irq_hw_number_t)i);
 }
 
-static void socrates_fpga_pic_cascade(struct irq_desc *desc)
+void socrates_fpga_pic_cascade(unsigned int irq, struct irq_desc *desc)
 {
 	struct irq_chip *chip = irq_desc_get_chip(desc);
-	unsigned int irq = irq_desc_get_irq(desc);
 	unsigned int cascade_irq;
 
 	/*
@@ -103,7 +100,7 @@ static void socrates_fpga_pic_cascade(struct irq_desc *desc)
 	 */
 	cascade_irq = socrates_fpga_pic_get_irq(irq);
 
-	if (cascade_irq)
+	if (cascade_irq != NO_IRQ)
 		generic_handle_irq(cascade_irq);
 	chip->irq_eoi(&desc->irq_data);
 }
@@ -230,7 +227,7 @@ static struct irq_chip socrates_fpga_pic_chip = {
 	.irq_set_type	= socrates_fpga_pic_set_type,
 };
 
-static int socrates_fpga_pic_host_map(struct irq_domain *h, unsigned int virq,
+static int socrates_fpga_pic_host_map(struct irq_host *h, unsigned int virq,
 		irq_hw_number_t hwirq)
 {
 	/* All interrupts are LEVEL sensitive */
@@ -241,7 +238,7 @@ static int socrates_fpga_pic_host_map(struct irq_domain *h, unsigned int virq,
 	return 0;
 }
 
-static int socrates_fpga_pic_host_xlate(struct irq_domain *h,
+static int socrates_fpga_pic_host_xlate(struct irq_host *h,
 		struct device_node *ct,	const u32 *intspec, unsigned int intsize,
 		irq_hw_number_t *out_hwirq, unsigned int *out_flags)
 {
@@ -252,7 +249,8 @@ static int socrates_fpga_pic_host_xlate(struct irq_domain *h,
 		/* type is configurable */
 		if (intspec[1] != IRQ_TYPE_LEVEL_LOW &&
 		    intspec[1] != IRQ_TYPE_LEVEL_HIGH) {
-			pr_warn("FPGA PIC: invalid irq type, setting default active low\n");
+			pr_warning("FPGA PIC: invalid irq type, "
+				   "setting default active low\n");
 			*out_flags = IRQ_TYPE_LEVEL_LOW;
 		} else {
 			*out_flags = intspec[1];
@@ -266,12 +264,12 @@ static int socrates_fpga_pic_host_xlate(struct irq_domain *h,
 	if (intspec[2] <= 2)
 		fpga_irq->irq_line = intspec[2];
 	else
-		pr_warn("FPGA PIC: invalid irq routing\n");
+		pr_warning("FPGA PIC: invalid irq routing\n");
 
 	return 0;
 }
 
-static const struct irq_domain_ops socrates_fpga_pic_host_ops = {
+static struct irq_host_ops socrates_fpga_pic_host_ops = {
 	.map    = socrates_fpga_pic_host_map,
 	.xlate  = socrates_fpga_pic_host_xlate,
 };
@@ -281,9 +279,10 @@ void socrates_fpga_pic_init(struct device_node *pic)
 	unsigned long flags;
 	int i;
 
-	/* Setup an irq_domain structure */
-	socrates_fpga_pic_irq_host = irq_domain_add_linear(pic,
-		    SOCRATES_FPGA_NUM_IRQS, &socrates_fpga_pic_host_ops, NULL);
+	/* Setup an irq_host structure */
+	socrates_fpga_pic_irq_host = irq_alloc_host(pic, IRQ_HOST_MAP_LINEAR,
+			SOCRATES_FPGA_NUM_IRQS,	&socrates_fpga_pic_host_ops,
+			SOCRATES_FPGA_NUM_IRQS);
 	if (socrates_fpga_pic_irq_host == NULL) {
 		pr_err("FPGA PIC: Unable to allocate host\n");
 		return;
@@ -291,8 +290,8 @@ void socrates_fpga_pic_init(struct device_node *pic)
 
 	for (i = 0; i < 3; i++) {
 		socrates_fpga_irqs[i] = irq_of_parse_and_map(pic, i);
-		if (!socrates_fpga_irqs[i]) {
-			pr_warn("FPGA PIC: can't get irq%d\n", i);
+		if (socrates_fpga_irqs[i] == NO_IRQ) {
+			pr_warning("FPGA PIC: can't get irq%d.\n", i);
 			continue;
 		}
 		irq_set_chained_handler(socrates_fpga_irqs[i],

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_FAULT_INJECT_H
 #define _LINUX_FAULT_INJECT_H
 
@@ -6,7 +5,6 @@
 
 #include <linux/types.h>
 #include <linux/debugfs.h>
-#include <linux/ratelimit.h>
 #include <linux/atomic.h>
 
 /*
@@ -19,7 +17,7 @@ struct fault_attr {
 	atomic_t times;
 	atomic_t space;
 	unsigned long verbose;
-	bool task_filter;
+	u32 task_filter;
 	unsigned long stacktrace_depth;
 	unsigned long require_start;
 	unsigned long require_end;
@@ -27,18 +25,14 @@ struct fault_attr {
 	unsigned long reject_end;
 
 	unsigned long count;
-	struct ratelimit_state ratelimit_state;
-	struct dentry *dname;
 };
 
-#define FAULT_ATTR_INITIALIZER {					\
-		.interval = 1,						\
-		.times = ATOMIC_INIT(1),				\
-		.require_end = ULONG_MAX,				\
-		.stacktrace_depth = 32,					\
-		.ratelimit_state = RATELIMIT_STATE_INIT_DISABLED,	\
-		.verbose = 2,						\
-		.dname = NULL,						\
+#define FAULT_ATTR_INITIALIZER {				\
+		.interval = 1,					\
+		.times = ATOMIC_INIT(1),			\
+		.require_end = ULONG_MAX,			\
+		.stacktrace_depth = 32,				\
+		.verbose = 2,					\
 	}
 
 #define DECLARE_FAULT_ATTR(name) struct fault_attr name = FAULT_ATTR_INITIALIZER
@@ -62,13 +56,11 @@ static inline struct dentry *fault_create_debugfs_attr(const char *name,
 
 #endif /* CONFIG_FAULT_INJECTION */
 
-struct kmem_cache;
-
-int should_failslab(struct kmem_cache *s, gfp_t gfpflags);
 #ifdef CONFIG_FAILSLAB
-extern bool __should_failslab(struct kmem_cache *s, gfp_t gfpflags);
+extern bool should_failslab(size_t size, gfp_t gfpflags, unsigned long flags);
 #else
-static inline bool __should_failslab(struct kmem_cache *s, gfp_t gfpflags)
+static inline bool should_failslab(size_t size, gfp_t gfpflags,
+				unsigned long flags)
 {
 	return false;
 }

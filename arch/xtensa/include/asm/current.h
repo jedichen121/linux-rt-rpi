@@ -11,8 +11,6 @@
 #ifndef _XTENSA_CURRENT_H
 #define _XTENSA_CURRENT_H
 
-#include <asm/thread_info.h>
-
 #ifndef __ASSEMBLY__
 
 #include <linux/thread_info.h>
@@ -28,9 +26,11 @@ static inline struct task_struct *get_current(void)
 
 #else
 
+#define CURRENT_SHIFT 13
+
 #define GET_CURRENT(reg,sp)		\
 	GET_THREAD_INFO(reg,sp);	\
-	l32i reg, reg, TI_TASK		\
+  	l32i reg, reg, TI_TASK		\
 
 #endif
 

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/module.h>
@@ -27,14 +26,16 @@ int nf_register_sockopt(struct nf_sockopt_ops *reg)
 	struct nf_sockopt_ops *ops;
 	int ret = 0;
 
-	mutex_lock(&nf_sockopt_mutex);
+	if (mutex_lock_interruptible(&nf_sockopt_mutex) != 0)
+		return -EINTR;
+
 	list_for_each_entry(ops, &nf_sockopts, list) {
 		if (ops->pf == reg->pf
 		    && (overlap(ops->set_optmin, ops->set_optmax,
 				reg->set_optmin, reg->set_optmax)
 			|| overlap(ops->get_optmin, ops->get_optmax,
 				   reg->get_optmin, reg->get_optmax))) {
-			pr_debug("nf_sock overlap: %u-%u/%u-%u v %u-%u/%u-%u\n",
+			NFDEBUG("nf_sock overlap: %u-%u/%u-%u v %u-%u/%u-%u\n",
 				ops->set_optmin, ops->set_optmax,
 				ops->get_optmin, ops->get_optmax,
 				reg->set_optmin, reg->set_optmax,
@@ -64,7 +65,9 @@ static struct nf_sockopt_ops *nf_sockopt_find(struct sock *sk, u_int8_t pf,
 {
 	struct nf_sockopt_ops *ops;
 
-	mutex_lock(&nf_sockopt_mutex);
+	if (mutex_lock_interruptible(&nf_sockopt_mutex) != 0)
+		return ERR_PTR(-EINTR);
+
 	list_for_each_entry(ops, &nf_sockopts, list) {
 		if (ops->pf == pf) {
 			if (!try_module_get(ops->owner))

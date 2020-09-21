@@ -1,11 +1,15 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/*
+/* arch/arm/plat-samsung/include/plat/cpu-freq.h
+ *
  * Copyright (c) 2006-2007 Simtec Electronics
  *	http://armlinux.simtec.co.uk/
  *	Ben Dooks <ben@simtec.co.uk>
  *
  * S3C CPU frequency scaling support - driver and board
- */
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+*/
 
 #include <linux/cpufreq.h>
 
@@ -122,7 +126,7 @@ struct s3c_cpufreq_board {
 };
 
 /* Things depending on frequency scaling. */
-#ifdef CONFIG_ARM_S3C_CPUFREQ
+#ifdef CONFIG_CPU_FREQ_S3C
 #define __init_or_cpufreq
 #else
 #define __init_or_cpufreq __init
@@ -130,7 +134,7 @@ struct s3c_cpufreq_board {
 
 /* Board functions */
 
-#ifdef CONFIG_ARM_S3C_CPUFREQ
+#ifdef CONFIG_CPU_FREQ_S3C
 extern int s3c_cpufreq_setboard(struct s3c_cpufreq_board *board);
 #else
 
@@ -138,4 +142,4 @@ static inline int s3c_cpufreq_setboard(struct s3c_cpufreq_board *board)
 {
 	return 0;
 }
-#endif  /* CONFIG_ARM_S3C_CPUFREQ */
+#endif  /* CONFIG_CPU_FREQ_S3C */

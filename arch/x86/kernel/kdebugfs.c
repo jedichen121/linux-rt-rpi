@@ -8,7 +8,7 @@
  */
 #include <linux/debugfs.h>
 #include <linux/uaccess.h>
-#include <linux/export.h>
+#include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/stat.h>
@@ -33,6 +33,7 @@ static ssize_t setup_data_read(struct file *file, char __user *user_buf,
 	struct setup_data_node *node = file->private_data;
 	unsigned long remain;
 	loff_t pos = *ppos;
+	struct page *pg;
 	void *p;
 	u64 pa;
 
@@ -46,13 +47,18 @@ static ssize_t setup_data_read(struct file *file, char __user *user_buf,
 		count = node->len - pos;
 
 	pa = node->paddr + sizeof(struct setup_data) + pos;
-	p = memremap(pa, count, MEMREMAP_WB);
-	if (!p)
-		return -ENOMEM;
+	pg = pfn_to_page((pa + count - 1) >> PAGE_SHIFT);
+	if (PageHighMem(pg)) {
+		p = ioremap_cache(pa, count);
+		if (!p)
+			return -ENXIO;
+	} else
+		p = __va(pa);
 
 	remain = copy_to_user(user_buf, p, count);
 
-	memunmap(p);
+	if (PageHighMem(pg))
+		iounmap(p);
 
 	if (remain)
 		return -EFAULT;
@@ -62,9 +68,16 @@ static ssize_t setup_data_read(struct file *file, char __user *user_buf,
 	return count;
 }
 
+static int setup_data_open(struct inode *inode, struct file *file)
+{
+	file->private_data = inode->i_private;
+
+	return 0;
+}
+
 static const struct file_operations fops_setup_data = {
 	.read		= setup_data_read,
-	.open		= simple_open,
+	.open		= setup_data_open,
 	.llseek		= default_llseek,
 };
 
@@ -101,8 +114,9 @@ static int __init create_setup_data_nodes(struct dentry *parent)
 {
 	struct setup_data_node *node;
 	struct setup_data *data;
-	int error;
+	int error = -ENOMEM;
 	struct dentry *d;
+	struct page *pg;
 	u64 pa_data;
 	int no = 0;
 
@@ -114,17 +128,19 @@ static int __init create_setup_data_nodes(struct dentry *parent)
 
 	while (pa_data) {
 		node = kmalloc(sizeof(*node), GFP_KERNEL);
-		if (!node) {
-			error = -ENOMEM;
+		if (!node)
 			goto err_dir;
-		}
 
-		data = memremap(pa_data, sizeof(*data), MEMREMAP_WB);
-		if (!data) {
-			kfree(node);
-			error = -ENOMEM;
-			goto err_dir;
-		}
+		pg = pfn_to_page((pa_data+sizeof(*data)-1) >> PAGE_SHIFT);
+		if (PageHighMem(pg)) {
+			data = ioremap_cache(pa_data, sizeof(*data));
+			if (!data) {
+				kfree(node);
+				error = -ENXIO;
+				goto err_dir;
+			}
+		} else
+			data = __va(pa_data);
 
 		node->paddr = pa_data;
 		node->type = data->type;
@@ -132,7 +148,8 @@ static int __init create_setup_data_nodes(struct dentry *parent)
 		error = create_setup_data_node(d, no, node);
 		pa_data = data->next;
 
-		memunmap(data);
+		if (PageHighMem(pg))
+			iounmap(data);
 		if (error)
 			goto err_dir;
 		no++;
@@ -155,7 +172,7 @@ static int __init boot_params_kdebugfs_init(void)
 	struct dentry *dbp, *version, *data;
 	int error = -ENOMEM;
 
-	dbp = debugfs_create_dir("boot_params", arch_debugfs_dir);
+	dbp = debugfs_create_dir("boot_params", NULL);
 	if (!dbp)
 		return -ENOMEM;
 

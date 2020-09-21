@@ -10,39 +10,15 @@
 #ifndef AES_CCM_H
 #define AES_CCM_H
 
-#include "aead_api.h"
+#include <linux/crypto.h>
 
-#define CCM_AAD_LEN	32
-
-static inline struct crypto_aead *
-ieee80211_aes_key_setup_encrypt(const u8 key[], size_t key_len, size_t mic_len)
-{
-	return aead_key_setup_encrypt("ccm(aes)", key, key_len, mic_len);
-}
-
-static inline int
-ieee80211_aes_ccm_encrypt(struct crypto_aead *tfm,
-			  u8 *b_0, u8 *aad, u8 *data,
-			  size_t data_len, u8 *mic)
-{
-	return aead_encrypt(tfm, b_0, aad + 2,
-			    be16_to_cpup((__be16 *)aad),
-			    data, data_len, mic);
-}
-
-static inline int
-ieee80211_aes_ccm_decrypt(struct crypto_aead *tfm,
-			  u8 *b_0, u8 *aad, u8 *data,
-			  size_t data_len, u8 *mic)
-{
-	return aead_decrypt(tfm, b_0, aad + 2,
-			    be16_to_cpup((__be16 *)aad),
-			    data, data_len, mic);
-}
-
-static inline void ieee80211_aes_key_free(struct crypto_aead *tfm)
-{
-	return aead_key_free(tfm);
-}
+struct crypto_cipher *ieee80211_aes_key_setup_encrypt(const u8 key[]);
+void ieee80211_aes_ccm_encrypt(struct crypto_cipher *tfm, u8 *scratch,
+			       u8 *data, size_t data_len,
+			       u8 *cdata, u8 *mic);
+int ieee80211_aes_ccm_decrypt(struct crypto_cipher *tfm, u8 *scratch,
+			      u8 *cdata, size_t data_len,
+			      u8 *mic, u8 *data);
+void ieee80211_aes_key_free(struct crypto_cipher *tfm);
 
 #endif /* AES_CCM_H */

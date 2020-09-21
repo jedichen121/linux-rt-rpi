@@ -13,6 +13,10 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *  GNU General Public License for more details.
  *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program; if not, write to the Free Software
+ *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ *
  */
 
 #ifndef _FMDRV_COMMON_H
@@ -311,11 +315,11 @@ struct fm_event_msg_hdr {
 #define FM_RDS_GROUP_TYPE_MASK_15B	    ((unsigned long)1<<31)
 
 /* RX Alternate Frequency info */
-#define FM_RDS_MIN_AF			  1
-#define FM_RDS_MAX_AF			204
-#define FM_RDS_MAX_AF_JAPAN		140
-#define FM_RDS_1_AF_FOLLOWS		225
-#define FM_RDS_25_AF_FOLLOWS		249
+#define FM_RDS_MIN_AF		          1
+#define FM_RDS_MAX_AF		        204
+#define FM_RDS_MAX_AF_JAPAN	        140
+#define FM_RDS_1_AF_FOLLOWS	        225
+#define FM_RDS_25_AF_FOLLOWS	        249
 
 /* RDS system type (RDS/RBDS) */
 #define FM_RDS_SYSTEM_RDS		0
@@ -364,27 +368,27 @@ struct fm_event_msg_hdr {
 #define FM_TX_ANT_IMP_500		2
 
 /* Functions exported by FM common sub-module */
-int fmc_prepare(struct fmdev *);
-int fmc_release(struct fmdev *);
+u32 fmc_prepare(struct fmdev *);
+u32 fmc_release(struct fmdev *);
 
 void fmc_update_region_info(struct fmdev *, u8);
-int fmc_send_cmd(struct fmdev *, u8, u16,
+u32 fmc_send_cmd(struct fmdev *, u8, u16,
 				void *, unsigned int, void *, int *);
-int fmc_is_rds_data_available(struct fmdev *, struct file *,
+u32 fmc_is_rds_data_available(struct fmdev *, struct file *,
 				struct poll_table_struct *);
-int fmc_transfer_rds_from_internal_buff(struct fmdev *, struct file *,
+u32 fmc_transfer_rds_from_internal_buff(struct fmdev *, struct file *,
 					u8 __user *, size_t);
 
-int fmc_set_freq(struct fmdev *, u32);
-int fmc_set_mode(struct fmdev *, u8);
-int fmc_set_region(struct fmdev *, u8);
-int fmc_set_mute_mode(struct fmdev *, u8);
-int fmc_set_stereo_mono(struct fmdev *, u16);
-int fmc_set_rds_mode(struct fmdev *, u8);
+u32 fmc_set_freq(struct fmdev *, u32);
+u32 fmc_set_mode(struct fmdev *, u8);
+u32 fmc_set_region(struct fmdev *, u8);
+u32 fmc_set_mute_mode(struct fmdev *, u8);
+u32 fmc_set_stereo_mono(struct fmdev *, u16);
+u32 fmc_set_rds_mode(struct fmdev *, u8);
 
-int fmc_get_freq(struct fmdev *, u32 *);
-int fmc_get_region(struct fmdev *, u8 *);
-int fmc_get_mode(struct fmdev *, u8 *);
+u32 fmc_get_freq(struct fmdev *, u32 *);
+u32 fmc_get_region(struct fmdev *, u8 *);
+u32 fmc_get_mode(struct fmdev *, u8 *);
 
 /*
  * channel spacing

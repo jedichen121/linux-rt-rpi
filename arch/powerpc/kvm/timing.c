@@ -110,6 +110,7 @@ void kvmppc_update_timing_stats(struct kvm_vcpu *vcpu)
 
 static const char *kvm_exit_names[__NUMBER_OF_KVM_EXIT_TYPES] = {
 	[MMIO_EXITS] =              "MMIO",
+	[DCR_EXITS] =               "DCR",
 	[SIGNAL_EXITS] =            "SIGNAL",
 	[ITLB_REAL_MISS_EXITS] =    "ITLBREAL",
 	[ITLB_VIRT_MISS_EXITS] =    "ITLBVIRT",
@@ -143,7 +144,8 @@ static int kvmppc_exit_timing_show(struct seq_file *m, void *private)
 	int i;
 	u64 min, max, sum, sum_quad;
 
-	seq_puts(m, "type	count	min	max	sum	sum_squared\n");
+	seq_printf(m, "%s", "type	count	min	max	sum	sum_squared\n");
+
 
 	for (i = 0; i < __NUMBER_OF_KVM_EXIT_TYPES; i++) {
 

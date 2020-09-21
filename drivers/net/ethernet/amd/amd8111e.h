@@ -13,7 +13,9 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, see <http://www.gnu.org/licenses/>.
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307
+ * USA
 
 Module Name:
 
@@ -48,7 +50,7 @@ eg., if the value 10011010b is written into the least significant byte of a comm
 /* 32 bit registers */
 
 #define  ASF_STAT		0x00	/* ASF status register */
-#define CHIPID			0x04	/* Chip ID register */
+#define CHIPID			0x04	/* Chip ID regsiter */
 #define	MIB_DATA		0x10	/* MIB data register */
 #define MIB_ADDR		0x14	/* MIB address register */
 #define STAT0			0x30	/* Status0 register */
@@ -614,7 +616,7 @@ typedef enum {
 /* Assume contoller gets data 10 times the maximum processing time */
 #define  REPEAT_CNT			10
 
-/* amd8111e descriptor flag definitions */
+/* amd8111e decriptor flag definitions */
 typedef enum {
 
 	OWN_BIT		=	(1 << 15),
@@ -648,7 +650,7 @@ typedef enum {
 /* driver ioctl parameters */
 #define AMD8111E_REG_DUMP_LEN	 13*sizeof(u32)
 
-/* amd8111e descriptor format */
+/* amd8111e desriptor format */
 
 struct amd8111e_tx_dr{
 
@@ -751,7 +753,7 @@ struct amd8111e_priv{
 	const char *name;
 	struct pci_dev *pci_dev;	/* Ptr to the associated pci_dev */
 	struct net_device* amd8111e_net_dev; 	/* ptr to associated net_device */
-	/* Transmit and receive skbs */
+	/* Transmit and recive skbs */
 	struct sk_buff *tx_skbuff[NUM_TX_BUFFERS];
 	struct sk_buff *rx_skbuff[NUM_RX_BUFFERS];
 	/* Transmit and receive dma mapped addr */

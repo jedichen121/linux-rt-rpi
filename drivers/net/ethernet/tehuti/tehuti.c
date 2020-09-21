@@ -66,7 +66,7 @@
 
 #include "tehuti.h"
 
-static const struct pci_device_id bdx_pci_tbl[] = {
+static DEFINE_PCI_DEVICE_TABLE(bdx_pci_tbl) = {
 	{ PCI_VDEVICE(TEHUTI, 0x3009), },
 	{ PCI_VDEVICE(TEHUTI, 0x3010), },
 	{ PCI_VDEVICE(TEHUTI, 0x3014), },
@@ -137,15 +137,14 @@ static void print_eth_id(struct net_device *ndev)
 #define bdx_disable_interrupts(priv)	\
 	do { WRITE_REG(priv, regIMR, 0); } while (0)
 
-/**
- * bdx_fifo_init - create TX/RX descriptor fifo for host-NIC communication.
- * @priv: NIC private structure
- * @f: fifo to initialize
- * @fsz_type: fifo size type: 0-4KB, 1-8KB, 2-16KB, 3-32KB
- * @reg_XXX: offsets of registers relative to base address
- *
+/* bdx_fifo_init
+ * create TX/RX descriptor fifo for host-NIC communication.
  * 1K extra space is allocated at the end of the fifo to simplify
  * processing of descriptors that wraps around fifo's end
+ * @priv - NIC private structure
+ * @f - fifo to initialize
+ * @fsz_type - fifo size type: 0-4KB, 1-8KB, 2-16KB, 3-32KB
+ * @reg_XXX - offsets of registers relative to base address
  *
  * Returns 0 on success, negative value on failure
  *
@@ -178,10 +177,9 @@ bdx_fifo_init(struct bdx_priv *priv, struct fifo *f, int fsz_type,
 	RET(0);
 }
 
-/**
- * bdx_fifo_free - free all resources used by fifo
- * @priv: NIC private structure
- * @f: fifo to release
+/* bdx_fifo_free - free all resources used by fifo
+ * @priv - NIC private structure
+ * @f - fifo to release
  */
 static void bdx_fifo_free(struct bdx_priv *priv, struct fifo *f)
 {
@@ -194,9 +192,9 @@ static void bdx_fifo_free(struct bdx_priv *priv, struct fifo *f)
 	RET();
 }
 
-/**
+/*
  * bdx_link_changed - notifies OS about hw link state.
- * @priv: hw adapter structure
+ * @bdx_priv - hw adapter structure
  */
 static void bdx_link_changed(struct bdx_priv *priv)
 {
@@ -235,10 +233,10 @@ static void bdx_isr_extra(struct bdx_priv *priv, u32 isr)
 
 }
 
-/**
- * bdx_isr_napi - Interrupt Service Routine for Bordeaux NIC
- * @irq: interrupt number
- * @dev: network device
+/* bdx_isr - Interrupt Service Routine for Bordeaux NIC
+ * @irq - interrupt number
+ * @ndev - network device
+ * @regs - CPU registers
  *
  * Return IRQ_NONE if it was not our interrupt, IRQ_HANDLED - otherwise
  *
@@ -303,16 +301,14 @@ static int bdx_poll(struct napi_struct *napi, int budget)
 		 * device lock and allow waiting tasks (eg rmmod) to advance) */
 		priv->napi_stop = 0;
 
-		napi_complete_done(napi, work_done);
+		napi_complete(napi);
 		bdx_enable_interrupts(priv);
 	}
 	return work_done;
 }
 
-/**
- * bdx_fw_load - loads firmware to NIC
- * @priv: NIC private structure
- *
+/* bdx_fw_load - loads firmware to NIC
+ * @priv - NIC private structure
  * Firmware is loaded via TXD fifo, so it must be initialized first.
  * Firware must be loaded once per NIC not per PCI device provided by NIC (NIC
  * can have few of them). So all drivers use semaphore register to choose one
@@ -345,8 +341,8 @@ static int bdx_fw_load(struct bdx_priv *priv)
 out:
 	if (master)
 		WRITE_REG(priv, regINIT_SEMAPHORE, 1);
-
-	release_firmware(fw);
+	if (fw)
+		release_firmware(fw);
 
 	if (rc) {
 		netdev_err(priv->ndev, "firmware loading failed\n");
@@ -384,9 +380,8 @@ static void bdx_restore_mac(struct net_device *ndev, struct bdx_priv *priv)
 	RET();
 }
 
-/**
- * bdx_hw_start - inits registers and starts HW's Rx and Tx engines
- * @priv: NIC private structure
+/* bdx_hw_start - inits registers and starts HW's Rx and Tx engines
+ * @priv - NIC private structure
  */
 static int bdx_hw_start(struct bdx_priv *priv)
 {
@@ -654,8 +649,6 @@ static int bdx_ioctl_priv(struct net_device *ndev, struct ifreq *ifr, int cmd)
 			RET(-EFAULT);
 		}
 		DBG("%d 0x%x 0x%x\n", data[0], data[1], data[2]);
-	} else {
-		return -EOPNOTSUPP;
 	}
 
 	if (!capable(CAP_SYS_RAWIO))
@@ -698,13 +691,12 @@ static int bdx_ioctl(struct net_device *ndev, struct ifreq *ifr, int cmd)
 		RET(-EOPNOTSUPP);
 }
 
-/**
+/*
  * __bdx_vlan_rx_vid - private helper for adding/killing VLAN vid
- * @ndev: network device
- * @vid:  VLAN vid
- * @op:   add or kill operation
- *
- * Passes VLAN filter table to hardware
+ *                     by passing VLAN filter table to hardware
+ * @ndev network device
+ * @vid  VLAN vid
+ * @op   add or kill operation
  */
 static void __bdx_vlan_rx_vid(struct net_device *ndev, uint16_t vid, int enable)
 {
@@ -730,23 +722,23 @@ static void __bdx_vlan_rx_vid(struct net_device *ndev, uint16_t vid, int enable)
 	RET();
 }
 
-/**
+/*
  * bdx_vlan_rx_add_vid - kernel hook for adding VLAN vid to hw filtering table
- * @ndev: network device
- * @vid:  VLAN vid to add
+ * @ndev network device
+ * @vid  VLAN vid to add
  */
-static int bdx_vlan_rx_add_vid(struct net_device *ndev, __be16 proto, u16 vid)
+static int bdx_vlan_rx_add_vid(struct net_device *ndev, uint16_t vid)
 {
 	__bdx_vlan_rx_vid(ndev, vid, 1);
 	return 0;
 }
 
-/**
+/*
  * bdx_vlan_rx_kill_vid - kernel hook for killing VLAN vid in hw filtering table
- * @ndev: network device
- * @vid:  VLAN vid to kill
+ * @ndev network device
+ * @vid  VLAN vid to kill
  */
-static int bdx_vlan_rx_kill_vid(struct net_device *ndev, __be16 proto, u16 vid)
+static int bdx_vlan_rx_kill_vid(struct net_device *ndev, unsigned short vid)
 {
 	__bdx_vlan_rx_vid(ndev, vid, 0);
 	return 0;
@@ -762,6 +754,16 @@ static int bdx_vlan_rx_kill_vid(struct net_device *ndev, __be16 proto, u16 vid)
 static int bdx_change_mtu(struct net_device *ndev, int new_mtu)
 {
 	ENTER;
+
+	if (new_mtu == ndev->mtu)
+		RET(0);
+
+	/* enforce minimum frame size */
+	if (new_mtu < ETH_ZLEN) {
+		netdev_err(ndev, "mtu %d is less then minimal %d\n",
+			   new_mtu, ETH_ZLEN);
+		RET(-EINVAL);
+	}
 
 	ndev->mtu = new_mtu;
 	if (netif_running(ndev)) {
@@ -972,9 +974,8 @@ static inline void bdx_rxdb_free_elem(struct rxdb *db, int n)
  *     Rx Init                                                           *
  *************************************************************************/
 
-/**
- * bdx_rx_init - initialize RX all related HW and SW resources
- * @priv: NIC private structure
+/* bdx_rx_init - initialize RX all related HW and SW resources
+ * @priv - NIC private structure
  *
  * Returns 0 on success, negative value on failure
  *
@@ -1015,10 +1016,9 @@ err_mem:
 	return -ENOMEM;
 }
 
-/**
- * bdx_rx_free_skbs - frees and unmaps all skbs allocated for the fifo
- * @priv: NIC private structure
- * @f: RXF fifo
+/* bdx_rx_free_skbs - frees and unmaps all skbs allocated for the fifo
+ * @priv - NIC private structure
+ * @f - RXF fifo
  */
 static void bdx_rx_free_skbs(struct bdx_priv *priv, struct rxf_fifo *f)
 {
@@ -1045,10 +1045,8 @@ static void bdx_rx_free_skbs(struct bdx_priv *priv, struct rxf_fifo *f)
 	}
 }
 
-/**
- * bdx_rx_free - release all Rx resources
- * @priv: NIC private structure
- *
+/* bdx_rx_free - release all Rx resources
+ * @priv - NIC private structure
  * It assumes that Rx is desabled in HW
  */
 static void bdx_rx_free(struct bdx_priv *priv)
@@ -1069,11 +1067,9 @@ static void bdx_rx_free(struct bdx_priv *priv)
  *     Rx Engine                                                         *
  *************************************************************************/
 
-/**
- * bdx_rx_alloc_skbs - fill rxf fifo with new skbs
- * @priv: nic's private structure
- * @f: RXF fifo that needs skbs
- *
+/* bdx_rx_alloc_skbs - fill rxf fifo with new skbs
+ * @priv - nic's private structure
+ * @f - RXF fifo that needs skbs
  * It allocates skbs, build rxf descs and push it (rxf descr) into rxf fifo.
  * skb's virtual and physical addresses are stored in skb db.
  * To calculate free space, func uses cached values of RPTR and WPTR
@@ -1093,10 +1089,12 @@ static void bdx_rx_alloc_skbs(struct bdx_priv *priv, struct rxf_fifo *f)
 	ENTER;
 	dno = bdx_rxdb_available(db) - 1;
 	while (dno > 0) {
-		skb = netdev_alloc_skb(priv->ndev, f->m.pktsz + NET_IP_ALIGN);
-		if (!skb)
+		skb = dev_alloc_skb(f->m.pktsz + NET_IP_ALIGN);
+		if (!skb) {
+			pr_err("NO MEM: dev_alloc_skb failed\n");
 			break;
-
+		}
+		skb->dev = priv->ndev;
 		skb_reserve(skb, NET_IP_ALIGN);
 
 		idx = bdx_rxdb_alloc_elem(db);
@@ -1140,7 +1138,7 @@ NETIF_RX_MUX(struct bdx_priv *priv, u32 rxd_val1, u16 rxd_vlan,
 		    priv->ndev->name,
 		    GET_RXD_VLAN_ID(rxd_vlan),
 		    GET_RXD_VTAG(rxd_val1));
-		__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q), GET_RXD_VLAN_TCI(rxd_vlan));
+		__vlan_hwaccel_put_tag(skb, GET_RXD_VLAN_TCI(rxd_vlan));
 	}
 	netif_receive_skb(skb);
 }
@@ -1151,6 +1149,7 @@ static void bdx_recycle_skb(struct bdx_priv *priv, struct rxd_desc *rxdd)
 	struct rx_map *dm;
 	struct rxf_fifo *f;
 	struct rxdb *db;
+	struct sk_buff *skb;
 	int delta;
 
 	ENTER;
@@ -1160,6 +1159,7 @@ static void bdx_recycle_skb(struct bdx_priv *priv, struct rxd_desc *rxdd)
 	DBG("db=%p f=%p\n", db, f);
 	dm = bdx_rxdb_addr_elem(db, rxdd->va_lo);
 	DBG("dm=%p\n", dm);
+	skb = dm->skb;
 	rxfd = (struct rxf_desc *)(f->m.va + f->m.wptr);
 	rxfd->info = CPU_CHIP_SWAP32(0x10003);	/* INFO=1 BC=3 */
 	rxfd->va_lo = rxdd->va_lo;
@@ -1180,15 +1180,13 @@ static void bdx_recycle_skb(struct bdx_priv *priv, struct rxd_desc *rxdd)
 	RET();
 }
 
-/**
- * bdx_rx_receive - receives full packets from RXD fifo and pass them to OS
+/* bdx_rx_receive - receives full packets from RXD fifo and pass them to OS
  * NOTE: a special treatment is given to non-continuous descriptors
  * that start near the end, wraps around and continue at the beginning. a second
  * part is copied right after the first, and then descriptor is interpreted as
  * normal. fifo has an extra space to allow such operations
- * @priv: nic's private structure
- * @f: RXF fifo that needs skbs
- * @budget: maximum number of packets to receive
+ * @priv - nic's private structure
+ * @f - RXF fifo that needs skbs
  */
 
 /* TBD: replace memcpy func call by explicite inline asm */
@@ -1260,7 +1258,7 @@ static int bdx_rx_receive(struct bdx_priv *priv, struct rxd_fifo *f, int budget)
 		skb = dm->skb;
 
 		if (len < BDX_COPYBREAK &&
-		    (skb2 = netdev_alloc_skb(priv->ndev, len + NET_IP_ALIGN))) {
+		    (skb2 = dev_alloc_skb(len + NET_IP_ALIGN))) {
 			skb_reserve(skb2, NET_IP_ALIGN);
 			/*skb_put(skb2, len); */
 			pci_dma_sync_single_for_cpu(priv->pdev,
@@ -1320,7 +1318,7 @@ static void print_rxdd(struct rxd_desc *rxdd, u32 rxd_val1, u16 len,
 
 static void print_rxfd(struct rxf_desc *rxfd)
 {
-	DBG("=== RxF desc CHIP ORDER/ENDIANNESS =============\n"
+	DBG("=== RxF desc CHIP ORDER/ENDIANESS =============\n"
 	    "info 0x%x va_lo %u pa_lo 0x%x pa_hi 0x%x len 0x%x\n",
 	    rxfd->info, rxfd->va_lo, rxfd->pa_lo, rxfd->pa_hi, rxfd->len);
 }
@@ -1378,10 +1376,9 @@ static inline int bdx_tx_db_size(struct txdb *db)
 	return db->size - taken;
 }
 
-/**
- * __bdx_tx_db_ptr_next - helper function, increment read/write pointer + wrap
- * @db: tx data base
- * @pptr: read or write pointer
+/* __bdx_tx_ptr_next - helper function, increment read/write pointer + wrap
+ * @d   - tx data base
+ * @ptr - read or write pointer
  */
 static inline void __bdx_tx_db_ptr_next(struct txdb *db, struct tx_map **pptr)
 {
@@ -1398,9 +1395,8 @@ static inline void __bdx_tx_db_ptr_next(struct txdb *db, struct tx_map **pptr)
 		*pptr = db->start;
 }
 
-/**
- * bdx_tx_db_inc_rptr - increment read pointer
- * @db: tx data base
+/* bdx_tx_db_inc_rptr - increment read pointer
+ * @d   - tx data base
  */
 static inline void bdx_tx_db_inc_rptr(struct txdb *db)
 {
@@ -1408,9 +1404,8 @@ static inline void bdx_tx_db_inc_rptr(struct txdb *db)
 	__bdx_tx_db_ptr_next(db, &db->rptr);
 }
 
-/**
- * bdx_tx_db_inc_wptr - increment write pointer
- * @db: tx data base
+/* bdx_tx_db_inc_rptr - increment write pointer
+ * @d   - tx data base
  */
 static inline void bdx_tx_db_inc_wptr(struct txdb *db)
 {
@@ -1419,11 +1414,9 @@ static inline void bdx_tx_db_inc_wptr(struct txdb *db)
 						   a result of write */
 }
 
-/**
- * bdx_tx_db_init - creates and initializes tx db
- * @d: tx data base
- * @sz_type: size of tx fifo
- *
+/* bdx_tx_db_init - creates and initializes tx db
+ * @d       - tx data base
+ * @sz_type - size of tx fifo
  * Returns 0 on success, error code otherwise
  */
 static int bdx_tx_db_init(struct txdb *d, int sz_type)
@@ -1449,9 +1442,8 @@ static int bdx_tx_db_init(struct txdb *d, int sz_type)
 	return 0;
 }
 
-/**
- * bdx_tx_db_close - closes tx db and frees all memory
- * @d: tx data base
+/* bdx_tx_db_close - closes tx db and frees all memory
+ * @d - tx data base
  */
 static void bdx_tx_db_close(struct txdb *d)
 {
@@ -1472,11 +1464,9 @@ static struct {
 	u16 qwords;		/* qword = 64 bit */
 } txd_sizes[MAX_SKB_FRAGS + 1];
 
-/**
- * bdx_tx_map_skb - creates and stores dma mappings for skb's data blocks
- * @priv: NIC private structure
- * @skb: socket buffer to map
- * @txdd: TX descriptor to use
+/* txdb_map_skb - creates and stores dma mappings for skb's data blocks
+ * @priv - NIC private structure
+ * @skb  - socket buffer to map
  *
  * It makes dma mappings for skb's data blocks and writes them to PBL of
  * new tx descriptor. It also stores them in the tx db, so they could be
@@ -1573,10 +1563,9 @@ err_mem:
 	return -ENOMEM;
 }
 
-/**
+/*
  * bdx_tx_space - calculates available space in TX fifo
- * @priv: NIC private structure
- *
+ * @priv - NIC private structure
  * Returns available space in TX fifo in bytes
  */
 static inline int bdx_tx_space(struct bdx_priv *priv)
@@ -1591,15 +1580,15 @@ static inline int bdx_tx_space(struct bdx_priv *priv)
 	return fsize;
 }
 
-/**
- * bdx_tx_transmit - send packet to NIC
- * @skb: packet to send
- * @ndev: network device assigned to NIC
+/* bdx_tx_transmit - send packet to NIC
+ * @skb - packet to send
+ * ndev - network device assigned to NIC
  * Return codes:
  * o NETDEV_TX_OK everything ok.
  * o NETDEV_TX_BUSY Cannot transmit packet, try later
  *   Usually a bug, means queue start/stop flow control is broken in
  *   the driver. Note: the driver must NOT put the skb in its DMA ring.
+ * o NETDEV_TX_LOCKED Locking failed, please retry quickly.
  */
 static netdev_tx_t bdx_tx_transmit(struct sk_buff *skb,
 				   struct net_device *ndev)
@@ -1619,7 +1608,12 @@ static netdev_tx_t bdx_tx_transmit(struct sk_buff *skb,
 
 	ENTER;
 	local_irq_save(flags);
-	spin_lock(&priv->tx_lock);
+	if (!spin_trylock(&priv->tx_lock)) {
+		local_irq_restore(flags);
+		DBG("%s[%s]: TX locked, returning NETDEV_TX_LOCKED\n",
+		    BDX_DRV_NAME, ndev->name);
+		return NETDEV_TX_LOCKED;
+	}
 
 	/* build tx descriptor */
 	BDX_ASSERT(f->m.wptr >= f->m.memsz);	/* started with valid wptr */
@@ -1634,9 +1628,9 @@ static netdev_tx_t bdx_tx_transmit(struct sk_buff *skb,
 		    txd_mss);
 	}
 
-	if (skb_vlan_tag_present(skb)) {
+	if (vlan_tx_tag_present(skb)) {
 		/*Cut VLAN ID to 12 bits */
-		txd_vlan_id = skb_vlan_tag_get(skb) & BITS_MASK(12);
+		txd_vlan_id = vlan_tx_tag_get(skb) & BITS_MASK(12);
 		txd_vtag = 1;
 	}
 
@@ -1691,7 +1685,7 @@ static netdev_tx_t bdx_tx_transmit(struct sk_buff *skb,
 
 #endif
 #ifdef BDX_LLTX
-	netif_trans_update(ndev); /* NETIF_F_LLTX driver :( */
+	ndev->trans_start = jiffies; /* NETIF_F_LLTX driver :( */
 #endif
 	ndev->stats.tx_packets++;
 	ndev->stats.tx_bytes += skb->len;
@@ -1706,10 +1700,8 @@ static netdev_tx_t bdx_tx_transmit(struct sk_buff *skb,
 	return NETDEV_TX_OK;
 }
 
-/**
- * bdx_tx_cleanup - clean TXF fifo, run in the context of IRQ.
- * @priv: bdx adapter
- *
+/* bdx_tx_cleanup - clean TXF fifo, run in the context of IRQ.
+ * @priv - bdx adapter
  * It scans TXF fifo for descriptors, frees DMA mappings and reports to OS
  * that those packets were sent
  */
@@ -1748,7 +1740,7 @@ static void bdx_tx_cleanup(struct bdx_priv *priv)
 	WRITE_REG(priv, f->m.reg_RPTR, f->m.rptr & TXF_WPTR_WR_PTR);
 
 	/* We reclaimed resources, so in case the Q is stopped by xmit callback,
-	 * we resume the transmission and use tx_lock to synchronize with xmit.*/
+	 * we resume the transmition and use tx_lock to synchronize with xmit.*/
 	spin_lock(&priv->tx_lock);
 	priv->tx_level += tx_level;
 	BDX_ASSERT(priv->tx_level <= 0 || priv->tx_level > BDX_MAX_TX_LEVEL);
@@ -1770,8 +1762,7 @@ static void bdx_tx_cleanup(struct bdx_priv *priv)
 	spin_unlock(&priv->tx_lock);
 }
 
-/**
- * bdx_tx_free_skbs - frees all skbs from TXD fifo.
+/* bdx_tx_free_skbs - frees all skbs from TXD fifo.
  * It gets called when OS stops this dev, eg upon "ifconfig down" or rmmod
  */
 static void bdx_tx_free_skbs(struct bdx_priv *priv)
@@ -1800,11 +1791,10 @@ static void bdx_tx_free(struct bdx_priv *priv)
 	bdx_tx_db_close(&priv->txdb);
 }
 
-/**
- * bdx_tx_push_desc - push descriptor to TxD fifo
- * @priv: NIC private structure
- * @data: desc's data
- * @size: desc's size
+/* bdx_tx_push_desc - push descriptor to TxD fifo
+ * @priv - NIC private structure
+ * @data - desc's data
+ * @size - desc's size
  *
  * Pushes desc to TxD fifo and overlaps it if needed.
  * NOTE: this func does not check for available space. this is responsibility
@@ -1830,11 +1820,10 @@ static void bdx_tx_push_desc(struct bdx_priv *priv, void *data, int size)
 	WRITE_REG(priv, f->m.reg_WPTR, f->m.wptr & TXF_WPTR_WR_PTR);
 }
 
-/**
- * bdx_tx_push_desc_safe - push descriptor to TxD fifo in a safe way
- * @priv: NIC private structure
- * @data: desc's data
- * @size: desc's size
+/* bdx_tx_push_desc_safe - push descriptor to TxD fifo in a safe way
+ * @priv - NIC private structure
+ * @data - desc's data
+ * @size - desc's size
  *
  * NOTE: this func does check for available space and, if necessary, waits for
  *   NIC to read existing data before writing new one.
@@ -1897,7 +1886,7 @@ static const struct net_device_ops bdx_netdev_ops = {
  */
 
 /* TBD: netif_msg should be checked and implemented. I disable it for now */
-static int
+static int __devinit
 bdx_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	struct net_device *ndev;
@@ -1977,7 +1966,7 @@ bdx_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if ((readl(nic->regs + FPGA_VER) & 0xFFF) >= 378) {
 		err = pci_enable_msi(pdev);
 		if (err)
-			pr_err("Can't enable msi. error is %d\n", err);
+			pr_err("Can't eneble msi. error is %d\n", err);
 		else
 			nic->irq_type = IRQ_MSI;
 	} else
@@ -1989,6 +1978,7 @@ bdx_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		ndev = alloc_etherdev(sizeof(struct bdx_priv));
 		if (!ndev) {
 			err = -ENOMEM;
+			pr_err("alloc_etherdev failed\n");
 			goto err_out_iomap;
 		}
 
@@ -2000,12 +1990,17 @@ bdx_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		/* these fields are used for info purposes only
 		 * so we can have them same for all ports of the board */
 		ndev->if_port = port;
+		ndev->base_addr = pciaddr;
+		ndev->mem_start = pciaddr;
+		ndev->mem_end = pciaddr + regionSize;
+		ndev->irq = pdev->irq;
 		ndev->features = NETIF_F_IP_CSUM | NETIF_F_SG | NETIF_F_TSO
-		    | NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_HW_VLAN_CTAG_RX |
-		    NETIF_F_HW_VLAN_CTAG_FILTER | NETIF_F_RXCSUM
+		    | NETIF_F_HW_VLAN_TX | NETIF_F_HW_VLAN_RX |
+		    NETIF_F_HW_VLAN_FILTER | NETIF_F_RXCSUM
+		    /*| NETIF_F_FRAGLIST */
 		    ;
 		ndev->hw_features = NETIF_F_IP_CSUM | NETIF_F_SG |
-			NETIF_F_TSO | NETIF_F_HW_VLAN_CTAG_TX;
+			NETIF_F_TSO | NETIF_F_HW_VLAN_TX;
 
 		if (pci_using_dac)
 			ndev->features |= NETIF_F_HIGHDMA;
@@ -2047,10 +2042,6 @@ bdx_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 #ifdef BDX_LLTX
 		ndev->features |= NETIF_F_LLTX;
 #endif
-		/* MTU range: 60 - 16384 */
-		ndev->min_mtu = ETH_ZLEN;
-		ndev->max_mtu = BDX_MAX_MTU;
-
 		spin_lock_init(&priv->tx_lock);
 
 		/*bdx_hw_reset(priv); */
@@ -2124,26 +2115,33 @@ static const char
 };
 
 /*
- * bdx_get_link_ksettings - get device-specific settings
+ * bdx_get_settings - get device-specific settings
  * @netdev
  * @ecmd
  */
-static int bdx_get_link_ksettings(struct net_device *netdev,
-				  struct ethtool_link_ksettings *ecmd)
+static int bdx_get_settings(struct net_device *netdev, struct ethtool_cmd *ecmd)
 {
-	ethtool_link_ksettings_zero_link_mode(ecmd, supported);
-	ethtool_link_ksettings_add_link_mode(ecmd, supported,
-					     10000baseT_Full);
-	ethtool_link_ksettings_add_link_mode(ecmd, supported, FIBRE);
-	ethtool_link_ksettings_zero_link_mode(ecmd, advertising);
-	ethtool_link_ksettings_add_link_mode(ecmd, advertising,
-					     10000baseT_Full);
-	ethtool_link_ksettings_add_link_mode(ecmd, advertising, FIBRE);
+	u32 rdintcm;
+	u32 tdintcm;
+	struct bdx_priv *priv = netdev_priv(netdev);
 
-	ecmd->base.speed = SPEED_10000;
-	ecmd->base.duplex = DUPLEX_FULL;
-	ecmd->base.port = PORT_FIBRE;
-	ecmd->base.autoneg = AUTONEG_DISABLE;
+	rdintcm = priv->rdintcm;
+	tdintcm = priv->tdintcm;
+
+	ecmd->supported = (SUPPORTED_10000baseT_Full | SUPPORTED_FIBRE);
+	ecmd->advertising = (ADVERTISED_10000baseT_Full | ADVERTISED_FIBRE);
+	ethtool_cmd_speed_set(ecmd, SPEED_10000);
+	ecmd->duplex = DUPLEX_FULL;
+	ecmd->port = PORT_FIBRE;
+	ecmd->transceiver = XCVR_EXTERNAL;	/* what does it mean? */
+	ecmd->autoneg = AUTONEG_DISABLE;
+
+	/* PCK_TH measures in multiples of FIFO bytes
+	   We translate to packets */
+	ecmd->maxtxpkt =
+	    ((GET_PCK_TH(tdintcm) * PCK_TH_MULT) / BDX_TXF_DESC_SZ);
+	ecmd->maxrxpkt =
+	    ((GET_PCK_TH(rdintcm) * PCK_TH_MULT) / sizeof(struct rxf_desc));
 
 	return 0;
 }
@@ -2158,11 +2156,16 @@ bdx_get_drvinfo(struct net_device *netdev, struct ethtool_drvinfo *drvinfo)
 {
 	struct bdx_priv *priv = netdev_priv(netdev);
 
-	strlcpy(drvinfo->driver, BDX_DRV_NAME, sizeof(drvinfo->driver));
-	strlcpy(drvinfo->version, BDX_DRV_VERSION, sizeof(drvinfo->version));
-	strlcpy(drvinfo->fw_version, "N/A", sizeof(drvinfo->fw_version));
-	strlcpy(drvinfo->bus_info, pci_name(priv->pdev),
+	strlcat(drvinfo->driver, BDX_DRV_NAME, sizeof(drvinfo->driver));
+	strlcat(drvinfo->version, BDX_DRV_VERSION, sizeof(drvinfo->version));
+	strlcat(drvinfo->fw_version, "N/A", sizeof(drvinfo->fw_version));
+	strlcat(drvinfo->bus_info, pci_name(priv->pdev),
 		sizeof(drvinfo->bus_info));
+
+	drvinfo->n_stats = ((priv->stats_flag) ? ARRAY_SIZE(bdx_stat_names) : 0);
+	drvinfo->testinfo_len = 0;
+	drvinfo->regdump_len = 0;
+	drvinfo->eedump_len = 0;
 }
 
 /*
@@ -2377,6 +2380,7 @@ static void bdx_get_ethtool_stats(struct net_device *netdev,
 static void bdx_set_ethtool_ops(struct net_device *netdev)
 {
 	static const struct ethtool_ops bdx_ethtool_ops = {
+		.get_settings = bdx_get_settings,
 		.get_drvinfo = bdx_get_drvinfo,
 		.get_link = ethtool_op_get_link,
 		.get_coalesce = bdx_get_coalesce,
@@ -2386,10 +2390,9 @@ static void bdx_set_ethtool_ops(struct net_device *netdev)
 		.get_strings = bdx_get_strings,
 		.get_sset_count = bdx_get_sset_count,
 		.get_ethtool_stats = bdx_get_ethtool_stats,
-		.get_link_ksettings = bdx_get_link_ksettings,
 	};
 
-	netdev->ethtool_ops = &bdx_ethtool_ops;
+	SET_ETHTOOL_OPS(netdev, &bdx_ethtool_ops);
 }
 
 /**
@@ -2401,7 +2404,7 @@ static void bdx_set_ethtool_ops(struct net_device *netdev)
  * Hot-Plug event, or because the driver is going to be removed from
  * memory.
  **/
-static void bdx_remove(struct pci_dev *pdev)
+static void __devexit bdx_remove(struct pci_dev *pdev)
 {
 	struct pci_nic *nic = pci_get_drvdata(pdev);
 	struct net_device *ndev;
@@ -2422,6 +2425,7 @@ static void bdx_remove(struct pci_dev *pdev)
 	iounmap(nic->regs);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
+	pci_set_drvdata(pdev, NULL);
 	vfree(nic);
 
 	RET();
@@ -2431,7 +2435,7 @@ static struct pci_driver bdx_pci_driver = {
 	.name = BDX_DRV_NAME,
 	.id_table = bdx_pci_tbl,
 	.probe = bdx_probe,
-	.remove = bdx_remove,
+	.remove = __devexit_p(bdx_remove),
 };
 
 /*

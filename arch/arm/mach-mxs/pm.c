@@ -15,13 +15,13 @@
 #include <linux/kernel.h>
 #include <linux/suspend.h>
 #include <linux/io.h>
-#include "pm.h"
+#include <mach/system.h>
 
 static int mxs_suspend_enter(suspend_state_t state)
 {
 	switch (state) {
 	case PM_SUSPEND_MEM:
-		cpu_do_idle();
+		arch_idle();
 		break;
 
 	default:
@@ -30,12 +30,14 @@ static int mxs_suspend_enter(suspend_state_t state)
 	return 0;
 }
 
-static const struct platform_suspend_ops mxs_suspend_ops = {
+static struct platform_suspend_ops mxs_suspend_ops = {
 	.enter = mxs_suspend_enter,
 	.valid = suspend_valid_only_mem,
 };
 
-void __init mxs_pm_init(void)
+static int __init mxs_pm_init(void)
 {
 	suspend_set_ops(&mxs_suspend_ops);
+	return 0;
 }
+device_initcall(mxs_pm_init);

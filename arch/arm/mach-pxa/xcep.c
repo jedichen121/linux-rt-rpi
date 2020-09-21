@@ -16,7 +16,7 @@
 
 #include <linux/platform_device.h>
 #include <linux/i2c.h>
-#include <linux/platform_data/i2c-pxa.h>
+#include <linux/i2c/pxa-i2c.h>
 #include <linux/smc91x.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
@@ -28,11 +28,10 @@
 #include <asm/mach/map.h>
 
 #include <mach/hardware.h>
-#include "pxa25x.h"
+#include <mach/pxa25x.h>
 #include <mach/smemc.h>
 
 #include "generic.h"
-#include "devices.h"
 
 #define XCEP_ETH_PHYS		(PXA_CS3_PHYS + 0x00000300)
 #define XCEP_ETH_PHYS_END	(PXA_CS3_PHYS + 0x000fffff)
@@ -121,8 +120,7 @@ static struct resource smc91x_resources[] = {
 };
 
 static struct smc91x_platdata xcep_smc91x_info = {
-	.flags	= SMC91X_USE_8BIT | SMC91X_USE_16BIT | SMC91X_USE_32BIT |
-		  SMC91X_NOWAIT | SMC91X_USE_DMA,
+	.flags	= SMC91X_USE_32BIT | SMC91X_NOWAIT | SMC91X_USE_DMA,
 };
 
 static struct platform_device smc91x_device = {
@@ -184,10 +182,9 @@ MACHINE_START(XCEP, "Iskratel XCEP")
 	.atag_offset	= 0x100,
 	.init_machine	= xcep_init,
 	.map_io		= pxa25x_map_io,
-	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa25x_init_irq,
 	.handle_irq	= pxa25x_handle_irq,
-	.init_time	= pxa_timer_init,
+	.timer		= &pxa_timer,
 	.restart	= pxa_restart,
 MACHINE_END
 

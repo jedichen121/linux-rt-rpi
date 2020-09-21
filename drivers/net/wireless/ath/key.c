@@ -45,8 +45,7 @@ bool ath_hw_keyreset(struct ath_common *common, u16 entry)
 	void *ah = common->ah;
 
 	if (entry >= common->keymax) {
-		ath_err(common, "keyreset: keycache entry %u out of range\n",
-			entry);
+		ath_err(common, "keycache entry %u out of range\n", entry);
 		return false;
 	}
 
@@ -92,8 +91,7 @@ static bool ath_hw_keysetmac(struct ath_common *common,
 	void *ah = common->ah;
 
 	if (entry >= common->keymax) {
-		ath_err(common, "keysetmac: keycache entry %u out of range\n",
-			entry);
+		ath_err(common, "keycache entry %u out of range\n", entry);
 		return false;
 	}
 
@@ -135,8 +133,7 @@ static bool ath_hw_set_keycache_entry(struct ath_common *common, u16 entry,
 	u32 keyType;
 
 	if (entry >= common->keymax) {
-		ath_err(common, "set-entry: keycache entry %u out of range\n",
-			entry);
+		ath_err(common, "keycache entry %u out of range\n", entry);
 		return false;
 	}
 
@@ -559,9 +556,6 @@ int ath_key_config(struct ath_common *common,
 		return -EIO;
 
 	set_bit(idx, common->keymap);
-	if (key->cipher == WLAN_CIPHER_SUITE_CCMP)
-		set_bit(idx, common->ccmp_keymap);
-
 	if (key->cipher == WLAN_CIPHER_SUITE_TKIP) {
 		set_bit(idx + 64, common->keymap);
 		set_bit(idx, common->tkip_keymap);
@@ -588,7 +582,6 @@ void ath_key_delete(struct ath_common *common, struct ieee80211_key_conf *key)
 		return;
 
 	clear_bit(key->hw_key_idx, common->keymap);
-	clear_bit(key->hw_key_idx, common->ccmp_keymap);
 	if (key->cipher != WLAN_CIPHER_SUITE_TKIP)
 		return;
 

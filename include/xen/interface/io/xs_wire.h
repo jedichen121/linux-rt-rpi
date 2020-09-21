@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Details of the "wire" protocol between Xen Store Daemon and client
  * library or guest kernel.
@@ -30,8 +29,7 @@ enum xsd_sockmsg_type
     XS_IS_DOMAIN_INTRODUCED,
     XS_RESUME,
     XS_SET_TARGET,
-    XS_RESTRICT,
-    XS_RESET_WATCHES,
+    XS_RESTRICT
 };
 
 #define XS_WRITE_NONE "NONE"
@@ -88,8 +86,5 @@ struct xenstore_domain_interface {
     XENSTORE_RING_IDX req_cons, req_prod;
     XENSTORE_RING_IDX rsp_cons, rsp_prod;
 };
-
-/* Violating this is very bad.  See docs/misc/xenstore.txt. */
-#define XENSTORE_PAYLOAD_MAX 4096
 
 #endif /* _XS_WIRE_H */

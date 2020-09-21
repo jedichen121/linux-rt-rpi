@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASMm68k_ELF_H
 #define __ASMm68k_ELF_H
 
@@ -113,5 +112,7 @@ typedef struct user_m68kfp_struct elf_fpregset_t;
    intent than poking at uname or /proc/cpuinfo.  */
 
 #define ELF_PLATFORM  (NULL)
+
+#define SET_PERSONALITY(ex) set_personality(PER_LINUX)
 
 #endif

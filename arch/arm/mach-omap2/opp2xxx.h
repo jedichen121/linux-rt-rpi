@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * opp2xxx.h - macros for old-style OMAP2xxx "OPP" definitions
  *
@@ -52,7 +51,7 @@ struct prcm_config {
 	unsigned long cm_clksel2_pll;	/* dpllx1 or x2 out */
 	unsigned long cm_clksel_mdm;	/* modem dividers 2430 only */
 	unsigned long base_sdrc_rfr;	/* base refresh timing for a set */
-	unsigned short flags;
+	unsigned char flags;
 };
 
 

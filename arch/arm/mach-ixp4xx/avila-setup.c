@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/arm/mach-ixp4xx/avila-setup.c
  *
@@ -18,7 +17,7 @@
 #include <linux/serial.h>
 #include <linux/tty.h>
 #include <linux/serial_8250.h>
-#include <linux/gpio/machine.h>
+#include <linux/i2c-gpio.h>
 #include <asm/types.h>
 #include <asm/setup.h>
 #include <asm/memory.h>
@@ -50,21 +49,16 @@ static struct platform_device avila_flash = {
 	.resource	= &avila_flash_resource,
 };
 
-static struct gpiod_lookup_table avila_i2c_gpiod_table = {
-	.dev_id		= "i2c-gpio.0",
-	.table		= {
-		GPIO_LOOKUP_IDX("IXP4XX_GPIO_CHIP", AVILA_SDA_PIN,
-				NULL, 0, GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN),
-		GPIO_LOOKUP_IDX("IXP4XX_GPIO_CHIP", AVILA_SCL_PIN,
-				NULL, 1, GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN),
-	},
+static struct i2c_gpio_platform_data avila_i2c_gpio_data = {
+	.sda_pin	= AVILA_SDA_PIN,
+	.scl_pin	= AVILA_SCL_PIN,
 };
 
 static struct platform_device avila_i2c_gpio = {
 	.name		= "i2c-gpio",
 	.id		= 0,
 	.dev	 = {
-		.platform_data	= NULL,
+		.platform_data	= &avila_i2c_gpio_data,
 	},
 };
 
@@ -153,8 +147,6 @@ static void __init avila_init(void)
 	avila_flash_resource.end =
 		IXP4XX_EXP_BUS_BASE(0) + ixp4xx_exp_bus_size - 1;
 
-	gpiod_add_lookup_table(&avila_i2c_gpiod_table);
-
 	platform_add_devices(avila_devices, ARRAY_SIZE(avila_devices));
 
 	avila_pata_resources[0].start = IXP4XX_EXP_BUS_BASE(1);
@@ -173,9 +165,8 @@ static void __init avila_init(void)
 MACHINE_START(AVILA, "Gateworks Avila Network Platform")
 	/* Maintainer: Deepak Saxena <dsaxena@plexity.net> */
 	.map_io		= ixp4xx_map_io,
-	.init_early	= ixp4xx_init_early,
 	.init_irq	= ixp4xx_init_irq,
-	.init_time	= ixp4xx_timer_init,
+	.timer		= &ixp4xx_timer,
 	.atag_offset	= 0x100,
 	.init_machine	= avila_init,
 #if defined(CONFIG_PCI)
@@ -193,9 +184,8 @@ MACHINE_END
 MACHINE_START(LOFT, "Giant Shoulder Inc Loft board")
 	/* Maintainer: Tom Billman <kernel@giantshoulderinc.com> */
 	.map_io		= ixp4xx_map_io,
-	.init_early	= ixp4xx_init_early,
 	.init_irq	= ixp4xx_init_irq,
-	.init_time	= ixp4xx_timer_init,
+	.timer		= &ixp4xx_timer,
 	.atag_offset	= 0x100,
 	.init_machine	= avila_init,
 #if defined(CONFIG_PCI)

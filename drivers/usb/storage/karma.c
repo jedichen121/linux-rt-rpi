@@ -1,9 +1,21 @@
-// SPDX-License-Identifier: GPL-2.0+
-/*
- * Driver for Rio Karma
+/* Driver for Rio Karma
  *
  *   (c) 2006 Bob Copeland <me@bobcopeland.com>
  *   (c) 2006 Keith Bennett <keith@mcs.st-and.ac.uk>
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2, or (at your option) any
+ * later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/module.h>
@@ -16,9 +28,6 @@
 #include "usb.h"
 #include "transport.h"
 #include "debug.h"
-#include "scsiglue.h"
-
-#define DRV_NAME "ums-karma"
 
 MODULE_DESCRIPTION("Driver for Rio Karma");
 MODULE_AUTHOR("Bob Copeland <me@bobcopeland.com>, Keith Bennett <keith@mcs.st-and.ac.uk>");
@@ -48,9 +57,9 @@ static int rio_karma_init(struct us_data *us);
 		    vendorName, productName, useProtocol, useTransport, \
 		    initFunction, flags) \
 { USB_DEVICE_VER(id_vendor, id_product, bcdDeviceMin, bcdDeviceMax), \
-  .driver_info = (flags) }
+  .driver_info = (flags)|(USB_US_TYPE_STOR<<24) }
 
-static struct usb_device_id karma_usb_ids[] = {
+struct usb_device_id karma_usb_ids[] = {
 #	include "unusual_karma.h"
 	{ }		/* Terminating entry */
 };
@@ -92,12 +101,12 @@ static struct us_unusual_dev karma_unusual_dev_list[] = {
  */
 static int rio_karma_send_command(char cmd, struct us_data *us)
 {
-	int result;
+	int result, partial;
 	unsigned long timeout;
 	static unsigned char seq = 1;
 	struct karma_data *data = (struct karma_data *) us->extra;
 
-	usb_stor_dbg(us, "sending command %04x\n", cmd);
+	US_DEBUGP("karma: sending command %04x\n", cmd);
 	memset(us->iobuf, 0, RIO_SEND_LEN);
 	memcpy(us->iobuf, RIO_PREFIX, RIO_PREFIX_LEN);
 	us->iobuf[5] = cmd;
@@ -106,12 +115,12 @@ static int rio_karma_send_command(char cmd, struct us_data *us)
 	timeout = jiffies + msecs_to_jiffies(6000);
 	for (;;) {
 		result = usb_stor_bulk_transfer_buf(us, us->send_bulk_pipe,
-			us->iobuf, RIO_SEND_LEN, NULL);
+			us->iobuf, RIO_SEND_LEN, &partial);
 		if (result != USB_STOR_XFER_GOOD)
 			goto err;
 
 		result = usb_stor_bulk_transfer_buf(us, us->recv_bulk_pipe,
-			data->recv, RIO_RECV_LEN, NULL);
+			data->recv, RIO_RECV_LEN, &partial);
 		if (result != USB_STOR_XFER_GOOD)
 			goto err;
 
@@ -130,10 +139,10 @@ static int rio_karma_send_command(char cmd, struct us_data *us)
 	if (seq == 0)
 		seq = 1;
 
-	usb_stor_dbg(us, "sent command %04x\n", cmd);
+	US_DEBUGP("karma: sent command %04x\n", cmd);
 	return 0;
 err:
-	usb_stor_dbg(us, "command %04x failed\n", cmd);
+	US_DEBUGP("karma: command %04x failed\n", cmd);
 	return USB_STOR_TRANSPORT_FAILED;
 }
 
@@ -191,8 +200,6 @@ out:
 	return ret;
 }
 
-static struct scsi_host_template karma_host_template;
-
 static int karma_probe(struct usb_interface *intf,
 			 const struct usb_device_id *id)
 {
@@ -200,8 +207,7 @@ static int karma_probe(struct usb_interface *intf,
 	int result;
 
 	result = usb_stor_probe1(&us, intf, id,
-			(id - karma_usb_ids) + karma_unusual_dev_list,
-			&karma_host_template);
+			(id - karma_usb_ids) + karma_unusual_dev_list);
 	if (result)
 		return result;
 
@@ -214,7 +220,7 @@ static int karma_probe(struct usb_interface *intf,
 }
 
 static struct usb_driver karma_driver = {
-	.name =		DRV_NAME,
+	.name =		"ums-karma",
 	.probe =	karma_probe,
 	.disconnect =	usb_stor_disconnect,
 	.suspend =	usb_stor_suspend,
@@ -224,7 +230,6 @@ static struct usb_driver karma_driver = {
 	.post_reset =	usb_stor_post_reset,
 	.id_table =	karma_usb_ids,
 	.soft_unbind =	1,
-	.no_dynamic_id = 1,
 };
 
-module_usb_stor_driver(karma_driver, karma_host_template, DRV_NAME);
+module_usb_driver(karma_driver);

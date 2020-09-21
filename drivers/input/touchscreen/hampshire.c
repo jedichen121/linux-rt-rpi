@@ -23,6 +23,7 @@
 #include <linux/slab.h>
 #include <linux/input.h>
 #include <linux/serio.h>
+#include <linux/init.h>
 
 #define DRIVER_DESC	"Hampshire serial touchscreen driver"
 
@@ -163,7 +164,7 @@ static int hampshire_connect(struct serio *serio, struct serio_driver *drv)
  * The serio driver structure.
  */
 
-static const struct serio_device_id hampshire_serio_ids[] = {
+static struct serio_device_id hampshire_serio_ids[] = {
 	{
 		.type	= SERIO_RS232,
 		.proto	= SERIO_HAMPSHIRE,
@@ -186,4 +187,19 @@ static struct serio_driver hampshire_drv = {
 	.disconnect	= hampshire_disconnect,
 };
 
-module_serio_driver(hampshire_drv);
+/*
+ * The functions for inserting/removing us as a module.
+ */
+
+static int __init hampshire_init(void)
+{
+	return serio_register_driver(&hampshire_drv);
+}
+
+static void __exit hampshire_exit(void)
+{
+	serio_unregister_driver(&hampshire_drv);
+}
+
+module_init(hampshire_init);
+module_exit(hampshire_exit);

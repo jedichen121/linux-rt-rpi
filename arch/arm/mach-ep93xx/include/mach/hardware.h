@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * arch/arm/mach-ep93xx/include/mach/hardware.h
  */
@@ -6,6 +5,7 @@
 #ifndef __ASM_ARCH_HARDWARE_H
 #define __ASM_ARCH_HARDWARE_H
 
+#include <mach/ep93xx-regs.h>
 #include <mach/platform.h>
 
 /*

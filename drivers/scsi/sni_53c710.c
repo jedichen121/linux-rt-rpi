@@ -51,7 +51,7 @@
 
 #include "53c700.h"
 
-MODULE_AUTHOR("Thomas BogendÃ¶rfer");
+MODULE_AUTHOR("Thomas Bogendörfer");
 MODULE_DESCRIPTION("SNI RM 53c710 SCSI Driver");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:snirm_53c710");
@@ -65,7 +65,7 @@ static struct scsi_host_template snirm710_template = {
 	.module		= THIS_MODULE,
 };
 
-static int snirm710_probe(struct platform_device *dev)
+static int __devinit snirm710_probe(struct platform_device *dev)
 {
 	unsigned long base;
 	struct NCR_700_Host_Parameters *hostdata;
@@ -78,8 +78,10 @@ static int snirm710_probe(struct platform_device *dev)
 
 	base = res->start;
 	hostdata = kzalloc(sizeof(*hostdata), GFP_KERNEL);
-	if (!hostdata)
+	if (!hostdata) {
+		dev_printk(KERN_ERR, dev, "Failed to allocate host data\n");
 		return -ENOMEM;
+	}
 
 	hostdata->dev = &dev->dev;
 	dma_set_mask(&dev->dev, DMA_BIT_MASK(32));
@@ -115,7 +117,7 @@ static int snirm710_probe(struct platform_device *dev)
 	return -ENODEV;
 }
 
-static int snirm710_driver_remove(struct platform_device *dev)
+static int __exit snirm710_driver_remove(struct platform_device *dev)
 {
 	struct Scsi_Host *host = dev_get_drvdata(&dev->dev);
 	struct NCR_700_Host_Parameters *hostdata =
@@ -132,9 +134,10 @@ static int snirm710_driver_remove(struct platform_device *dev)
 
 static struct platform_driver snirm710_driver = {
 	.probe	= snirm710_probe,
-	.remove	= snirm710_driver_remove,
+	.remove	= __devexit_p(snirm710_driver_remove),
 	.driver	= {
 		.name	= "snirm_53c710",
+		.owner	= THIS_MODULE,
 	},
 };
 

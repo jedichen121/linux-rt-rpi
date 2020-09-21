@@ -23,7 +23,8 @@
  * the GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program;  if not, see <http://www.gnu.org/licenses/>.
+ * along with this program;  if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  *
  */
 
@@ -116,14 +117,20 @@ struct netlbl_unlhsh_walk_arg {
 static DEFINE_SPINLOCK(netlbl_unlhsh_lock);
 #define netlbl_unlhsh_rcu_deref(p) \
 	rcu_dereference_check(p, lockdep_is_held(&netlbl_unlhsh_lock))
-static struct netlbl_unlhsh_tbl __rcu *netlbl_unlhsh;
-static struct netlbl_unlhsh_iface __rcu *netlbl_unlhsh_def;
+static struct netlbl_unlhsh_tbl *netlbl_unlhsh = NULL;
+static struct netlbl_unlhsh_iface *netlbl_unlhsh_def = NULL;
 
 /* Accept unlabeled packets flag */
-static u8 netlabel_unlabel_acceptflg;
+static u8 netlabel_unlabel_acceptflg = 0;
 
 /* NetLabel Generic NETLINK unlabeled family */
-static struct genl_family netlbl_unlabel_gnl_family;
+static struct genl_family netlbl_unlabel_gnl_family = {
+	.id = GENL_ID_GENERATE,
+	.hdrsize = 0,
+	.name = NETLBL_NLTYPE_UNLABELED_NAME,
+	.version = NETLBL_PROTO_VERSION,
+	.maxattr = NLBL_UNLABEL_A_MAX,
+};
 
 /* NetLabel Netlink attribute policy */
 static const struct nla_policy netlbl_unlabel_genl_policy[NLBL_UNLABEL_A_MAX + 1] = {
@@ -347,7 +354,7 @@ static struct netlbl_unlhsh_iface *netlbl_unlhsh_add_iface(int ifindex)
 		INIT_LIST_HEAD(&iface->list);
 		if (netlbl_unlhsh_rcu_deref(netlbl_unlhsh_def) != NULL)
 			goto add_iface_failure;
-		rcu_assign_pointer(netlbl_unlhsh_def, iface);
+		RCU_INIT_POINTER(netlbl_unlhsh_def, iface);
 	}
 	spin_unlock(&netlbl_unlhsh_lock);
 
@@ -701,7 +708,7 @@ unlhsh_remove_return:
  * netlbl_unlhsh_netdev_handler - Network device notification handler
  * @this: notifier block
  * @event: the event
- * @ptr: the netdevice notifier info (cast to void)
+ * @ptr: the network device (cast to void)
  *
  * Description:
  * Handle network device events, although at present all we care about is a
@@ -710,9 +717,10 @@ unlhsh_remove_return:
  *
  */
 static int netlbl_unlhsh_netdev_handler(struct notifier_block *this,
-					unsigned long event, void *ptr)
+					unsigned long event,
+					void *ptr)
 {
-	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
+	struct net_device *dev = ptr;
 	struct netlbl_unlhsh_iface *iface = NULL;
 
 	if (!net_eq(dev_net(dev), &init_net))
@@ -781,8 +789,7 @@ static int netlbl_unlabel_addrinfo_get(struct genl_info *info,
 {
 	u32 addr_len;
 
-	if (info->attrs[NLBL_UNLABEL_A_IPV4ADDR] &&
-	    info->attrs[NLBL_UNLABEL_A_IPV4MASK]) {
+	if (info->attrs[NLBL_UNLABEL_A_IPV4ADDR]) {
 		addr_len = nla_len(info->attrs[NLBL_UNLABEL_A_IPV4ADDR]);
 		if (addr_len != sizeof(struct in_addr) &&
 		    addr_len != nla_len(info->attrs[NLBL_UNLABEL_A_IPV4MASK]))
@@ -1089,7 +1096,7 @@ static int netlbl_unlabel_staticlist_gen(u32 cmd,
 	char *secctx;
 	u32 secctx_len;
 
-	data = genlmsg_put(cb_arg->skb, NETLINK_CB(cb_arg->nl_cb->skb).portid,
+	data = genlmsg_put(cb_arg->skb, NETLINK_CB(cb_arg->nl_cb->skb).pid,
 			   cb_arg->seq, &netlbl_unlabel_gnl_family,
 			   NLM_F_MULTI, cmd);
 	if (data == NULL)
@@ -1112,30 +1119,34 @@ static int netlbl_unlabel_staticlist_gen(u32 cmd,
 		struct in_addr addr_struct;
 
 		addr_struct.s_addr = addr4->list.addr;
-		ret_val = nla_put_in_addr(cb_arg->skb,
-					  NLBL_UNLABEL_A_IPV4ADDR,
-					  addr_struct.s_addr);
+		ret_val = nla_put(cb_arg->skb,
+				  NLBL_UNLABEL_A_IPV4ADDR,
+				  sizeof(struct in_addr),
+				  &addr_struct);
 		if (ret_val != 0)
 			goto list_cb_failure;
 
 		addr_struct.s_addr = addr4->list.mask;
-		ret_val = nla_put_in_addr(cb_arg->skb,
-					  NLBL_UNLABEL_A_IPV4MASK,
-					  addr_struct.s_addr);
+		ret_val = nla_put(cb_arg->skb,
+				  NLBL_UNLABEL_A_IPV4MASK,
+				  sizeof(struct in_addr),
+				  &addr_struct);
 		if (ret_val != 0)
 			goto list_cb_failure;
 
 		secid = addr4->secid;
 	} else {
-		ret_val = nla_put_in6_addr(cb_arg->skb,
-					   NLBL_UNLABEL_A_IPV6ADDR,
-					   &addr6->list.addr);
+		ret_val = nla_put(cb_arg->skb,
+				  NLBL_UNLABEL_A_IPV6ADDR,
+				  sizeof(struct in6_addr),
+				  &addr6->list.addr);
 		if (ret_val != 0)
 			goto list_cb_failure;
 
-		ret_val = nla_put_in6_addr(cb_arg->skb,
-					   NLBL_UNLABEL_A_IPV6MASK,
-					   &addr6->list.mask);
+		ret_val = nla_put(cb_arg->skb,
+				  NLBL_UNLABEL_A_IPV6MASK,
+				  sizeof(struct in6_addr),
+				  &addr6->list.mask);
 		if (ret_val != 0)
 			goto list_cb_failure;
 
@@ -1154,8 +1165,7 @@ static int netlbl_unlabel_staticlist_gen(u32 cmd,
 		goto list_cb_failure;
 
 	cb_arg->seq++;
-	genlmsg_end(cb_arg->skb, data);
-	return 0;
+	return genlmsg_end(cb_arg->skb, data);
 
 list_cb_failure:
 	genlmsg_cancel(cb_arg->skb, data);
@@ -1179,6 +1189,8 @@ static int netlbl_unlabel_staticlist(struct sk_buff *skb,
 	struct netlbl_unlhsh_walk_arg cb_arg;
 	u32 skip_bkt = cb->args[0];
 	u32 skip_chain = cb->args[1];
+	u32 skip_addr4 = cb->args[2];
+	u32 skip_addr6 = cb->args[3];
 	u32 iter_bkt;
 	u32 iter_chain = 0, iter_addr4 = 0, iter_addr6 = 0;
 	struct netlbl_unlhsh_iface *iface;
@@ -1203,7 +1215,7 @@ static int netlbl_unlabel_staticlist(struct sk_buff *skb,
 				continue;
 			netlbl_af4list_foreach_rcu(addr4,
 						   &iface->addr4_list) {
-				if (iter_addr4++ < cb->args[2])
+				if (iter_addr4++ < skip_addr4)
 					continue;
 				if (netlbl_unlabel_staticlist_gen(
 					      NLBL_UNLABEL_C_STATICLIST,
@@ -1219,7 +1231,7 @@ static int netlbl_unlabel_staticlist(struct sk_buff *skb,
 #if IS_ENABLED(CONFIG_IPV6)
 			netlbl_af6list_foreach_rcu(addr6,
 						   &iface->addr6_list) {
-				if (iter_addr6++ < cb->args[3])
+				if (iter_addr6++ < skip_addr6)
 					continue;
 				if (netlbl_unlabel_staticlist_gen(
 					      NLBL_UNLABEL_C_STATICLIST,
@@ -1238,10 +1250,10 @@ static int netlbl_unlabel_staticlist(struct sk_buff *skb,
 
 unlabel_staticlist_return:
 	rcu_read_unlock();
-	cb->args[0] = iter_bkt;
-	cb->args[1] = iter_chain;
-	cb->args[2] = iter_addr4;
-	cb->args[3] = iter_addr6;
+	cb->args[0] = skip_bkt;
+	cb->args[1] = skip_chain;
+	cb->args[2] = skip_addr4;
+	cb->args[3] = skip_addr6;
 	return skb->len;
 }
 
@@ -1261,9 +1273,12 @@ static int netlbl_unlabel_staticlistdef(struct sk_buff *skb,
 {
 	struct netlbl_unlhsh_walk_arg cb_arg;
 	struct netlbl_unlhsh_iface *iface;
-	u32 iter_addr4 = 0, iter_addr6 = 0;
+	u32 skip_addr4 = cb->args[0];
+	u32 skip_addr6 = cb->args[1];
+	u32 iter_addr4 = 0;
 	struct netlbl_af4list *addr4;
 #if IS_ENABLED(CONFIG_IPV6)
+	u32 iter_addr6 = 0;
 	struct netlbl_af6list *addr6;
 #endif
 
@@ -1277,7 +1292,7 @@ static int netlbl_unlabel_staticlistdef(struct sk_buff *skb,
 		goto unlabel_staticlistdef_return;
 
 	netlbl_af4list_foreach_rcu(addr4, &iface->addr4_list) {
-		if (iter_addr4++ < cb->args[0])
+		if (iter_addr4++ < skip_addr4)
 			continue;
 		if (netlbl_unlabel_staticlist_gen(NLBL_UNLABEL_C_STATICLISTDEF,
 					      iface,
@@ -1290,7 +1305,7 @@ static int netlbl_unlabel_staticlistdef(struct sk_buff *skb,
 	}
 #if IS_ENABLED(CONFIG_IPV6)
 	netlbl_af6list_foreach_rcu(addr6, &iface->addr6_list) {
-		if (iter_addr6++ < cb->args[1])
+		if (iter_addr6++ < skip_addr6)
 			continue;
 		if (netlbl_unlabel_staticlist_gen(NLBL_UNLABEL_C_STATICLISTDEF,
 					      iface,
@@ -1305,8 +1320,8 @@ static int netlbl_unlabel_staticlistdef(struct sk_buff *skb,
 
 unlabel_staticlistdef_return:
 	rcu_read_unlock();
-	cb->args[0] = iter_addr4;
-	cb->args[1] = iter_addr6;
+	cb->args[0] = skip_addr4;
+	cb->args[1] = skip_addr6;
 	return skb->len;
 }
 
@@ -1314,7 +1329,7 @@ unlabel_staticlistdef_return:
  * NetLabel Generic NETLINK Command Definitions
  */
 
-static const struct genl_ops netlbl_unlabel_genl_ops[] = {
+static struct genl_ops netlbl_unlabel_genl_ops[] = {
 	{
 	.cmd = NLBL_UNLABEL_C_STATICADD,
 	.flags = GENL_ADMIN_PERM,
@@ -1373,16 +1388,6 @@ static const struct genl_ops netlbl_unlabel_genl_ops[] = {
 	},
 };
 
-static struct genl_family netlbl_unlabel_gnl_family __ro_after_init = {
-	.hdrsize = 0,
-	.name = NETLBL_NLTYPE_UNLABELED_NAME,
-	.version = NETLBL_PROTO_VERSION,
-	.maxattr = NLBL_UNLABEL_A_MAX,
-	.module = THIS_MODULE,
-	.ops = netlbl_unlabel_genl_ops,
-	.n_ops = ARRAY_SIZE(netlbl_unlabel_genl_ops),
-};
-
 /*
  * NetLabel Generic NETLINK Protocol Functions
  */
@@ -1397,7 +1402,8 @@ static struct genl_family netlbl_unlabel_gnl_family __ro_after_init = {
  */
 int __init netlbl_unlabel_genl_init(void)
 {
-	return genl_register_family(&netlbl_unlabel_gnl_family);
+	return genl_register_family_with_ops(&netlbl_unlabel_gnl_family,
+		netlbl_unlabel_genl_ops, ARRAY_SIZE(netlbl_unlabel_genl_ops));
 }
 
 /*
@@ -1441,9 +1447,11 @@ int __init netlbl_unlabel_init(u32 size)
 	for (iter = 0; iter < hsh_tbl->size; iter++)
 		INIT_LIST_HEAD(&hsh_tbl->tbl[iter]);
 
+	rcu_read_lock();
 	spin_lock(&netlbl_unlhsh_lock);
-	rcu_assign_pointer(netlbl_unlhsh, hsh_tbl);
+	RCU_INIT_POINTER(netlbl_unlhsh, hsh_tbl);
 	spin_unlock(&netlbl_unlhsh_lock);
+	rcu_read_unlock();
 
 	register_netdevice_notifier(&netlbl_unlhsh_netdev_notifier);
 
@@ -1473,16 +1481,6 @@ int netlbl_unlabel_getattr(const struct sk_buff *skb,
 		iface = rcu_dereference(netlbl_unlhsh_def);
 	if (iface == NULL || !iface->valid)
 		goto unlabel_getattr_nolabel;
-
-#if IS_ENABLED(CONFIG_IPV6)
-	/* When resolving a fallback label, check the sk_buff version as
-	 * it is possible (e.g. SCTP) to have family = PF_INET6 while
-	 * receiving ip_hdr(skb)->version = 4.
-	 */
-	if (family == PF_INET6 && ip_hdr(skb)->version == 4)
-		family = PF_INET;
-#endif /* IPv6 */
-
 	switch (family) {
 	case PF_INET: {
 		struct iphdr *hdr4;
@@ -1545,14 +1543,13 @@ int __init netlbl_unlabel_defconf(void)
 	 * it is called is at bootup before the audit subsystem is reporting
 	 * messages so don't worry to much about these values. */
 	security_task_getsecid(current, &audit_info.secid);
-	audit_info.loginuid = GLOBAL_ROOT_UID;
+	audit_info.loginuid = 0;
 	audit_info.sessionid = 0;
 
 	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
 	if (entry == NULL)
 		return -ENOMEM;
-	entry->family = AF_UNSPEC;
-	entry->def.type = NETLBL_NLTYPE_UNLABELED;
+	entry->type = NETLBL_NLTYPE_UNLABELED;
 	ret_val = netlbl_domhsh_add_default(entry, &audit_info);
 	if (ret_val != 0)
 		return ret_val;

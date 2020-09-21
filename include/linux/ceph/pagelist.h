@@ -1,11 +1,7 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __FS_CEPH_PAGELIST_H
 #define __FS_CEPH_PAGELIST_H
 
-#include <asm/byteorder.h>
-#include <linux/refcount.h>
 #include <linux/list.h>
-#include <linux/types.h>
 
 struct ceph_pagelist {
 	struct list_head head;
@@ -14,7 +10,6 @@ struct ceph_pagelist {
 	size_t room;
 	struct list_head free_list;
 	size_t num_pages_free;
-	refcount_t refcnt;
 };
 
 struct ceph_pagelist_cursor {
@@ -31,10 +26,9 @@ static inline void ceph_pagelist_init(struct ceph_pagelist *pl)
 	pl->room = 0;
 	INIT_LIST_HEAD(&pl->free_list);
 	pl->num_pages_free = 0;
-	refcount_set(&pl->refcnt, 1);
 }
 
-extern void ceph_pagelist_release(struct ceph_pagelist *pl);
+extern int ceph_pagelist_release(struct ceph_pagelist *pl);
 
 extern int ceph_pagelist_append(struct ceph_pagelist *pl, const void *d, size_t l);
 
@@ -68,7 +62,7 @@ static inline int ceph_pagelist_encode_8(struct ceph_pagelist *pl, u8 v)
 	return ceph_pagelist_append(pl, &v, 1);
 }
 static inline int ceph_pagelist_encode_string(struct ceph_pagelist *pl,
-					      char *s, u32 len)
+					      char *s, size_t len)
 {
 	int ret = ceph_pagelist_encode_32(pl, len);
 	if (ret)

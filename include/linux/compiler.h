@@ -1,12 +1,84 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __LINUX_COMPILER_H
 #define __LINUX_COMPILER_H
 
-#include <linux/compiler_types.h>
-
 #ifndef __ASSEMBLY__
 
+#ifdef __CHECKER__
+# define __user		__attribute__((noderef, address_space(1)))
+# define __kernel	__attribute__((address_space(0)))
+# define __safe		__attribute__((safe))
+# define __force	__attribute__((force))
+# define __nocast	__attribute__((nocast))
+# define __iomem	__attribute__((noderef, address_space(2)))
+# define __acquires(x)	__attribute__((context(x,0,1)))
+# define __releases(x)	__attribute__((context(x,1,0)))
+# define __acquire(x)	__context__(x,1)
+# define __release(x)	__context__(x,-1)
+# define __cond_lock(x,c)	((c) ? ({ __acquire(x); 1; }) : 0)
+# define __percpu	__attribute__((noderef, address_space(3)))
+#ifdef CONFIG_SPARSE_RCU_POINTER
+# define __rcu		__attribute__((noderef, address_space(4)))
+#else
+# define __rcu
+#endif
+extern void __chk_user_ptr(const volatile void __user *);
+extern void __chk_io_ptr(const volatile void __iomem *);
+#else
+# define __user
+# define __kernel
+# define __safe
+# define __force
+# define __nocast
+# define __iomem
+# define __chk_user_ptr(x) (void)0
+# define __chk_io_ptr(x) (void)0
+# define __builtin_warning(x, y...) (1)
+# define __acquires(x)
+# define __releases(x)
+# define __acquire(x) (void)0
+# define __release(x) (void)0
+# define __cond_lock(x,c) (c)
+# define __percpu
+# define __rcu
+#endif
+
 #ifdef __KERNEL__
+
+#ifdef __GNUC__
+#include <linux/compiler-gcc.h>
+#endif
+
+#define notrace __attribute__((no_instrument_function))
+
+/* Intel compiler defines __GNUC__. So we will overwrite implementations
+ * coming from above header files here
+ */
+#ifdef __INTEL_COMPILER
+# include <linux/compiler-intel.h>
+#endif
+
+/*
+ * Generic compiler-dependent macros required for kernel
+ * build go below this comment. Actual compiler/compiler version
+ * specific implementations come from the above header files
+ */
+
+struct ftrace_branch_data {
+	const char *func;
+	const char *file;
+	unsigned line;
+	union {
+		struct {
+			unsigned long correct;
+			unsigned long incorrect;
+		};
+		struct {
+			unsigned long miss;
+			unsigned long hit;
+		};
+		unsigned long miss_hit[2];
+	};
+};
 
 /*
  * Note: DISABLE_BRANCH_PROFILING can be used by special lowlevel code
@@ -14,25 +86,23 @@
  */
 #if defined(CONFIG_TRACE_BRANCH_PROFILING) \
     && !defined(DISABLE_BRANCH_PROFILING) && !defined(__CHECKER__)
-void ftrace_likely_update(struct ftrace_likely_data *f, int val,
-			  int expect, int is_constant);
+void ftrace_likely_update(struct ftrace_branch_data *f, int val, int expect);
 
 #define likely_notrace(x)	__builtin_expect(!!(x), 1)
 #define unlikely_notrace(x)	__builtin_expect(!!(x), 0)
 
-#define __branch_check__(x, expect, is_constant) ({			\
-			long ______r;					\
-			static struct ftrace_likely_data		\
+#define __branch_check__(x, expect) ({					\
+			int ______r;					\
+			static struct ftrace_branch_data		\
 				__attribute__((__aligned__(4)))		\
 				__attribute__((section("_ftrace_annotated_branch"))) \
 				______f = {				\
-				.data.func = __func__,			\
-				.data.file = __FILE__,			\
-				.data.line = __LINE__,			\
+				.func = __func__,			\
+				.file = __FILE__,			\
+				.line = __LINE__,			\
 			};						\
-			______r = __builtin_expect(!!(x), expect);	\
-			ftrace_likely_update(&______f, ______r,		\
-					     expect, is_constant);	\
+			______r = likely_notrace(x);			\
+			ftrace_likely_update(&______f, ______r, expect); \
 			______r;					\
 		})
 
@@ -42,10 +112,10 @@ void ftrace_likely_update(struct ftrace_likely_data *f, int val,
  * written by Daniel Walker.
  */
 # ifndef likely
-#  define likely(x)	(__branch_check__(x, 1, __builtin_constant_p(x)))
+#  define likely(x)	(__builtin_constant_p(x) ? !!(x) : __branch_check__(x, 1))
 # endif
 # ifndef unlikely
-#  define unlikely(x)	(__branch_check__(x, 0, __builtin_constant_p(x)))
+#  define unlikely(x)	(__builtin_constant_p(x) ? !!(x) : __branch_check__(x, 0))
 # endif
 
 #ifdef CONFIG_PROFILE_ALL_BRANCHES
@@ -55,7 +125,7 @@ void ftrace_likely_update(struct ftrace_likely_data *f, int val,
  */
 #define if(cond, ...) __trace_if( (cond , ## __VA_ARGS__) )
 #define __trace_if(cond) \
-	if (__builtin_constant_p(!!(cond)) ? !!(cond) :			\
+	if (__builtin_constant_p((cond)) ? !!(cond) :			\
 	({								\
 		int ______r;						\
 		static struct ftrace_branch_data			\
@@ -82,75 +152,9 @@ void ftrace_likely_update(struct ftrace_likely_data *f, int val,
 # define barrier() __memory_barrier()
 #endif
 
-#ifndef barrier_data
-# define barrier_data(ptr) barrier()
-#endif
-
-/* workaround for GCC PR82365 if needed */
-#ifndef barrier_before_unreachable
-# define barrier_before_unreachable() do { } while (0)
-#endif
-
 /* Unreachable code */
-#ifdef CONFIG_STACK_VALIDATION
-/*
- * These macros help objtool understand GCC code flow for unreachable code.
- * The __COUNTER__ based labels are a hack to make each instance of the macros
- * unique, to convince GCC not to merge duplicate inline asm statements.
- */
-#define annotate_reachable() ({						\
-	asm volatile("%c0:\n\t"						\
-		     ".pushsection .discard.reachable\n\t"		\
-		     ".long %c0b - .\n\t"				\
-		     ".popsection\n\t" : : "i" (__COUNTER__));		\
-})
-#define annotate_unreachable() ({					\
-	asm volatile("%c0:\n\t"						\
-		     ".pushsection .discard.unreachable\n\t"		\
-		     ".long %c0b - .\n\t"				\
-		     ".popsection\n\t" : : "i" (__COUNTER__));		\
-})
-#define ASM_UNREACHABLE							\
-	"999:\n\t"							\
-	".pushsection .discard.unreachable\n\t"				\
-	".long 999b - .\n\t"						\
-	".popsection\n\t"
-#else
-#define annotate_reachable()
-#define annotate_unreachable()
-#endif
-
-#ifndef ASM_UNREACHABLE
-# define ASM_UNREACHABLE
-#endif
 #ifndef unreachable
-# define unreachable() do {		\
-	annotate_unreachable();		\
-	__builtin_unreachable();	\
-} while (0)
-#endif
-
-/*
- * KENTRY - kernel entry point
- * This can be used to annotate symbols (functions or data) that are used
- * without their linker symbol being referenced explicitly. For example,
- * interrupt vector handlers, or functions in the kernel image that are found
- * programatically.
- *
- * Not required for symbols exported with EXPORT_SYMBOL, or initcalls. Those
- * are handled in their own way (with KEEP() in linker scripts).
- *
- * KENTRY can be avoided if the symbols in question are marked as KEEP() in the
- * linker script. For example an architecture could KEEP() its entire
- * boot/exception vector code rather than annotate each function and data.
- */
-#ifndef KENTRY
-# define KENTRY(sym)						\
-	extern typeof(sym) sym;					\
-	static const unsigned long __kentry_##sym		\
-	__used							\
-	__attribute__((section("___kentry" "+" #sym ), used))	\
-	= (unsigned long)&sym;
+# define unreachable() do { } while (1)
 #endif
 
 #ifndef RELOC_HIDE
@@ -160,154 +164,123 @@ void ftrace_likely_update(struct ftrace_likely_data *f, int val,
     (typeof(ptr)) (__ptr + (off)); })
 #endif
 
-#ifndef OPTIMIZER_HIDE_VAR
-/* Make the optimizer believe the variable can be manipulated arbitrarily. */
-#define OPTIMIZER_HIDE_VAR(var)						\
-	__asm__ ("" : "=r" (var) : "0" (var))
-#endif
+#endif /* __KERNEL__ */
 
-/* Not-quite-unique ID. */
-#ifndef __UNIQUE_ID
-# define __UNIQUE_ID(prefix) __PASTE(__PASTE(__UNIQUE_ID_, prefix), __LINE__)
-#endif
+#endif /* __ASSEMBLY__ */
 
-#include <uapi/linux/types.h>
-
-#define __READ_ONCE_SIZE						\
-({									\
-	switch (size) {							\
-	case 1: *(__u8 *)res = *(volatile __u8 *)p; break;		\
-	case 2: *(__u16 *)res = *(volatile __u16 *)p; break;		\
-	case 4: *(__u32 *)res = *(volatile __u32 *)p; break;		\
-	case 8: *(__u64 *)res = *(volatile __u64 *)p; break;		\
-	default:							\
-		barrier();						\
-		__builtin_memcpy((void *)res, (const void *)p, size);	\
-		barrier();						\
-	}								\
-})
-
-static __always_inline
-void __read_once_size(const volatile void *p, void *res, int size)
-{
-	__READ_ONCE_SIZE;
-}
-
-#ifdef CONFIG_KASAN
+#ifdef __KERNEL__
 /*
- * We can't declare function 'inline' because __no_sanitize_address confilcts
- * with inlining. Attempt to inline it may cause a build failure.
- * 	https://gcc.gnu.org/bugzilla/show_bug.cgi?id=67368
- * '__maybe_unused' allows us to avoid defined-but-not-used warnings.
+ * Allow us to mark functions as 'deprecated' and have gcc emit a nice
+ * warning for each use, in hopes of speeding the functions removal.
+ * Usage is:
+ * 		int __deprecated foo(void)
  */
-# define __no_kasan_or_inline __no_sanitize_address __maybe_unused
+#ifndef __deprecated
+# define __deprecated		/* unimplemented */
+#endif
+
+#ifdef MODULE
+#define __deprecated_for_modules __deprecated
 #else
-# define __no_kasan_or_inline __always_inline
+#define __deprecated_for_modules
 #endif
 
-static __no_kasan_or_inline
-void __read_once_size_nocheck(const volatile void *p, void *res, int size)
-{
-	__READ_ONCE_SIZE;
-}
+#ifndef __must_check
+#define __must_check
+#endif
 
-static __always_inline void __write_once_size(volatile void *p, void *res, int size)
-{
-	switch (size) {
-	case 1: *(volatile __u8 *)p = *(__u8 *)res; break;
-	case 2: *(volatile __u16 *)p = *(__u16 *)res; break;
-	case 4: *(volatile __u32 *)p = *(__u32 *)res; break;
-	case 8: *(volatile __u64 *)p = *(__u64 *)res; break;
-	default:
-		barrier();
-		__builtin_memcpy((void *)p, (const void *)res, size);
-		barrier();
-	}
-}
+#ifndef CONFIG_ENABLE_MUST_CHECK
+#undef __must_check
+#define __must_check
+#endif
+#ifndef CONFIG_ENABLE_WARN_DEPRECATED
+#undef __deprecated
+#undef __deprecated_for_modules
+#define __deprecated
+#define __deprecated_for_modules
+#endif
 
 /*
- * Prevent the compiler from merging or refetching reads or writes. The
- * compiler is also forbidden from reordering successive instances of
- * READ_ONCE and WRITE_ONCE, but only when the compiler is aware of some
- * particular ordering. One way to make the compiler aware of ordering is to
- * put the two invocations of READ_ONCE or WRITE_ONCE in different C
- * statements.
+ * Allow us to avoid 'defined but not used' warnings on functions and data,
+ * as well as force them to be emitted to the assembly file.
  *
- * These two macros will also work on aggregate data types like structs or
- * unions. If the size of the accessed data type exceeds the word size of
- * the machine (e.g., 32 bits or 64 bits) READ_ONCE() and WRITE_ONCE() will
- * fall back to memcpy(). There's at least two memcpy()s: one for the
- * __builtin_memcpy() and then one for the macro doing the copy of variable
- * - '__u' allocated on the stack.
+ * As of gcc 3.4, static functions that are not marked with attribute((used))
+ * may be elided from the assembly file.  As of gcc 3.4, static data not so
+ * marked will not be elided, but this may change in a future gcc version.
  *
- * Their two major use cases are: (1) Mediating communication between
- * process-level code and irq/NMI handlers, all running on the same CPU,
- * and (2) Ensuring that the compiler does not fold, spindle, or otherwise
- * mutilate accesses that either do not require ordering or that interact
- * with an explicit memory barrier or atomic instruction that provides the
- * required ordering.
+ * NOTE: Because distributions shipped with a backported unit-at-a-time
+ * compiler in gcc 3.3, we must define __used to be __attribute__((used))
+ * for gcc >=3.3 instead of 3.4.
+ *
+ * In prior versions of gcc, such functions and data would be emitted, but
+ * would be warned about except with attribute((unused)).
+ *
+ * Mark functions that are referenced only in inline assembly as __used so
+ * the code is emitted even though it appears to be unreferenced.
  */
-#include <asm/barrier.h>
-#include <linux/kasan-checks.h>
+#ifndef __used
+# define __used			/* unimplemented */
+#endif
 
-#define __READ_ONCE(x, check)						\
-({									\
-	union { typeof(x) __val; char __c[1]; } __u;			\
-	if (check)							\
-		__read_once_size(&(x), __u.__c, sizeof(x));		\
-	else								\
-		__read_once_size_nocheck(&(x), __u.__c, sizeof(x));	\
-	smp_read_barrier_depends(); /* Enforce dependency ordering from x */ \
-	__u.__val;							\
-})
-#define READ_ONCE(x) __READ_ONCE(x, 1)
+#ifndef __maybe_unused
+# define __maybe_unused		/* unimplemented */
+#endif
+
+#ifndef __always_unused
+# define __always_unused	/* unimplemented */
+#endif
+
+#ifndef noinline
+#define noinline
+#endif
 
 /*
- * Use READ_ONCE_NOCHECK() instead of READ_ONCE() if you need
- * to hide memory access from KASAN.
+ * Rather then using noinline to prevent stack consumption, use
+ * noinline_for_stack instead.  For documentaiton reasons.
  */
-#define READ_ONCE_NOCHECK(x) __READ_ONCE(x, 0)
+#define noinline_for_stack noinline
 
-static __no_kasan_or_inline
-unsigned long read_word_at_a_time(const void *addr)
-{
-	kasan_check_read(addr, 1);
-	return *(unsigned long *)addr;
-}
-
-#define WRITE_ONCE(x, val) \
-({							\
-	union { typeof(x) __val; char __c[1]; } __u =	\
-		{ .__val = (__force typeof(x)) (val) }; \
-	__write_once_size(&(x), __u.__c, sizeof(x));	\
-	__u.__val;					\
-})
+#ifndef __always_inline
+#define __always_inline inline
+#endif
 
 #endif /* __KERNEL__ */
 
 /*
- * Force the compiler to emit 'sym' as a symbol, so that we can reference
- * it from inline assembler. Necessary in case 'sym' could be inlined
- * otherwise, or eliminated entirely due to lack of references that are
- * visible to the compiler.
+ * From the GCC manual:
+ *
+ * Many functions do not examine any values except their arguments,
+ * and have no effects except the return value.  Basically this is
+ * just slightly more strict class than the `pure' attribute above,
+ * since function is not allowed to read global memory.
+ *
+ * Note that a function that has pointer arguments and examines the
+ * data pointed to must _not_ be declared `const'.  Likewise, a
+ * function that calls a non-`const' function usually must not be
+ * `const'.  It does not make sense for a `const' function to return
+ * `void'.
  */
-#define __ADDRESSABLE(sym) \
-	static void * __attribute__((section(".discard.addressable"), used)) \
-		__PASTE(__addressable_##sym, __LINE__) = (void *)&sym;
+#ifndef __attribute_const__
+# define __attribute_const__	/* unimplemented */
+#endif
 
-/**
- * offset_to_ptr - convert a relative memory offset to an absolute pointer
- * @off:	the address of the 32-bit offset value
+/*
+ * Tell gcc if a function is cold. The compiler will assume any path
+ * directly leading to the call is unlikely.
  */
-static inline void *offset_to_ptr(const int *off)
-{
-	return (void *)((unsigned long)off + *off);
-}
 
-#endif /* __ASSEMBLY__ */
+#ifndef __cold
+#define __cold
+#endif
 
-#ifndef __optimize
-# define __optimize(level)
+/* Simple shorthand for a section definition */
+#ifndef __section
+# define __section(S) __attribute__ ((__section__(#S)))
+#endif
+
+/* Are two types/vars the same type (ignoring qualifiers)? */
+#ifndef __same_type
+# define __same_type(a, b) __builtin_types_compatible_p(typeof(a), typeof(b))
 #endif
 
 /* Compile time object size, -1 for unknown */
@@ -321,34 +294,18 @@ static inline void *offset_to_ptr(const int *off)
 # define __compiletime_error(message)
 #endif
 
-#ifdef __OPTIMIZE__
-# define __compiletime_assert(condition, msg, prefix, suffix)		\
-	do {								\
-		extern void prefix ## suffix(void) __compiletime_error(msg); \
-		if (!(condition))					\
-			prefix ## suffix();				\
-	} while (0)
-#else
-# define __compiletime_assert(condition, msg, prefix, suffix) do { } while (0)
-#endif
-
-#define _compiletime_assert(condition, msg, prefix, suffix) \
-	__compiletime_assert(condition, msg, prefix, suffix)
-
-/**
- * compiletime_assert - break build and emit msg if condition is false
- * @condition: a compile-time constant condition to check
- * @msg:       a message to emit if condition is false
+/*
+ * Prevent the compiler from merging or refetching accesses.  The compiler
+ * is also forbidden from reordering successive instances of ACCESS_ONCE(),
+ * but only when the compiler is aware of some particular ordering.  One way
+ * to make the compiler aware of ordering is to put the two invocations of
+ * ACCESS_ONCE() in different C statements.
  *
- * In tradition of POSIX assert, this macro will break the build if the
- * supplied condition is *false*, emitting the supplied error message if the
- * compiler has support to do so.
+ * This macro does absolutely -nothing- to prevent the CPU from reordering,
+ * merging, or refetching absolutely anything at any time.  Its main intended
+ * use is to mediate communication between process-level code and irq/NMI
+ * handlers, all running on the same CPU.
  */
-#define compiletime_assert(condition, msg) \
-	_compiletime_assert(condition, msg, __compiletime_assert_, __LINE__)
-
-#define compiletime_assert_atomic_type(t)				\
-	compiletime_assert(__native_word(t),				\
-		"Need native word sized stores/loads for atomicity.")
+#define ACCESS_ONCE(x) (*(volatile typeof(x) *)&(x))
 
 #endif /* __LINUX_COMPILER_H */

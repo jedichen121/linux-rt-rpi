@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * ARM KGDB support
  *
@@ -12,7 +11,6 @@
 #define __ARM_KGDB_H__
 
 #include <linux/ptrace.h>
-#include <asm/opcodes.h>
 
 /*
  * GDB assumes that we're a user process being debugged, so
@@ -43,7 +41,7 @@
 
 static inline void arch_kgdb_breakpoint(void)
 {
-	asm(__inst_arm(0xe7ffdeff));
+	asm(".word 0xe7ffdeff");
 }
 
 extern void kgdb_handle_bus_error(void);
@@ -77,7 +75,7 @@ extern int kgdb_fault_expected;
 
 #define KGDB_MAX_NO_CPUS	1
 #define BUFMAX			400
-#define NUMREGBYTES		(GDB_MAX_REGS << 2)
+#define NUMREGBYTES		(DBG_MAX_REG_NUM << 2)
 #define NUMCRITREGBYTES		(32 << 2)
 
 #define _R0			0

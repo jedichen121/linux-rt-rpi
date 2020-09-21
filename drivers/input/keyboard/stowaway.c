@@ -23,11 +23,16 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ *
+ * Should you need to contact me, the author, you can do so either by
+ * e-mail - mail your message to <marek.vasut@gmail.com>, or by paper mail:
+ * Marek Vasut, Liskovecka 559, Frydek-Mistek, 738 01 Czech Republic
  */
 
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/input.h>
+#include <linux/init.h>
 #include <linux/serio.h>
 
 #define DRIVER_DESC	"Stowaway keyboard driver"
@@ -142,7 +147,7 @@ static void skbd_disconnect(struct serio *serio)
 	kfree(skbd);
 }
 
-static const struct serio_device_id skbd_serio_ids[] = {
+static struct serio_device_id skbd_serio_ids[] = {
 	{
 		.type	= SERIO_RS232,
 		.proto	= SERIO_STOWAWAY,
@@ -165,4 +170,15 @@ static struct serio_driver skbd_drv = {
 	.disconnect	= skbd_disconnect,
 };
 
-module_serio_driver(skbd_drv);
+static int __init skbd_init(void)
+{
+	return serio_register_driver(&skbd_drv);
+}
+
+static void __exit skbd_exit(void)
+{
+	serio_unregister_driver(&skbd_drv);
+}
+
+module_init(skbd_init);
+module_exit(skbd_exit);

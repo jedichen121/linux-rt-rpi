@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *	linux/arch/alpha/kernel/srmcons.c
  *
@@ -19,7 +18,7 @@
 #include <linux/tty_flip.h>
 
 #include <asm/console.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 
 
 static DEFINE_SPINLOCK(srmcons_callback_lock);
@@ -31,9 +30,10 @@ static int srm_is_registered_console = 0;
 #define MAX_SRM_CONSOLE_DEVICES 1	/* only support 1 console device */
 
 struct srmcons_private {
-	struct tty_port port;
+	struct tty_struct *tty;
 	struct timer_list timer;
-} srmcons_singleton;
+	spinlock_t lock;
+};
 
 typedef union _srmcons_result {
 	struct {
@@ -45,7 +45,7 @@ typedef union _srmcons_result {
 
 /* called with callback_lock held */
 static int
-srmcons_do_receive_chars(struct tty_port *port)
+srmcons_do_receive_chars(struct tty_struct *tty)
 {
 	srmcons_result result;
 	int count = 0, loops = 0;
@@ -53,43 +53,44 @@ srmcons_do_receive_chars(struct tty_port *port)
 	do {
 		result.as_long = callback_getc(0);
 		if (result.bits.status < 2) {
-			tty_insert_flip_char(port, (char)result.bits.c, 0);
+			tty_insert_flip_char(tty, (char)result.bits.c, 0);
 			count++;
 		}
 	} while((result.bits.status & 1) && (++loops < 10));
 
 	if (count)
-		tty_schedule_flip(port);
+		tty_schedule_flip(tty);
 
 	return count;
 }
 
 static void
-srmcons_receive_chars(struct timer_list *t)
+srmcons_receive_chars(unsigned long data)
 {
-	struct srmcons_private *srmconsp = from_timer(srmconsp, t, timer);
-	struct tty_port *port = &srmconsp->port;
+	struct srmcons_private *srmconsp = (struct srmcons_private *)data;
 	unsigned long flags;
 	int incr = 10;
 
 	local_irq_save(flags);
 	if (spin_trylock(&srmcons_callback_lock)) {
-		if (!srmcons_do_receive_chars(port))
+		if (!srmcons_do_receive_chars(srmconsp->tty))
 			incr = 100;
 		spin_unlock(&srmcons_callback_lock);
 	} 
 
-	spin_lock(&port->lock);
-	if (port->tty)
-		mod_timer(&srmconsp->timer, jiffies + incr);
-	spin_unlock(&port->lock);
+	spin_lock(&srmconsp->lock);
+	if (srmconsp->tty) {
+		srmconsp->timer.expires = jiffies + incr;
+		add_timer(&srmconsp->timer);
+	}
+	spin_unlock(&srmconsp->lock);
 
 	local_irq_restore(flags);
 }
 
 /* called with callback_lock held */
 static int
-srmcons_do_write(struct tty_port *port, const char *buf, int count)
+srmcons_do_write(struct tty_struct *tty, const char *buf, int count)
 {
 	static char str_cr[1] = "\r";
 	long c, remaining = count;
@@ -114,10 +115,10 @@ srmcons_do_write(struct tty_port *port, const char *buf, int count)
 			cur += result.bits.c;
 
 			/*
-			 * Check for pending input iff a tty port was provided
+			 * Check for pending input iff a tty was provided
 			 */
-			if (port)
-				srmcons_do_receive_chars(port);
+			if (tty)
+				srmcons_do_receive_chars(tty);
 		}
 
 		while (need_cr) {
@@ -136,7 +137,7 @@ srmcons_write(struct tty_struct *tty,
 	unsigned long flags;
 
 	spin_lock_irqsave(&srmcons_callback_lock, flags);
-	srmcons_do_write(tty->port, (const char *) buf, count);
+	srmcons_do_write(tty, (const char *) buf, count);
 	spin_unlock_irqrestore(&srmcons_callback_lock, flags);
 
 	return count;
@@ -155,22 +156,56 @@ srmcons_chars_in_buffer(struct tty_struct *tty)
 }
 
 static int
-srmcons_open(struct tty_struct *tty, struct file *filp)
+srmcons_get_private_struct(struct srmcons_private **ps)
 {
-	struct srmcons_private *srmconsp = &srmcons_singleton;
-	struct tty_port *port = &srmconsp->port;
+	static struct srmcons_private *srmconsp = NULL;
+	static DEFINE_SPINLOCK(srmconsp_lock);
 	unsigned long flags;
+	int retval = 0;
 
-	spin_lock_irqsave(&port->lock, flags);
+	if (srmconsp == NULL) {
+		srmconsp = kmalloc(sizeof(*srmconsp), GFP_KERNEL);
+		spin_lock_irqsave(&srmconsp_lock, flags);
 
-	if (!port->tty) {
-		tty->driver_data = srmconsp;
-		tty->port = port;
-		port->tty = tty; /* XXX proper refcounting */
-		mod_timer(&srmconsp->timer, jiffies + 10);
+		if (srmconsp == NULL)
+			retval = -ENOMEM;
+		else {
+			srmconsp->tty = NULL;
+			spin_lock_init(&srmconsp->lock);
+			init_timer(&srmconsp->timer);
+		}
+
+		spin_unlock_irqrestore(&srmconsp_lock, flags);
 	}
 
-	spin_unlock_irqrestore(&port->lock, flags);
+	*ps = srmconsp;
+	return retval;
+}
+
+static int
+srmcons_open(struct tty_struct *tty, struct file *filp)
+{
+	struct srmcons_private *srmconsp;
+	unsigned long flags;
+	int retval;
+
+	retval = srmcons_get_private_struct(&srmconsp);
+	if (retval)
+		return retval;
+
+	spin_lock_irqsave(&srmconsp->lock, flags);
+
+	if (!srmconsp->tty) {
+		tty->driver_data = srmconsp;
+
+		srmconsp->tty = tty;
+		srmconsp->timer.function = srmcons_receive_chars;
+		srmconsp->timer.data = (unsigned long)srmconsp;
+		srmconsp->timer.expires = jiffies + 10;
+		add_timer(&srmconsp->timer);
+	}
+
+	spin_unlock_irqrestore(&srmconsp->lock, flags);
 
 	return 0;
 }
@@ -179,17 +214,16 @@ static void
 srmcons_close(struct tty_struct *tty, struct file *filp)
 {
 	struct srmcons_private *srmconsp = tty->driver_data;
-	struct tty_port *port = &srmconsp->port;
 	unsigned long flags;
 
-	spin_lock_irqsave(&port->lock, flags);
+	spin_lock_irqsave(&srmconsp->lock, flags);
 
 	if (tty->count == 1) {
-		port->tty = NULL;
+		srmconsp->tty = NULL;
 		del_timer(&srmconsp->timer);
 	}
 
-	spin_unlock_irqrestore(&port->lock, flags);
+	spin_unlock_irqrestore(&srmconsp->lock, flags);
 }
 
 
@@ -206,7 +240,6 @@ static const struct tty_operations srmcons_ops = {
 static int __init
 srmcons_init(void)
 {
-	timer_setup(&srmcons_singleton.timer, srmcons_receive_chars, 0);
 	if (srm_is_registered_console) {
 		struct tty_driver *driver;
 		int err;
@@ -214,9 +247,6 @@ srmcons_init(void)
 		driver = alloc_tty_driver(MAX_SRM_CONSOLE_DEVICES);
 		if (!driver)
 			return -ENOMEM;
-
-		tty_port_init(&srmcons_singleton.port);
-
 		driver->driver_name = "srm";
 		driver->name = "srm";
 		driver->major = 0; 	/* dynamic */
@@ -225,11 +255,9 @@ srmcons_init(void)
 		driver->subtype = SYSTEM_TYPE_SYSCONS;
 		driver->init_termios = tty_std_termios;
 		tty_set_operations(driver, &srmcons_ops);
-		tty_port_link_device(&srmcons_singleton.port, driver, 0);
 		err = tty_register_driver(driver);
 		if (err) {
 			put_tty_driver(driver);
-			tty_port_destroy(&srmcons_singleton.port);
 			return err;
 		}
 		srmcons_driver = driver;
@@ -237,7 +265,8 @@ srmcons_init(void)
 
 	return -ENODEV;
 }
-device_initcall(srmcons_init);
+
+module_init(srmcons_init);
 
 
 /*

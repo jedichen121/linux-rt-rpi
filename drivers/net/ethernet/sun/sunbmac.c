@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /* sunbmac.c: Driver for Sparc BigMAC 100baseT ethernet adapters.
  *
  * Copyright (C) 1997, 1998, 1999, 2003, 2008 David S. Miller (davem@davemloft.net)
@@ -14,6 +13,7 @@
 #include <linux/in.h>
 #include <linux/string.h>
 #include <linux/delay.h>
+#include <linux/init.h>
 #include <linux/crc32.h>
 #include <linux/errno.h>
 #include <linux/ethtool.h>
@@ -35,6 +35,7 @@
 #include <asm/openprom.h>
 #include <asm/oplib.h>
 #include <asm/pgtable.h>
+#include <asm/system.h>
 
 #include "sunbmac.h"
 
@@ -170,7 +171,7 @@ static void bigmac_stop(struct bigmac *bp)
 
 static void bigmac_get_counters(struct bigmac *bp, void __iomem *bregs)
 {
-	struct net_device_stats *stats = &bp->dev->stats;
+	struct net_device_stats *stats = &bp->enet_stats;
 
 	stats->rx_crc_errors += sbus_readl(bregs + BMAC_RCRCECTR);
 	sbus_writel(0, bregs + BMAC_RCRCECTR);
@@ -212,6 +213,7 @@ static void bigmac_clean_rings(struct bigmac *bp)
 static void bigmac_init_rings(struct bigmac *bp, int from_irq)
 {
 	struct bmac_init_block *bb = bp->bmac_block;
+	struct net_device *dev = bp->dev;
 	int i;
 	gfp_t gfp_flags = GFP_KERNEL;
 
@@ -232,6 +234,7 @@ static void bigmac_init_rings(struct bigmac *bp, int from_irq)
 			continue;
 
 		bp->rx_skbs[i] = skb;
+		skb->dev = dev;
 
 		/* Because we reserve afterwards. */
 		skb_put(skb, ETH_FRAME_LEN);
@@ -524,9 +527,9 @@ static int try_next_permutation(struct bigmac *bp, void __iomem *tregs)
 	return -1;
 }
 
-static void bigmac_timer(struct timer_list *t)
+static void bigmac_timer(unsigned long data)
 {
-	struct bigmac *bp = from_timer(bp, t, bigmac_timer);
+	struct bigmac *bp = (struct bigmac *) data;
 	void __iomem *tregs = bp->tregs;
 	int restart_timer = 0;
 
@@ -614,6 +617,8 @@ static void bigmac_begin_auto_negotiation(struct bigmac *bp)
 	bp->timer_state = ltrywait;
 	bp->timer_ticks = 0;
 	bp->bigmac_timer.expires = jiffies + (12 * HZ) / 10;
+	bp->bigmac_timer.data = (unsigned long) bp;
+	bp->bigmac_timer.function = bigmac_timer;
 	add_timer(&bp->bigmac_timer);
 }
 
@@ -622,7 +627,6 @@ static int bigmac_init_hw(struct bigmac *bp, int from_irq)
 	void __iomem *gregs        = bp->gregs;
 	void __iomem *cregs        = bp->creg;
 	void __iomem *bregs        = bp->bregs;
-	__u32 bblk_dvma = (__u32)bp->bblock_dvma;
 	unsigned char *e = &bp->dev->dev_addr[0];
 
 	/* Latch current counters into statistics. */
@@ -671,9 +675,9 @@ static int bigmac_init_hw(struct bigmac *bp, int from_irq)
 		    bregs + BMAC_XIFCFG);
 
 	/* Tell the QEC where the ring descriptors are. */
-	sbus_writel(bblk_dvma + bib_offset(be_rxd, 0),
+	sbus_writel(bp->bblock_dvma + bib_offset(be_rxd, 0),
 		    cregs + CREG_RXDS);
-	sbus_writel(bblk_dvma + bib_offset(be_txd, 0),
+	sbus_writel(bp->bblock_dvma + bib_offset(be_txd, 0),
 		    cregs + CREG_TXDS);
 
 	/* Setup the FIFO pointers into QEC local memory. */
@@ -773,8 +777,8 @@ static void bigmac_tx(struct bigmac *bp)
 		if (this->tx_flags & TXD_OWN)
 			break;
 		skb = bp->tx_skbs[elem];
-		dev->stats.tx_packets++;
-		dev->stats.tx_bytes += skb->len;
+		bp->enet_stats.tx_packets++;
+		bp->enet_stats.tx_bytes += skb->len;
 		dma_unmap_single(&bp->bigmac_op->dev,
 				 this->tx_addr, skb->len,
 				 DMA_TO_DEVICE);
@@ -810,12 +814,12 @@ static void bigmac_rx(struct bigmac *bp)
 
 		/* Check for errors. */
 		if (len < ETH_ZLEN) {
-			bp->dev->stats.rx_errors++;
-			bp->dev->stats.rx_length_errors++;
+			bp->enet_stats.rx_errors++;
+			bp->enet_stats.rx_length_errors++;
 
 	drop_it:
 			/* Return it to the BigMAC. */
-			bp->dev->stats.rx_dropped++;
+			bp->enet_stats.rx_dropped++;
 			this->rx_flags =
 				(RXD_OWN | ((RX_BUF_ALLOC_SIZE - 34) & RXD_LENGTH));
 			goto next;
@@ -835,6 +839,7 @@ static void bigmac_rx(struct bigmac *bp)
 					 RX_BUF_ALLOC_SIZE - 34,
 					 DMA_FROM_DEVICE);
 			bp->rx_skbs[elem] = new_skb;
+			new_skb->dev = bp->dev;
 			skb_put(new_skb, ETH_FRAME_LEN);
 			skb_reserve(new_skb, 34);
 			this->rx_addr =
@@ -848,7 +853,7 @@ static void bigmac_rx(struct bigmac *bp)
 			/* Trim the original skb for the netif. */
 			skb_trim(skb, len);
 		} else {
-			struct sk_buff *copy_skb = netdev_alloc_skb(bp->dev, len + 2);
+			struct sk_buff *copy_skb = dev_alloc_skb(len + 2);
 
 			if (copy_skb == NULL) {
 				drops++;
@@ -874,8 +879,8 @@ static void bigmac_rx(struct bigmac *bp)
 		/* No checksums done by the BigMAC ;-( */
 		skb->protocol = eth_type_trans(skb, bp->dev);
 		netif_rx(skb);
-		bp->dev->stats.rx_packets++;
-		bp->dev->stats.rx_bytes += len;
+		bp->enet_stats.rx_packets++;
+		bp->enet_stats.rx_bytes += len;
 	next:
 		elem = NEXT_RX(elem);
 		this = &rxbase[elem];
@@ -920,7 +925,7 @@ static int bigmac_open(struct net_device *dev)
 		printk(KERN_ERR "BIGMAC: Can't order irq %d to go.\n", dev->irq);
 		return ret;
 	}
-	timer_setup(&bp->bigmac_timer, bigmac_timer, 0);
+	init_timer(&bp->bigmac_timer);
 	ret = bigmac_init_hw(bp, 0);
 	if (ret)
 		free_irq(dev->irq, bp);
@@ -986,7 +991,7 @@ static struct net_device_stats *bigmac_get_stats(struct net_device *dev)
 	struct bigmac *bp = netdev_priv(dev);
 
 	bigmac_get_counters(bp, bp->bregs);
-	return &dev->stats;
+	return &bp->enet_stats;
 }
 
 static void bigmac_set_multicast(struct net_device *dev)
@@ -994,6 +999,7 @@ static void bigmac_set_multicast(struct net_device *dev)
 	struct bigmac *bp = netdev_priv(dev);
 	void __iomem *bregs = bp->bregs;
 	struct netdev_hw_addr *ha;
+	int i;
 	u32 tmp, crc;
 
 	/* Disable the receiver.  The bit self-clears when
@@ -1015,7 +1021,10 @@ static void bigmac_set_multicast(struct net_device *dev)
 		tmp |= BIGMAC_RXCFG_PMISC;
 		sbus_writel(tmp, bregs + BMAC_RXCFG);
 	} else {
-		u16 hash_table[4] = { 0 };
+		u16 hash_table[4];
+
+		for (i = 0; i < 4; i++)
+			hash_table[i] = 0;
 
 		netdev_for_each_mc_addr(ha, dev) {
 			crc = ether_crc_le(6, ha->addr);
@@ -1037,8 +1046,8 @@ static void bigmac_set_multicast(struct net_device *dev)
 /* Ethtool support... */
 static void bigmac_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, "sunbmac", sizeof(info->driver));
-	strlcpy(info->version, "2.0", sizeof(info->version));
+	strcpy(info->driver, "sunbmac");
+	strcpy(info->version, "2.0");
 }
 
 static u32 bigmac_get_link(struct net_device *dev)
@@ -1064,12 +1073,13 @@ static const struct net_device_ops bigmac_ops = {
 	.ndo_get_stats		= bigmac_get_stats,
 	.ndo_set_rx_mode	= bigmac_set_multicast,
 	.ndo_tx_timeout		= bigmac_tx_timeout,
+	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_set_mac_address	= eth_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
 };
 
-static int bigmac_ether_init(struct platform_device *op,
-			     struct platform_device *qec_op)
+static int __devinit bigmac_ether_init(struct platform_device *op,
+				       struct platform_device *qec_op)
 {
 	static int version_printed;
 	struct net_device *dev;
@@ -1163,15 +1173,17 @@ static int bigmac_ether_init(struct platform_device *op,
 	bp->bmac_block = dma_alloc_coherent(&bp->bigmac_op->dev,
 					    PAGE_SIZE,
 					    &bp->bblock_dvma, GFP_ATOMIC);
-	if (bp->bmac_block == NULL || bp->bblock_dvma == 0)
+	if (bp->bmac_block == NULL || bp->bblock_dvma == 0) {
+		printk(KERN_ERR "BIGMAC: Cannot allocate consistent DMA.\n");
 		goto fail_and_cleanup;
+	}
 
 	/* Get the board revision of this BigMAC. */
 	bp->board_rev = of_getintprop_default(bp->bigmac_op->dev.of_node,
 					      "board-version", 1);
 
 	/* Init auto-negotiation timer state. */
-	timer_setup(&bp->bigmac_timer, bigmac_timer, 0);
+	init_timer(&bp->bigmac_timer);
 	bp->timer_state = asleep;
 	bp->timer_ticks = 0;
 
@@ -1225,7 +1237,7 @@ fail_and_cleanup:
 /* QEC can be the parent of either QuadEthernet or a BigMAC.  We want
  * the latter.
  */
-static int bigmac_sbus_probe(struct platform_device *op)
+static int __devinit bigmac_sbus_probe(struct platform_device *op)
 {
 	struct device *parent = op->dev.parent;
 	struct platform_device *qec_op;
@@ -1235,9 +1247,9 @@ static int bigmac_sbus_probe(struct platform_device *op)
 	return bigmac_ether_init(op, qec_op);
 }
 
-static int bigmac_sbus_remove(struct platform_device *op)
+static int __devexit bigmac_sbus_remove(struct platform_device *op)
 {
-	struct bigmac *bp = platform_get_drvdata(op);
+	struct bigmac *bp = dev_get_drvdata(&op->dev);
 	struct device *parent = op->dev.parent;
 	struct net_device *net_dev = bp->dev;
 	struct platform_device *qec_op;
@@ -1257,6 +1269,8 @@ static int bigmac_sbus_remove(struct platform_device *op)
 
 	free_netdev(net_dev);
 
+	dev_set_drvdata(&op->dev, NULL);
+
 	return 0;
 }
 
@@ -1272,10 +1286,11 @@ MODULE_DEVICE_TABLE(of, bigmac_sbus_match);
 static struct platform_driver bigmac_sbus_driver = {
 	.driver = {
 		.name = "sunbmac",
+		.owner = THIS_MODULE,
 		.of_match_table = bigmac_sbus_match,
 	},
 	.probe		= bigmac_sbus_probe,
-	.remove		= bigmac_sbus_remove,
+	.remove		= __devexit_p(bigmac_sbus_remove),
 };
 
 module_platform_driver(bigmac_sbus_driver);

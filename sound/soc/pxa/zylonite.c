@@ -22,6 +22,7 @@
 #include <sound/soc.h>
 
 #include "../codecs/wm9713.h"
+#include "pxa2xx-ac97.h"
 #include "pxa-ssp.h"
 
 /*
@@ -70,9 +71,21 @@ static const struct snd_soc_dapm_route audio_map[] = {
 
 static int zylonite_wm9713_init(struct snd_soc_pcm_runtime *rtd)
 {
+	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_dapm_context *dapm = &codec->dapm;
+
 	if (clk_pout)
 		snd_soc_dai_set_pll(rtd->codec_dai, 0, 0,
 				    clk_get_rate(pout), 0);
+
+	snd_soc_dapm_new_controls(dapm, zylonite_dapm_widgets,
+				  ARRAY_SIZE(zylonite_dapm_widgets));
+
+	snd_soc_dapm_add_routes(dapm, audio_map, ARRAY_SIZE(audio_map));
+
+	/* Static setup for now */
+	snd_soc_dapm_enable_pin(dapm, "Headphone");
+	snd_soc_dapm_enable_pin(dapm, "Headset Earpiece");
 
 	return 0;
 }
@@ -83,9 +96,11 @@ static int zylonite_voice_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_dai *codec_dai = rtd->codec_dai;
 	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
+	unsigned int pll_out = 0;
 	unsigned int wm9713_div = 0;
 	int ret = 0;
 	int rate = params_rate(params);
+	int width = snd_pcm_format_physical_width(params_format(params));
 
 	/* Only support ratios that we can generate neatly from the AC97
 	 * based master clock - in particular, this excludes 44.1kHz.
@@ -107,7 +122,14 @@ static int zylonite_voice_hw_params(struct snd_pcm_substream *substream,
 		return -EINVAL;
 	}
 
+	/* Add 1 to the width for the leading clock cycle */
+	pll_out = rate * (width + 1) * 8;
+
 	ret = snd_soc_dai_set_sysclk(cpu_dai, PXA_SSP_CLK_AUDIO, 0, 1);
+	if (ret < 0)
+		return ret;
+
+	ret = snd_soc_dai_set_pll(cpu_dai, 0, 0, 0, pll_out);
 	if (ret < 0)
 		return ret;
 
@@ -120,10 +142,20 @@ static int zylonite_voice_hw_params(struct snd_pcm_substream *substream,
 	if (ret < 0)
 		return ret;
 
+	ret = snd_soc_dai_set_fmt(codec_dai, SND_SOC_DAIFMT_I2S |
+		SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBS_CFS);
+	if (ret < 0)
+		return ret;
+
+	ret = snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_I2S |
+		SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBS_CFS);
+	if (ret < 0)
+		return ret;
+
 	return 0;
 }
 
-static const struct snd_soc_ops zylonite_voice_ops = {
+static struct snd_soc_ops zylonite_voice_ops = {
 	.hw_params = zylonite_voice_hw_params,
 };
 
@@ -152,8 +184,6 @@ static struct snd_soc_dai_link zylonite_dai[] = {
 	.platform_name = "pxa-pcm-audio",
 	.cpu_dai_name = "pxa-ssp-dai.2",
 	.codec_dai_name = "wm9713-voice",
-	.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
-		   SND_SOC_DAIFMT_CBS_CFS,
 	.ops = &zylonite_voice_ops,
 },
 };
@@ -219,18 +249,13 @@ static int zylonite_resume_pre(struct snd_soc_card *card)
 
 static struct snd_soc_card zylonite = {
 	.name = "Zylonite",
-	.owner = THIS_MODULE,
 	.probe = &zylonite_probe,
 	.remove = &zylonite_remove,
 	.suspend_post = &zylonite_suspend_post,
 	.resume_pre = &zylonite_resume_pre,
 	.dai_link = zylonite_dai,
 	.num_links = ARRAY_SIZE(zylonite_dai),
-
-	.dapm_widgets = zylonite_dapm_widgets,
-	.num_dapm_widgets = ARRAY_SIZE(zylonite_dapm_widgets),
-	.dapm_routes = audio_map,
-	.num_dapm_routes = ARRAY_SIZE(audio_map),
+	.owner = THIS_MODULE,
 };
 
 static struct platform_device *zylonite_snd_ac97_device;
