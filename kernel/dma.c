@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/kernel/dma.c: A DMA channel allocator. Inspired by linux/kernel/irq.c.
  *
@@ -19,6 +18,7 @@
 #include <linux/proc_fs.h>
 #include <linux/init.h>
 #include <asm/dma.h>
+#include <asm/system.h>
 
 
 
@@ -135,9 +135,21 @@ static int proc_dma_show(struct seq_file *m, void *v)
 }
 #endif /* MAX_DMA_CHANNELS */
 
+static int proc_dma_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, proc_dma_show, NULL);
+}
+
+static const struct file_operations proc_dma_operations = {
+	.open		= proc_dma_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 static int __init proc_dma_init(void)
 {
-	proc_create_single("dma", 0, NULL, proc_dma_show);
+	proc_create("dma", 0, NULL, &proc_dma_operations);
 	return 0;
 }
 

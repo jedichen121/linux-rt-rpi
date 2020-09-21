@@ -50,7 +50,6 @@
 #define FPUDEBUG 0
 
 #include "float.h"
-#include <linux/bug.h>
 #include <linux/kernel.h>
 #include <asm/processor.h>
 /* #include <sys/debug.h> */
@@ -184,7 +183,7 @@ static void parisc_linux_get_fpu_type(u_int fpregs[])
 
 /*
  * this routine will decode the excepting floating point instruction and
- * call the appropriate emulation routine.
+ * call the approiate emulation routine.
  * It is called by decode_fpu with the following parameters:
  * fpudispatch(current_ir, unimplemented_code, 0, &Fpu_register)
  * where current_ir is the instruction to be emulated,

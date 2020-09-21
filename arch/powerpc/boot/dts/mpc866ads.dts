@@ -74,6 +74,7 @@
 			#size-cells = <0>;
 			PHY: ethernet-phy@f {
 				reg = <0xf>;
+				device_type = "ethernet-phy";
 			};
 		};
 
@@ -185,6 +186,6 @@
 	};
 
 	chosen {
-		stdout-path = "/soc/cpm/serial@a80";
+		linux,stdout-path = "/soc/cpm/serial@a80";
 	};
 };

@@ -19,6 +19,10 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ *
+ * Should you need to contact me, the author, you can do so either by
+ * e-mail - mail your message to <vojtech@ucw.cz>, or by paper mail:
+ * Vojtech Pavlik, Simunkova 1594, Prague 8, 182 00 Czech Republic
  */
 
 #include "iforce.h"
@@ -60,7 +64,7 @@ void iforce_usb_xmit(struct iforce *iforce)
 
 	if ( (n=usb_submit_urb(iforce->out, GFP_ATOMIC)) ) {
 		clear_bit(IFORCE_XMIT_RUNNING, iforce->xmit_flags);
-		dev_warn(&iforce->intf->dev, "usb_submit_urb failed %d\n", n);
+		dev_warn(&iforce->dev->dev, "usb_submit_urb failed %d\n", n);
 	}
 
 	/* The IFORCE_XMIT_RUNNING bit is not cleared here. That's intended.
@@ -72,7 +76,6 @@ void iforce_usb_xmit(struct iforce *iforce)
 static void iforce_usb_irq(struct urb *urb)
 {
 	struct iforce *iforce = urb->context;
-	struct device *dev = &iforce->intf->dev;
 	int status;
 
 	switch (urb->status) {
@@ -83,12 +86,11 @@ static void iforce_usb_irq(struct urb *urb)
 	case -ENOENT:
 	case -ESHUTDOWN:
 		/* this urb is terminated, clean up */
-		dev_dbg(dev, "%s - urb shutting down with status: %d\n",
-			__func__, urb->status);
+		dbg("%s - urb shutting down with status: %d",
+		    __func__, urb->status);
 		return;
 	default:
-		dev_dbg(dev, "%s - urb has status of: %d\n",
-			__func__, urb->status);
+		dbg("%s - urb has status of: %d", __func__, urb->status);
 		goto exit;
 	}
 
@@ -98,8 +100,8 @@ static void iforce_usb_irq(struct urb *urb)
 exit:
 	status = usb_submit_urb (urb, GFP_ATOMIC);
 	if (status)
-		dev_err(dev, "%s - usb_submit_urb failed with result %d\n",
-			__func__, status);
+		err ("%s - usb_submit_urb failed with result %d",
+		     __func__, status);
 }
 
 static void iforce_usb_out(struct urb *urb)
@@ -108,8 +110,7 @@ static void iforce_usb_out(struct urb *urb)
 
 	if (urb->status) {
 		clear_bit(IFORCE_XMIT_RUNNING, iforce->xmit_flags);
-		dev_dbg(&iforce->intf->dev, "urb->status %d, exiting\n",
-			urb->status);
+		dbg("urb->status %d, exiting", urb->status);
 		return;
 	}
 
@@ -137,16 +138,8 @@ static int iforce_usb_probe(struct usb_interface *intf,
 
 	interface = intf->cur_altsetting;
 
-	if (interface->desc.bNumEndpoints < 2)
-		return -ENODEV;
-
 	epirq = &interface->endpoint[0].desc;
-	if (!usb_endpoint_is_int_in(epirq))
-		return -ENODEV;
-
 	epout = &interface->endpoint[1].desc;
-	if (!usb_endpoint_is_int_out(epout))
-		return -ENODEV;
 
 	if (!(iforce = kzalloc(sizeof(struct iforce) + 32, GFP_KERNEL)))
 		goto fail;
@@ -162,7 +155,6 @@ static int iforce_usb_probe(struct usb_interface *intf,
 
 	iforce->bus = IFORCE_USB;
 	iforce->usbdev = dev;
-	iforce->intf = intf;
 
 	iforce->cr.bRequestType = USB_TYPE_VENDOR | USB_DIR_IN | USB_RECIP_INTERFACE;
 	iforce->cr.wIndex = 0;
@@ -210,7 +202,7 @@ static void iforce_usb_disconnect(struct usb_interface *intf)
 	kfree(iforce);
 }
 
-static const struct usb_device_id iforce_usb_ids[] = {
+static struct usb_device_id iforce_usb_ids [] = {
 	{ USB_DEVICE(0x044f, 0xa01c) },		/* Thrustmaster Motor Sport GT */
 	{ USB_DEVICE(0x046d, 0xc281) },		/* Logitech WingMan Force */
 	{ USB_DEVICE(0x046d, 0xc291) },		/* Logitech WingMan Formula Force */

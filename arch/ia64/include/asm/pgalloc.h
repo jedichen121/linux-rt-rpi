@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_IA64_PGALLOC_H
 #define _ASM_IA64_PGALLOC_H
 
@@ -33,7 +32,7 @@ static inline void pgd_free(struct mm_struct *mm, pgd_t *pgd)
 	quicklist_free(0, NULL, pgd);
 }
 
-#if CONFIG_PGTABLE_LEVELS == 4
+#ifdef CONFIG_PGTABLE_4
 static inline void
 pgd_populate(struct mm_struct *mm, pgd_t * pgd_entry, pud_t * pud)
 {
@@ -50,7 +49,7 @@ static inline void pud_free(struct mm_struct *mm, pud_t *pud)
 	quicklist_free(0, NULL, pud);
 }
 #define __pud_free_tlb(tlb, pud, address)	pud_free((tlb)->mm, pud)
-#endif /* CONFIG_PGTABLE_LEVELS == 4 */
+#endif /* CONFIG_PGTABLE_4 */
 
 static inline void
 pud_populate(struct mm_struct *mm, pud_t * pud_entry, pmd_t * pmd)
@@ -92,10 +91,7 @@ static inline pgtable_t pte_alloc_one(struct mm_struct *mm, unsigned long addr)
 	if (!pg)
 		return NULL;
 	page = virt_to_page(pg);
-	if (!pgtable_page_ctor(page)) {
-		quicklist_free(0, NULL, pg);
-		return NULL;
-	}
+	pgtable_page_ctor(page);
 	return page;
 }
 

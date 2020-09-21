@@ -536,7 +536,7 @@ sym_getsync(struct sym_hcb *np, u_char dt, u_char sfac, u_char *divp, u_char *fa
 	 *  Look for the greatest clock divisor that allows an 
 	 *  input speed faster than the period.
 	 */
-	while (--div > 0)
+	while (div-- > 0)
 		if (kpc >= (div_10M[div] << 2)) break;
 
 	/*
@@ -759,7 +759,7 @@ static int sym_prepare_setting(struct Scsi_Host *shost, struct sym_hcb *np, stru
 	/*
 	 * Maximum synchronous period factor supported by the chip.
 	 */
-	period = div64_ul(11 * div_10M[np->clock_divn - 1], 4 * np->clock_khz);
+	period = (11 * div_10M[np->clock_divn - 1]) / (4 * np->clock_khz);
 	np->maxsync = period > 2540 ? 254 : period / 10;
 
 	/*
@@ -3000,11 +3000,7 @@ sym_dequeue_from_squeue(struct sym_hcb *np, int i, int target, int lun, int task
 		if ((target == -1 || cp->target == target) &&
 		    (lun    == -1 || cp->lun    == lun)    &&
 		    (task   == -1 || cp->tag    == task)) {
-#ifdef SYM_OPT_HANDLE_DEVICE_QUEUEING
 			sym_set_cam_status(cp->cmd, DID_SOFT_ERROR);
-#else
-			sym_set_cam_status(cp->cmd, DID_REQUEUE);
-#endif
 			sym_remque(&cp->link_ccbq);
 			sym_insque_tail(&cp->link_ccbq, &np->comp_ccbq);
 		}
@@ -3855,7 +3851,7 @@ out_reject:
 
 int sym_compute_residual(struct sym_hcb *np, struct sym_ccb *cp)
 {
-	int dp_sg, resid = 0;
+	int dp_sg, dp_sgmin, resid = 0;
 	int dp_ofs = 0;
 
 	/*
@@ -3902,6 +3898,7 @@ int sym_compute_residual(struct sym_hcb *np, struct sym_ccb *cp)
 	 *  We are now full comfortable in the computation 
 	 *  of the data residual (2's complement).
 	 */
+	dp_sgmin = SYM_CONF_MAX_SG - cp->segments;
 	resid = -cp->ext_ofs;
 	for (dp_sg = cp->ext_sg; dp_sg < SYM_CONF_MAX_SG; ++dp_sg) {
 		u_int tmp = scr_to_cpu(cp->phys.data[dp_sg].size);
@@ -4984,10 +4981,13 @@ struct sym_lcb *sym_alloc_lcb (struct sym_hcb *np, u_char tn, u_char ln)
 	 *  Compute the bus address of this table.
 	 */
 	if (ln && !tp->luntbl) {
+		int i;
+
 		tp->luntbl = sym_calloc_dma(256, "LUNTBL");
 		if (!tp->luntbl)
 			goto fail;
-		memset32(tp->luntbl, cpu_to_scr(vtobus(&np->badlun_sa)), 64);
+		for (i = 0 ; i < 64 ; i++)
+			tp->luntbl[i] = cpu_to_scr(vtobus(&np->badlun_sa));
 		tp->head.luntbl_sa = cpu_to_scr(vtobus(tp->luntbl));
 	}
 
@@ -5073,7 +5073,8 @@ static void sym_alloc_lcb_tags (struct sym_hcb *np, u_char tn, u_char ln)
 	/*
 	 *  Initialize the task table with invalid entries.
 	 */
-	memset32(lp->itlq_tbl, cpu_to_scr(np->notask_ba), SYM_CONF_MAX_TASK);
+	for (i = 0 ; i < SYM_CONF_MAX_TASK ; i++)
+		lp->itlq_tbl[i] = cpu_to_scr(np->notask_ba);
 
 	/*
 	 *  Fill up the tag buffer with tag numbers.
@@ -5759,7 +5760,8 @@ int sym_hcb_attach(struct Scsi_Host *shost, struct sym_fw *fw, struct sym_nvram 
 		goto attach_failed;
 
 	np->badlun_sa = cpu_to_scr(SCRIPTB_BA(np, resel_bad_lun));
-	memset32(np->badluntbl, cpu_to_scr(vtobus(&np->badlun_sa)), 64);
+	for (i = 0 ; i < 64 ; i++)	/* 64 luns/target, no less */
+		np->badluntbl[i] = cpu_to_scr(vtobus(&np->badlun_sa));
 
 	/*
 	 *  Prepare the bus address array that contains the bus 

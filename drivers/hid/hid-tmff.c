@@ -30,11 +30,10 @@
 #include <linux/hid.h>
 #include <linux/input.h>
 #include <linux/slab.h>
+#include <linux/usb.h>
 #include <linux/module.h>
 
 #include "hid-ids.h"
-
-#define THRUSTMASTER_DEVICE_ID_2_IN_1_DT	0xb320
 
 static const signed short ff_rumble[] = {
 	FF_RUMBLE,
@@ -47,6 +46,7 @@ static const signed short ff_joystick[] = {
 };
 
 #ifdef CONFIG_THRUSTMASTER_FF
+#include "usbhid/usbhid.h"
 
 /* Usages for thrustmaster devices I know about */
 #define THRUSTMASTER_USAGE_FF	(HID_UP_GENDESK | 0xbb)
@@ -90,7 +90,6 @@ static int tmff_play(struct input_dev *dev, void *data,
 	struct hid_field *ff_field = tmff->ff_field;
 	int x, y;
 	int left, right;	/* Rumbling */
-	int motor_swap;
 
 	switch (effect->type) {
 	case FF_CONSTANT:
@@ -104,7 +103,7 @@ static int tmff_play(struct input_dev *dev, void *data,
 		dbg_hid("(x, y)=(%04x, %04x)\n", x, y);
 		ff_field->value[0] = x;
 		ff_field->value[1] = y;
-		hid_hw_request(hid, tmff->report, HID_REQ_SET_REPORT);
+		usbhid_submit_report(hid, tmff->report, USB_DIR_OUT);
 		break;
 
 	case FF_RUMBLE:
@@ -115,17 +114,10 @@ static int tmff_play(struct input_dev *dev, void *data,
 					ff_field->logical_minimum,
 					ff_field->logical_maximum);
 
-		/* 2-in-1 strong motor is left */
-		if (hid->product == THRUSTMASTER_DEVICE_ID_2_IN_1_DT) {
-			motor_swap = left;
-			left = right;
-			right = motor_swap;
-		}
-
 		dbg_hid("(left,right)=(%08x, %08x)\n", left, right);
 		ff_field->value[0] = left;
 		ff_field->value[1] = right;
-		hid_hw_request(hid, tmff->report, HID_REQ_SET_REPORT);
+		usbhid_submit_report(hid, tmff->report, USB_DIR_OUT);
 		break;
 	}
 	return 0;
@@ -136,17 +128,11 @@ static int tmff_init(struct hid_device *hid, const signed short *ff_bits)
 	struct tmff_device *tmff;
 	struct hid_report *report;
 	struct list_head *report_list;
-	struct hid_input *hidinput;
-	struct input_dev *input_dev;
+	struct hid_input *hidinput = list_entry(hid->inputs.next,
+							struct hid_input, list);
+	struct input_dev *input_dev = hidinput->input;
 	int error;
 	int i;
-
-	if (list_empty(&hid->inputs)) {
-		hid_err(hid, "no inputs found\n");
-		return -ENODEV;
-	}
-	hidinput = list_entry(hid->inputs.next, struct hid_input, list);
-	input_dev = hidinput->input;
 
 	tmff = kzalloc(sizeof(struct tmff_device), GFP_KERNEL);
 	if (!tmff)
@@ -254,14 +240,10 @@ static const struct hid_device_id tm_devices[] = {
 		.driver_data = (unsigned long)ff_rumble },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_THRUSTMASTER, 0xb304),   /* FireStorm Dual Power 2 (and 3) */
 		.driver_data = (unsigned long)ff_rumble },
-	{ HID_USB_DEVICE(USB_VENDOR_ID_THRUSTMASTER, THRUSTMASTER_DEVICE_ID_2_IN_1_DT),   /* Dual Trigger 2-in-1 */
-		.driver_data = (unsigned long)ff_rumble },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_THRUSTMASTER, 0xb323),   /* Dual Trigger 3-in-1 (PC Mode) */
 		.driver_data = (unsigned long)ff_rumble },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_THRUSTMASTER, 0xb324),   /* Dual Trigger 3-in-1 (PS3 Mode) */
 		.driver_data = (unsigned long)ff_rumble },
-	{ HID_USB_DEVICE(USB_VENDOR_ID_THRUSTMASTER, 0xb605),   /* NASCAR PRO FF2 Wheel */
-		.driver_data = (unsigned long)ff_joystick },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_THRUSTMASTER, 0xb651),	/* FGT Rumble Force Wheel */
 		.driver_data = (unsigned long)ff_rumble },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_THRUSTMASTER, 0xb653),	/* RGT Force Feedback CLUTCH Raging Wheel */
@@ -279,6 +261,17 @@ static struct hid_driver tm_driver = {
 	.id_table = tm_devices,
 	.probe = tm_probe,
 };
-module_hid_driver(tm_driver);
 
+static int __init tm_init(void)
+{
+	return hid_register_driver(&tm_driver);
+}
+
+static void __exit tm_exit(void)
+{
+	hid_unregister_driver(&tm_driver);
+}
+
+module_init(tm_init);
+module_exit(tm_exit);
 MODULE_LICENSE("GPL");

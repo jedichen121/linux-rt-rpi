@@ -24,8 +24,9 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307
+ * USA
  *
  * This code is a "clean room" implementation, written from the paper
  * _Twofish: A 128-Bit Block Cipher_ by Bruce Schneier, John Kelsey,
@@ -579,9 +580,12 @@ static const u8 calc_sb_tbl[512] = {
    ctx->a[(j) + 1] = rol32(y, 9)
 
 /* Perform the key setup. */
-int __twofish_setkey(struct twofish_ctx *ctx, const u8 *key,
-		     unsigned int key_len, u32 *flags)
+int twofish_setkey(struct crypto_tfm *tfm, const u8 *key, unsigned int key_len)
 {
+
+	struct twofish_ctx *ctx = crypto_tfm_ctx(tfm);
+	u32 *flags = &tfm->crt_flags;
+
 	int i, j, k;
 
 	/* Temporaries for CALC_K. */
@@ -697,13 +701,7 @@ int __twofish_setkey(struct twofish_ctx *ctx, const u8 *key,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(__twofish_setkey);
 
-int twofish_setkey(struct crypto_tfm *tfm, const u8 *key, unsigned int key_len)
-{
-	return __twofish_setkey(crypto_tfm_ctx(tfm), key, key_len,
-				&tfm->crt_flags);
-}
 EXPORT_SYMBOL_GPL(twofish_setkey);
 
 MODULE_LICENSE("GPL");

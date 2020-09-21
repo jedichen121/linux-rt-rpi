@@ -26,7 +26,8 @@
  * ALSA that we support all rates and let the codec driver decide what rates
  * are really supported.
  */
-#define PSC_I2S_RATES SNDRV_PCM_RATE_CONTINUOUS
+#define PSC_I2S_RATES (SNDRV_PCM_RATE_5512 | SNDRV_PCM_RATE_8000_192000 | \
+			SNDRV_PCM_RATE_CONTINUOUS)
 
 /**
  * PSC_I2S_FORMATS: audio formats supported by the PSC I2S mode
@@ -122,23 +123,20 @@ static int psc_i2s_set_fmt(struct snd_soc_dai *cpu_dai, unsigned int format)
 /**
  * psc_i2s_dai_template: template CPU Digital Audio Interface
  */
-static const struct snd_soc_dai_ops psc_i2s_dai_ops = {
+static struct snd_soc_dai_ops psc_i2s_dai_ops = {
 	.hw_params	= psc_i2s_hw_params,
 	.set_sysclk	= psc_i2s_set_sysclk,
 	.set_fmt	= psc_i2s_set_fmt,
 };
 
 static struct snd_soc_dai_driver psc_i2s_dai[] = {{
-	.name = "mpc5200-psc-i2s.0",
 	.playback = {
-		.stream_name = "I2S Playback",
 		.channels_min = 2,
 		.channels_max = 2,
 		.rates = PSC_I2S_RATES,
 		.formats = PSC_I2S_FORMATS,
 	},
 	.capture = {
-		.stream_name = "I2S Capture",
 		.channels_min = 2,
 		.channels_max = 2,
 		.rates = PSC_I2S_RATES,
@@ -147,27 +145,18 @@ static struct snd_soc_dai_driver psc_i2s_dai[] = {{
 	.ops = &psc_i2s_dai_ops,
 } };
 
-static const struct snd_soc_component_driver psc_i2s_component = {
-	.name		= "mpc5200-i2s",
-};
-
 /* ---------------------------------------------------------------------
  * OF platform bus binding code:
  * - Probe/remove operations
  * - OF device match table
  */
-static int psc_i2s_of_probe(struct platform_device *op)
+static int __devinit psc_i2s_of_probe(struct platform_device *op)
 {
 	int rc;
 	struct psc_dma *psc_dma;
 	struct mpc52xx_psc __iomem *regs;
 
-	rc = mpc5200_audio_dma_create(op);
-	if (rc != 0)
-		return rc;
-
-	rc = snd_soc_register_component(&op->dev, &psc_i2s_component,
-					psc_i2s_dai, ARRAY_SIZE(psc_i2s_dai));
+	rc = snd_soc_register_dais(&op->dev, psc_i2s_dai, ARRAY_SIZE(psc_i2s_dai));
 	if (rc != 0) {
 		pr_err("Failed to register DAI\n");
 		return rc;
@@ -209,15 +198,14 @@ static int psc_i2s_of_probe(struct platform_device *op)
 
 }
 
-static int psc_i2s_of_remove(struct platform_device *op)
+static int __devexit psc_i2s_of_remove(struct platform_device *op)
 {
-	mpc5200_audio_dma_destroy(op);
-	snd_soc_unregister_component(&op->dev);
+	snd_soc_unregister_dais(&op->dev, ARRAY_SIZE(psc_i2s_dai));
 	return 0;
 }
 
 /* Match table for of_platform binding */
-static const struct of_device_id psc_i2s_match[] = {
+static struct of_device_id psc_i2s_match[] __devinitdata = {
 	{ .compatible = "fsl,mpc5200-psc-i2s", },
 	{ .compatible = "fsl,mpc5200b-psc-i2s", },
 	{}
@@ -226,14 +214,29 @@ MODULE_DEVICE_TABLE(of, psc_i2s_match);
 
 static struct platform_driver psc_i2s_driver = {
 	.probe = psc_i2s_of_probe,
-	.remove = psc_i2s_of_remove,
+	.remove = __devexit_p(psc_i2s_of_remove),
 	.driver = {
 		.name = "mpc5200-psc-i2s",
+		.owner = THIS_MODULE,
 		.of_match_table = psc_i2s_match,
 	},
 };
 
-module_platform_driver(psc_i2s_driver);
+/* ---------------------------------------------------------------------
+ * Module setup and teardown; simply register the of_platform driver
+ * for the PSC in I2S mode.
+ */
+static int __init psc_i2s_init(void)
+{
+	return platform_driver_register(&psc_i2s_driver);
+}
+module_init(psc_i2s_init);
+
+static void __exit psc_i2s_exit(void)
+{
+	platform_driver_unregister(&psc_i2s_driver);
+}
+module_exit(psc_i2s_exit);
 
 MODULE_AUTHOR("Grant Likely <grant.likely@secretlab.ca>");
 MODULE_DESCRIPTION("Freescale MPC5200 PSC in I2S mode ASoC Driver");

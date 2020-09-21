@@ -189,8 +189,7 @@ static int scan_header(struct partition *part)
 	if (!part->blocks)
 		goto err;
 
-	part->sector_map = vmalloc(array_size(sizeof(u_long),
-					      part->sector_count));
+	part->sector_map = vmalloc(part->sector_count * sizeof(u_long));
 	if (!part->sector_map) {
 		printk(KERN_ERR PREFIX "'%s': unable to allocate memory for "
 			"sector map", part->mbd.mtd->name);
@@ -201,9 +200,9 @@ static int scan_header(struct partition *part)
 		part->sector_map[i] = -1;
 
 	for (i=0, blocks_found=0; i<part->total_blocks; i++) {
-		rc = mtd_read(part->mbd.mtd, i * part->block_size,
-			      part->header_size, &retlen,
-			      (u_char *)part->header_cache);
+		rc = part->mbd.mtd->read(part->mbd.mtd,
+				i * part->block_size, part->header_size,
+				&retlen, (u_char*)part->header_cache);
 
 		if (!rc && retlen != part->header_size)
 			rc = -EIO;
@@ -251,8 +250,8 @@ static int rfd_ftl_readsect(struct mtd_blktrans_dev *dev, u_long sector, char *b
 
 	addr = part->sector_map[sector];
 	if (addr != -1) {
-		rc = mtd_read(part->mbd.mtd, addr, SECTOR_SIZE, &retlen,
-			      (u_char *)buf);
+		rc = part->mbd.mtd->read(part->mbd.mtd, addr, SECTOR_SIZE,
+						&retlen, (u_char*)buf);
 		if (!rc && retlen != SECTOR_SIZE)
 			rc = -EIO;
 
@@ -267,54 +266,92 @@ static int rfd_ftl_readsect(struct mtd_blktrans_dev *dev, u_long sector, char *b
 	return 0;
 }
 
+static void erase_callback(struct erase_info *erase)
+{
+	struct partition *part;
+	u16 magic;
+	int i, rc;
+	size_t retlen;
+
+	part = (struct partition*)erase->priv;
+
+	i = (u32)erase->addr / part->block_size;
+	if (i >= part->total_blocks || part->blocks[i].offset != erase->addr ||
+	    erase->addr > UINT_MAX) {
+		printk(KERN_ERR PREFIX "erase callback for unknown offset %llx "
+				"on '%s'\n", (unsigned long long)erase->addr, part->mbd.mtd->name);
+		return;
+	}
+
+	if (erase->state != MTD_ERASE_DONE) {
+		printk(KERN_WARNING PREFIX "erase failed at 0x%llx on '%s', "
+				"state %d\n", (unsigned long long)erase->addr,
+				part->mbd.mtd->name, erase->state);
+
+		part->blocks[i].state = BLOCK_FAILED;
+		part->blocks[i].free_sectors = 0;
+		part->blocks[i].used_sectors = 0;
+
+		kfree(erase);
+
+		return;
+	}
+
+	magic = cpu_to_le16(RFD_MAGIC);
+
+	part->blocks[i].state = BLOCK_ERASED;
+	part->blocks[i].free_sectors = part->data_sectors_per_block;
+	part->blocks[i].used_sectors = 0;
+	part->blocks[i].erases++;
+
+	rc = part->mbd.mtd->write(part->mbd.mtd,
+		part->blocks[i].offset, sizeof(magic), &retlen,
+		(u_char*)&magic);
+
+	if (!rc && retlen != sizeof(magic))
+		rc = -EIO;
+
+	if (rc) {
+		printk(KERN_ERR PREFIX "'%s': unable to write RFD "
+				"header at 0x%lx\n",
+				part->mbd.mtd->name,
+				part->blocks[i].offset);
+		part->blocks[i].state = BLOCK_FAILED;
+	}
+	else
+		part->blocks[i].state = BLOCK_OK;
+
+	kfree(erase);
+}
+
 static int erase_block(struct partition *part, int block)
 {
 	struct erase_info *erase;
-	int rc;
+	int rc = -ENOMEM;
 
 	erase = kmalloc(sizeof(struct erase_info), GFP_KERNEL);
 	if (!erase)
-		return -ENOMEM;
+		goto err;
 
+	erase->mtd = part->mbd.mtd;
+	erase->callback = erase_callback;
 	erase->addr = part->blocks[block].offset;
 	erase->len = part->block_size;
+	erase->priv = (u_long)part;
 
 	part->blocks[block].state = BLOCK_ERASING;
 	part->blocks[block].free_sectors = 0;
 
-	rc = mtd_erase(part->mbd.mtd, erase);
+	rc = part->mbd.mtd->erase(part->mbd.mtd, erase);
+
 	if (rc) {
 		printk(KERN_ERR PREFIX "erase of region %llx,%llx on '%s' "
 				"failed\n", (unsigned long long)erase->addr,
 				(unsigned long long)erase->len, part->mbd.mtd->name);
-		part->blocks[block].state = BLOCK_FAILED;
-		part->blocks[block].free_sectors = 0;
-		part->blocks[block].used_sectors = 0;
-	} else {
-		u16 magic = cpu_to_le16(RFD_MAGIC);
-		size_t retlen;
-
-		part->blocks[block].state = BLOCK_ERASED;
-		part->blocks[block].free_sectors = part->data_sectors_per_block;
-		part->blocks[block].used_sectors = 0;
-		part->blocks[block].erases++;
-
-		rc = mtd_write(part->mbd.mtd, part->blocks[block].offset,
-			       sizeof(magic), &retlen, (u_char *)&magic);
-		if (!rc && retlen != sizeof(magic))
-			rc = -EIO;
-
-		if (rc) {
-			pr_err(PREFIX "'%s': unable to write RFD header at 0x%lx\n",
-			       part->mbd.mtd->name, part->blocks[block].offset);
-			part->blocks[block].state = BLOCK_FAILED;
-		} else {
-			part->blocks[block].state = BLOCK_OK;
-		}
+		kfree(erase);
 	}
 
-	kfree(erase);
-
+err:
 	return rc;
 }
 
@@ -335,8 +372,9 @@ static int move_block_contents(struct partition *part, int block_no, u_long *old
 	if (!map)
 		goto err2;
 
-	rc = mtd_read(part->mbd.mtd, part->blocks[block_no].offset,
-		      part->header_size, &retlen, (u_char *)map);
+	rc = part->mbd.mtd->read(part->mbd.mtd,
+		part->blocks[block_no].offset, part->header_size,
+		&retlen, (u_char*)map);
 
 	if (!rc && retlen != part->header_size)
 		rc = -EIO;
@@ -375,8 +413,8 @@ static int move_block_contents(struct partition *part, int block_no, u_long *old
 			}
 			continue;
 		}
-		rc = mtd_read(part->mbd.mtd, addr, SECTOR_SIZE, &retlen,
-			      sector_data);
+		rc = part->mbd.mtd->read(part->mbd.mtd, addr,
+			SECTOR_SIZE, &retlen, sector_data);
 
 		if (!rc && retlen != SECTOR_SIZE)
 			rc = -EIO;
@@ -412,7 +450,8 @@ static int reclaim_block(struct partition *part, u_long *old_sector)
 	int rc;
 
 	/* we have a race if sync doesn't exist */
-	mtd_sync(part->mbd.mtd);
+	if (part->mbd.mtd->sync)
+		part->mbd.mtd->sync(part->mbd.mtd);
 
 	score = 0x7fffffff; /* MAX_INT */
 	best_block = -1;
@@ -524,9 +563,8 @@ static int find_writable_block(struct partition *part, u_long *old_sector)
 		}
 	}
 
-	rc = mtd_read(part->mbd.mtd, part->blocks[block].offset,
-		      part->header_size, &retlen,
-		      (u_char *)part->header_cache);
+	rc = part->mbd.mtd->read(part->mbd.mtd, part->blocks[block].offset,
+		part->header_size, &retlen, (u_char*)part->header_cache);
 
 	if (!rc && retlen != part->header_size)
 		rc = -EIO;
@@ -557,8 +595,8 @@ static int mark_sector_deleted(struct partition *part, u_long old_addr)
 
 	addr = part->blocks[block].offset +
 			(HEADER_MAP_OFFSET + offset) * sizeof(u16);
-	rc = mtd_write(part->mbd.mtd, addr, sizeof(del), &retlen,
-		       (u_char *)&del);
+	rc = part->mbd.mtd->write(part->mbd.mtd, addr,
+		sizeof(del), &retlen, (u_char*)&del);
 
 	if (!rc && retlen != sizeof(del))
 		rc = -EIO;
@@ -566,7 +604,8 @@ static int mark_sector_deleted(struct partition *part, u_long old_addr)
 	if (rc) {
 		printk(KERN_ERR PREFIX "error writing '%s' at "
 			"0x%lx\n", part->mbd.mtd->name, addr);
-		goto err;
+		if (rc)
+			goto err;
 	}
 	if (block == part->current_block)
 		part->header_cache[offset + HEADER_MAP_OFFSET] = del;
@@ -629,8 +668,8 @@ static int do_writesect(struct mtd_blktrans_dev *dev, u_long sector, char *buf, 
 
 	addr = (i + part->header_sectors_per_block) * SECTOR_SIZE +
 		block->offset;
-	rc = mtd_write(part->mbd.mtd, addr, SECTOR_SIZE, &retlen,
-		       (u_char *)buf);
+	rc = part->mbd.mtd->write(part->mbd.mtd,
+		addr, SECTOR_SIZE, &retlen, (u_char*)buf);
 
 	if (!rc && retlen != SECTOR_SIZE)
 		rc = -EIO;
@@ -638,7 +677,8 @@ static int do_writesect(struct mtd_blktrans_dev *dev, u_long sector, char *buf, 
 	if (rc) {
 		printk(KERN_ERR PREFIX "error writing '%s' at 0x%lx\n",
 				part->mbd.mtd->name, addr);
-		goto err;
+		if (rc)
+			goto err;
 	}
 
 	part->sector_map[sector] = addr;
@@ -648,8 +688,8 @@ static int do_writesect(struct mtd_blktrans_dev *dev, u_long sector, char *buf, 
 	part->header_cache[i + HEADER_MAP_OFFSET] = entry;
 
 	addr = block->offset + (HEADER_MAP_OFFSET + i) * sizeof(u16);
-	rc = mtd_write(part->mbd.mtd, addr, sizeof(entry), &retlen,
-		       (u_char *)&entry);
+	rc = part->mbd.mtd->write(part->mbd.mtd, addr,
+			sizeof(entry), &retlen, (u_char*)&entry);
 
 	if (!rc && retlen != sizeof(entry))
 		rc = -EIO;
@@ -657,7 +697,8 @@ static int do_writesect(struct mtd_blktrans_dev *dev, u_long sector, char *buf, 
 	if (rc) {
 		printk(KERN_ERR PREFIX "error writing '%s' at 0x%lx\n",
 				part->mbd.mtd->name, addr);
-		goto err;
+		if (rc)
+			goto err;
 	}
 	block->used_sectors++;
 	block->free_sectors--;

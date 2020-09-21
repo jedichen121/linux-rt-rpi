@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_IA64_SAL_H
 #define _ASM_IA64_SAL_H
 
@@ -41,6 +40,7 @@
 #include <linux/efi.h>
 
 #include <asm/pal.h>
+#include <asm/system.h>
 #include <asm/fpu.h>
 
 extern spinlock_t sal_lock;

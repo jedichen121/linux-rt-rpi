@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *	linux/arch/alpha/kernel/err_impl.h
  *
@@ -7,8 +6,6 @@
  *	Contains declarations and macros to support Alpha error handling
  * 	implementations.
  */
-
-#include <asm/mce.h>
 
 union el_timestamp;
 struct el_subpacket;

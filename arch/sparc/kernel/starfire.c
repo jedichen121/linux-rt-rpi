@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * starfire.c: Starfire/E10000 support.
  *
@@ -27,6 +26,11 @@ void check_if_starfire(void)
 	phandle ssnode = prom_finddevice("/ssp-serial");
 	if (ssnode != 0 && (s32)ssnode != -1)
 		this_is_starfire = 1;
+}
+
+int starfire_hard_smp_processor_id(void)
+{
+	return upa_readl(0x1fff40000d0UL);
 }
 
 /*

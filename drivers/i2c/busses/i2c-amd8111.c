@@ -13,6 +13,7 @@
 #include <linux/kernel.h>
 #include <linux/stddef.h>
 #include <linux/ioport.h>
+#include <linux/init.h>
 #include <linux/i2c.h>
 #include <linux/delay.h>
 #include <linux/acpi.h>
@@ -384,7 +385,6 @@ static s32 amd8111_access(struct i2c_adapter * adap, u16 addr,
 			if (status)
 				return status;
 			len = min_t(u8, len, I2C_SMBUS_BLOCK_MAX);
-			/* fall through */
 		case I2C_SMBUS_I2C_BLOCK_DATA:
 			for (i = 0; i < len; i++) {
 				status = amd_ec_read(smbus, AMD_SMB_DATA + i,
@@ -422,7 +422,8 @@ static const struct pci_device_id amd8111_ids[] = {
 
 MODULE_DEVICE_TABLE (pci, amd8111_ids);
 
-static int amd8111_probe(struct pci_dev *dev, const struct pci_device_id *id)
+static int __devinit amd8111_probe(struct pci_dev *dev,
+		const struct pci_device_id *id)
 {
 	struct amd_smbus *smbus;
 	int error;
@@ -474,7 +475,7 @@ static int amd8111_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	return error;
 }
 
-static void amd8111_remove(struct pci_dev *dev)
+static void __devexit amd8111_remove(struct pci_dev *dev)
 {
 	struct amd_smbus *smbus = pci_get_drvdata(dev);
 
@@ -487,7 +488,18 @@ static struct pci_driver amd8111_driver = {
 	.name		= "amd8111_smbus2",
 	.id_table	= amd8111_ids,
 	.probe		= amd8111_probe,
-	.remove		= amd8111_remove,
+	.remove		= __devexit_p(amd8111_remove),
 };
 
-module_pci_driver(amd8111_driver);
+static int __init i2c_amd8111_init(void)
+{
+	return pci_register_driver(&amd8111_driver);
+}
+
+static void __exit i2c_amd8111_exit(void)
+{
+	pci_unregister_driver(&amd8111_driver);
+}
+
+module_init(i2c_amd8111_init);
+module_exit(i2c_amd8111_exit);

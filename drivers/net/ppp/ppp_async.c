@@ -26,7 +26,7 @@
 #include <linux/poll.h>
 #include <linux/crc-ccitt.h>
 #include <linux/ppp_defs.h>
-#include <linux/ppp-ioctl.h>
+#include <linux/if_ppp.h>
 #include <linux/ppp_channel.h>
 #include <linux/spinlock.h>
 #include <linux/init.h>
@@ -34,7 +34,7 @@
 #include <linux/jiffies.h>
 #include <linux/slab.h>
 #include <asm/unaligned.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <asm/string.h>
 
 #define PPP_VERSION	"2.4.2"
@@ -69,7 +69,7 @@ struct asyncppp {
 
 	struct tasklet_struct tsk;
 
-	refcount_t	refcnt;
+	atomic_t	refcnt;
 	struct semaphore dead_sem;
 	struct ppp_channel chan;	/* interface to generic ppp layer */
 	unsigned char	obuf[OBUFSIZE];
@@ -140,14 +140,14 @@ static struct asyncppp *ap_get(struct tty_struct *tty)
 	read_lock(&disc_data_lock);
 	ap = tty->disc_data;
 	if (ap != NULL)
-		refcount_inc(&ap->refcnt);
+		atomic_inc(&ap->refcnt);
 	read_unlock(&disc_data_lock);
 	return ap;
 }
 
 static void ap_put(struct asyncppp *ap)
 {
-	if (refcount_dec_and_test(&ap->refcnt))
+	if (atomic_dec_and_test(&ap->refcnt))
 		up(&ap->dead_sem);
 }
 
@@ -185,7 +185,7 @@ ppp_asynctty_open(struct tty_struct *tty)
 	skb_queue_head_init(&ap->rqueue);
 	tasklet_init(&ap->tsk, ppp_async_process, (unsigned long) ap);
 
-	refcount_set(&ap->refcnt, 1);
+	atomic_set(&ap->refcnt, 1);
 	sema_init(&ap->dead_sem, 0);
 
 	ap->chan.private = ap;
@@ -234,7 +234,7 @@ ppp_asynctty_close(struct tty_struct *tty)
 	 * our channel ops (i.e. ppp_async_send/ioctl) are in progress
 	 * by the time it returns.
 	 */
-	if (!refcount_dec_and_test(&ap->refcnt))
+	if (!atomic_dec_and_test(&ap->refcnt))
 		down(&ap->dead_sem);
 	tasklet_kill(&ap->tsk);
 
@@ -314,7 +314,7 @@ ppp_asynctty_ioctl(struct tty_struct *tty, struct file *file,
 		/* flush our buffers and the serial port's buffer */
 		if (arg == TCIOFLUSH || arg == TCOFLUSH)
 			ppp_async_flush_output(ap);
-		err = n_tty_ioctl_helper(tty, file, cmd, arg);
+		err = tty_perform_flush(tty, arg);
 		break;
 
 	case FIONREAD:
@@ -334,7 +334,7 @@ ppp_asynctty_ioctl(struct tty_struct *tty, struct file *file,
 }
 
 /* No kernel lock - fine */
-static __poll_t
+static unsigned int
 ppp_asynctty_poll(struct tty_struct *tty, struct file *file, poll_table *wait)
 {
 	return 0;
@@ -613,7 +613,7 @@ ppp_async_encode(struct asyncppp *ap)
 	*buf++ = PPP_FLAG;
 	ap->olim = buf;
 
-	consume_skb(ap->tpkt);
+	kfree_skb(ap->tpkt);
 	ap->tpkt = NULL;
 	return 1;
 }
@@ -802,7 +802,7 @@ process_input_packet(struct asyncppp *ap)
 	proto = p[0];
 	if (proto & 1) {
 		/* protocol is compressed */
-		*(u8 *)skb_push(skb, 1) = 0;
+		skb_push(skb, 1)[0] = 0;
 	} else {
 		if (skb->len < 2)
 			goto err;
@@ -894,7 +894,8 @@ ppp_async_input(struct asyncppp *ap, const unsigned char *buf,
 				/* packet overflowed MRU */
 				ap->state |= SC_TOSS;
 			} else {
-				sp = skb_put_data(skb, buf, n);
+				sp = skb_put(skb, n);
+				memcpy(sp, buf, n);
 				if (ap->state & SC_ESCAPE) {
 					sp[0] ^= PPP_TRANS;
 					ap->state &= ~SC_ESCAPE;

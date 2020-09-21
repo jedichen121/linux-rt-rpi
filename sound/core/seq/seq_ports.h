@@ -73,6 +73,7 @@ struct snd_seq_client_port {
 			   int atomic, int hop);
 	void (*private_free)(void *private_data);
 	void *private_data;
+	unsigned int callback_all : 1;
 	unsigned int closing : 1;
 	unsigned int timestamping: 1;
 	unsigned int time_real: 1;
@@ -135,8 +136,7 @@ int snd_seq_port_subscribe(struct snd_seq_client_port *port,
 			   struct snd_seq_port_subscribe *info);
 
 /* get matched subscriber */
-int snd_seq_port_get_subscription(struct snd_seq_port_subs_info *src_grp,
-				  struct snd_seq_addr *dest_addr,
-				  struct snd_seq_port_subscribe *subs);
+struct snd_seq_subscribers *snd_seq_port_get_subscription(struct snd_seq_port_subs_info *src_grp,
+							  struct snd_seq_addr *dest_addr);
 
 #endif

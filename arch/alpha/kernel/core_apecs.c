@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *	linux/arch/alpha/kernel/core_apecs.c
  *
@@ -22,7 +21,6 @@
 
 #include <asm/ptrace.h>
 #include <asm/smp.h>
-#include <asm/mce.h>
 
 #include "proto.h"
 #include "pci_impl.h"

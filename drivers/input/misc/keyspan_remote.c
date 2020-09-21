@@ -13,9 +13,15 @@
 
 #include <linux/kernel.h>
 #include <linux/errno.h>
+#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/usb/input.h>
+
+#define DRIVER_VERSION	"v0.1"
+#define DRIVER_AUTHOR	"Michael Downey <downey@zymeta.com>"
+#define DRIVER_DESC	"Driver for the USB Keyspan remote control."
+#define DRIVER_LICENSE	"GPL"
 
 /* Parameters that can be passed to the driver. */
 static int debug;
@@ -80,7 +86,7 @@ static const unsigned short keyspan_key_table[] = {
 };
 
 /* table of devices that work with this driver */
-static const struct usb_device_id keyspan_table[] = {
+static struct usb_device_id keyspan_table[] = {
 	{ USB_DEVICE(USB_KEYSPAN_VENDOR_ID, USB_KEYSPAN_PRODUCT_UIA11) },
 	{ }					/* Terminating entry */
 };
@@ -151,7 +157,7 @@ static int keyspan_load_tester(struct usb_keyspan* dev, int bits_needed)
 	 * though so it's not too big a deal
 	 */
 	if (dev->data.pos >= dev->data.len) {
-		dev_dbg(&dev->interface->dev,
+		dev_dbg(&dev->udev->dev,
 			"%s - Error ran out of data. pos: %d, len: %d\n",
 			__func__, dev->data.pos, dev->data.len);
 		return -1;
@@ -261,9 +267,7 @@ static void keyspan_check_data(struct usb_keyspan *remote)
 				remote->data.tester = remote->data.tester >> 6;
 				remote->data.bits_left -= 6;
 			} else {
-				dev_err(&remote->interface->dev,
-					"%s - Unknown sequence found in system data.\n",
-					__func__);
+				err("%s - Unknown sequence found in system data.\n", __func__);
 				remote->stage = 0;
 				return;
 			}
@@ -282,9 +286,7 @@ static void keyspan_check_data(struct usb_keyspan *remote)
 				remote->data.tester = remote->data.tester >> 6;
 				remote->data.bits_left -= 6;
 			} else {
-				dev_err(&remote->interface->dev,
-					"%s - Unknown sequence found in button data.\n",
-					__func__);
+				err("%s - Unknown sequence found in button data.\n", __func__);
 				remote->stage = 0;
 				return;
 			}
@@ -300,9 +302,7 @@ static void keyspan_check_data(struct usb_keyspan *remote)
 			remote->data.tester = remote->data.tester >> 6;
 			remote->data.bits_left -= 6;
 		} else {
-			dev_err(&remote->interface->dev,
-				"%s - Error in message, invalid toggle.\n",
-				__func__);
+			err("%s - Error in message, invalid toggle.\n", __func__);
 			remote->stage = 0;
 			return;
 		}
@@ -312,11 +312,10 @@ static void keyspan_check_data(struct usb_keyspan *remote)
 			remote->data.tester = remote->data.tester >> 5;
 			remote->data.bits_left -= 5;
 		} else {
-			dev_err(&remote->interface->dev,
-				"Bad message received, no stop bit found.\n");
+			err("Bad message received, no stop bit found.\n");
 		}
 
-		dev_dbg(&remote->interface->dev,
+		dev_dbg(&remote->udev->dev,
 			"%s found valid message: system: %d, button: %d, toggle: %d\n",
 			__func__, message.system, message.button, message.toggle);
 
@@ -387,6 +386,7 @@ static void keyspan_irq_recv(struct urb *urb)
 
 	default:
 		goto resubmit;
+		break;
 	}
 
 	if (debug)
@@ -397,9 +397,7 @@ static void keyspan_irq_recv(struct urb *urb)
 resubmit:
 	retval = usb_submit_urb(urb, GFP_ATOMIC);
 	if (retval)
-		dev_err(&dev->interface->dev,
-			"%s - usb_submit_urb failed with result: %d\n",
-			__func__, retval);
+		err ("%s - usb_submit_urb failed with result: %d", __func__, retval);
 }
 
 static int keyspan_open(struct input_dev *dev)
@@ -466,7 +464,7 @@ static int keyspan_probe(struct usb_interface *interface, const struct usb_devic
 	remote->in_endpoint = endpoint;
 	remote->toggle = -1;	/* Set to -1 so we will always not match the toggle from the first remote message. */
 
-	remote->in_buffer = usb_alloc_coherent(udev, RECV_SIZE, GFP_KERNEL, &remote->in_dma);
+	remote->in_buffer = usb_alloc_coherent(udev, RECV_SIZE, GFP_ATOMIC, &remote->in_dma);
 	if (!remote->in_buffer) {
 		error = -ENOMEM;
 		goto fail1;
@@ -585,6 +583,6 @@ static struct usb_driver keyspan_driver =
 module_usb_driver(keyspan_driver);
 
 MODULE_DEVICE_TABLE(usb, keyspan_table);
-MODULE_AUTHOR("Michael Downey <downey@zymeta.com>");
-MODULE_DESCRIPTION("Driver for the USB Keyspan remote control.");
-MODULE_LICENSE("GPL");
+MODULE_AUTHOR(DRIVER_AUTHOR);
+MODULE_DESCRIPTION(DRIVER_DESC);
+MODULE_LICENSE(DRIVER_LICENSE);

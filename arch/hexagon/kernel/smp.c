@@ -1,7 +1,7 @@
 /*
  * SMP support for Hexagon
  *
- * Copyright (c) 2010-2012, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -25,19 +25,18 @@
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/percpu.h>
-#include <linux/sched/mm.h>
+#include <linux/sched.h>
 #include <linux/smp.h>
 #include <linux/spinlock.h>
-#include <linux/cpu.h>
-#include <linux/mm_types.h>
 
+#include <asm/system.h>  /*  xchg  */
 #include <asm/time.h>    /*  timer_interrupt  */
 #include <asm/hexagon_vm.h>
 
 #define BASE_IPI_IRQ 26
 
 /*
- * cpu_possible_mask needs to be filled out prior to setup_per_cpu_areas
+ * cpu_possible_map needs to be filled out prior to setup_per_cpu_areas
  * (which is prior to any of our smp_prepare_cpu crap), in order to set
  * up the...  per_cpu areas.
  */
@@ -63,6 +62,10 @@ static inline void __handle_ipi(unsigned long *ops, struct ipi_data *ipi,
 
 		case IPI_CALL_FUNC:
 			generic_smp_call_function_interrupt();
+			break;
+
+		case IPI_CALL_FUNC_SINGLE:
+			generic_smp_call_function_single_interrupt();
 			break;
 
 		case IPI_CPU_STOP:
@@ -143,7 +146,7 @@ void __init smp_prepare_boot_cpu(void)
  * to point to current thread info
  */
 
-void start_secondary(void)
+void __cpuinit start_secondary(void)
 {
 	unsigned int cpu;
 	unsigned long thread_ptr;
@@ -163,7 +166,7 @@ void start_secondary(void)
 	);
 
 	/*  Set the memory struct  */
-	mmgrab(&init_mm);
+	atomic_inc(&init_mm.mm_count);
 	current->active_mm = &init_mm;
 
 	cpu = smp_processor_id();
@@ -175,13 +178,12 @@ void start_secondary(void)
 
 	printk(KERN_INFO "%s cpu %d\n", __func__, current_thread_info()->cpu);
 
-	notify_cpu_starting(cpu);
-
 	set_cpu_online(cpu, true);
-
+	while (!cpumask_test_cpu(cpu, cpu_active_mask))
+		cpu_relax();
 	local_irq_enable();
 
-	cpu_startup_entry(CPUHP_AP_ONLINE_IDLE);
+	cpu_idle();
 }
 
 
@@ -191,18 +193,25 @@ void start_secondary(void)
  * maintains control until "cpu_online(cpu)" is set.
  */
 
-int __cpu_up(unsigned int cpu, struct task_struct *idle)
+int __cpuinit __cpu_up(unsigned int cpu)
 {
-	struct thread_info *thread = (struct thread_info *)idle->stack;
+	struct task_struct *idle;
+	struct thread_info *thread;
 	void *stack_start;
 
+	/*  Create new init task for the CPU  */
+	idle = fork_idle(cpu);
+	if (IS_ERR(idle))
+		panic(KERN_ERR "fork_idle failed\n");
+
+	thread = (struct thread_info *)idle->stack;
 	thread->cpu = cpu;
 
 	/*  Boot to the head.  */
 	stack_start =  ((void *) thread) + THREAD_SIZE;
 	__vmstart(start_secondary, stack_start);
 
-	while (!cpu_online(cpu))
+	while (!cpu_isset(cpu, cpu_online_map))
 		barrier();
 
 	return 0;
@@ -223,7 +232,7 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 
 	/*  Right now, let's just fake it. */
 	for (i = 0; i < max_cpus; i++)
-		set_cpu_present(i, true);
+		cpu_set(i, cpu_present_map);
 
 	/*  Also need to register the interrupts for IPI  */
 	if (max_cpus > 1)
@@ -245,7 +254,7 @@ void smp_send_stop(void)
 
 void arch_send_call_function_single_ipi(int cpu)
 {
-	send_ipi(cpumask_of(cpu), IPI_CALL_FUNC);
+	send_ipi(cpumask_of(cpu), IPI_CALL_FUNC_SINGLE);
 }
 
 void arch_send_call_function_ipi_mask(const struct cpumask *mask)
@@ -263,5 +272,5 @@ void smp_start_cpus(void)
 	int i;
 
 	for (i = 0; i < NR_CPUS; i++)
-		set_cpu_possible(i, true);
+		cpu_set(i, cpu_possible_map);
 }

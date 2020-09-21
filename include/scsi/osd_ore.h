@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2011
- * Boaz Harrosh <ooo@electrozaur.com>
+ * Boaz Harrosh <bharrosh@panasas.com>
  *
  * Public Declarations of the ORE API
  *
@@ -26,7 +26,6 @@
 #include <scsi/osd_attributes.h>
 #include <scsi/osd_sec.h>
 #include <linux/pnfs_osd_xdr.h>
-#include <linux/bug.h>
 
 struct ore_comp {
 	struct osd_obj_id	obj;
@@ -102,7 +101,6 @@ struct ore_striping_info {
 	unsigned unit_off;
 	unsigned cur_pg;
 	unsigned cur_comp;
-	unsigned maxdevUnits;
 };
 
 struct ore_io_state;

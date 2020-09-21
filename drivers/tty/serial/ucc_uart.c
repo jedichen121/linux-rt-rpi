@@ -1,10 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Freescale QUICC Engine UART device driver
  *
  * Author: Timur Tabi <timur@freescale.com>
  *
- * Copyright 2007 Freescale Semiconductor, Inc.
+ * Copyright 2007 Freescale Semiconductor, Inc.  This file is licensed under
+ * the terms of the GNU General Public License version 2.  This program
+ * is licensed "as is" without any warranty of any kind, whether express
+ * or implied.
  *
  * This driver adds support for UART devices via Freescale's QUICC Engine
  * found on some Freescale SOCs.
@@ -23,13 +25,11 @@
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
 #include <linux/io.h>
-#include <linux/of_address.h>
-#include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/dma-mapping.h>
 
 #include <linux/fs_uart_pd.h>
-#include <soc/fsl/qe/ucc_slow.h>
+#include <asm/ucc_slow.h>
 
 #include <linux/firmware.h>
 #include <asm/reg.h>
@@ -269,7 +269,7 @@ static unsigned int qe_uart_tx_empty(struct uart_port *port)
 			return 1;
 
 		bdp++;
-	}
+	};
 }
 
 /*
@@ -433,6 +433,16 @@ static void qe_uart_stop_rx(struct uart_port *port)
 	clrbits16(&qe_port->uccp->uccm, UCC_UART_UCCE_RX);
 }
 
+/*
+ * Enable status change interrupts
+ *
+ * We don't support status change interrupts, but we need to define this
+ * function otherwise the kernel will panic.
+ */
+static void qe_uart_enable_ms(struct uart_port *port)
+{
+}
+
 /* Start or stop sending  break signal
  *
  * This function controls the sending of a break signal.  If break_state=1,
@@ -459,7 +469,7 @@ static void qe_uart_int_rx(struct uart_qe_port *qe_port)
 	int i;
 	unsigned char ch, *cp;
 	struct uart_port *port = &qe_port->port;
-	struct tty_port *tport = &port->state->port;
+	struct tty_struct *tty = port->state->port.tty;
 	struct qe_bd *bdp;
 	u16 status;
 	unsigned int flg;
@@ -481,7 +491,7 @@ static void qe_uart_int_rx(struct uart_qe_port *qe_port)
 		/* If we don't have enough room in RX buffer for the entire BD,
 		 * then we try later, which will be the next RX interrupt.
 		 */
-		if (tty_buffer_request_room(tport, i) < i) {
+		if (tty_buffer_request_room(tty, i) < i) {
 			dev_dbg(port->dev, "ucc-uart: no room in RX buffer\n");
 			return;
 		}
@@ -502,7 +512,7 @@ static void qe_uart_int_rx(struct uart_qe_port *qe_port)
 				continue;
 
 error_return:
-			tty_insert_flip_char(tport, ch, flg);
+			tty_insert_flip_char(tty, ch, flg);
 
 		}
 
@@ -520,7 +530,7 @@ error_return:
 	qe_port->rx_cur = bdp;
 
 	/* Activate BH processing */
-	tty_flip_buffer_push(tport);
+	tty_flip_buffer_push(tty);
 
 	return;
 
@@ -550,7 +560,7 @@ handle_error:
 
 	/* Overrun does not affect the current character ! */
 	if (status & BD_SC_OV)
-		tty_insert_flip_char(tport, 0, TTY_OVERRUN);
+		tty_insert_flip_char(tty, 0, TTY_OVERRUN);
 #ifdef SUPPORT_SYSRQ
 	port->sysrq = 0;
 #endif
@@ -924,7 +934,7 @@ static void qe_uart_set_termios(struct uart_port *port,
 	port->read_status_mask = BD_SC_EMPTY | BD_SC_OV;
 	if (termios->c_iflag & INPCK)
 		port->read_status_mask |= BD_SC_FR | BD_SC_PR;
-	if (termios->c_iflag & (IGNBRK | BRKINT | PARMRK))
+	if (termios->c_iflag & (BRKINT | PARMRK))
 		port->read_status_mask |= BD_SC_BR;
 
 	/*
@@ -948,7 +958,7 @@ static void qe_uart_set_termios(struct uart_port *port,
 	if ((termios->c_cflag & CREAD) == 0)
 		port->read_status_mask &= ~BD_SC_EMPTY;
 
-	baud = uart_get_baud_rate(port, termios, old, 0, port->uartclk / 16);
+	baud = uart_get_baud_rate(port, termios, old, 0, 115200);
 
 	/* Do we really need a spinlock here? */
 	spin_lock_irqsave(&port->lock, flags);
@@ -1083,13 +1093,14 @@ static int qe_uart_verify_port(struct uart_port *port,
  *
  * Details on these functions can be found in Documentation/serial/driver
  */
-static const struct uart_ops qe_uart_pops = {
+static struct uart_ops qe_uart_pops = {
 	.tx_empty       = qe_uart_tx_empty,
 	.set_mctrl      = qe_uart_set_mctrl,
 	.get_mctrl      = qe_uart_get_mctrl,
 	.stop_tx	= qe_uart_stop_tx,
 	.start_tx       = qe_uart_start_tx,
 	.stop_rx	= qe_uart_stop_rx,
+	.enable_ms      = qe_uart_enable_ms,
 	.break_ctl      = qe_uart_break_ctl,
 	.startup	= qe_uart_startup,
 	.shutdown       = qe_uart_shutdown,
@@ -1349,7 +1360,7 @@ static int ucc_uart_probe(struct platform_device *ofdev)
 	}
 
 	qe_port->port.irq = irq_of_parse_and_map(np, 0);
-	if (qe_port->port.irq == 0) {
+	if (qe_port->port.irq == NO_IRQ) {
 		dev_err(&ofdev->dev, "could not map IRQ for UCC%u\n",
 		       qe_port->ucc_num + 1);
 		ret = -EINVAL;
@@ -1440,7 +1451,7 @@ static int ucc_uart_probe(struct platform_device *ofdev)
 		goto out_np;
 	}
 
-	platform_set_drvdata(ofdev, qe_port);
+	dev_set_drvdata(&ofdev->dev, qe_port);
 
 	dev_info(&ofdev->dev, "UCC%u assigned to /dev/ttyQE%u\n",
 		qe_port->ucc_num + 1, qe_port->port.line);
@@ -1460,24 +1471,22 @@ out_free:
 
 static int ucc_uart_remove(struct platform_device *ofdev)
 {
-	struct uart_qe_port *qe_port = platform_get_drvdata(ofdev);
+	struct uart_qe_port *qe_port = dev_get_drvdata(&ofdev->dev);
 
 	dev_info(&ofdev->dev, "removing /dev/ttyQE%u\n", qe_port->port.line);
 
 	uart_remove_one_port(&ucc_uart_driver, &qe_port->port);
 
+	dev_set_drvdata(&ofdev->dev, NULL);
 	kfree(qe_port);
 
 	return 0;
 }
 
-static const struct of_device_id ucc_uart_match[] = {
+static struct of_device_id ucc_uart_match[] = {
 	{
 		.type = "serial",
 		.compatible = "ucc_uart",
-	},
-	{
-		.compatible = "fsl,t1040-ucc-uart",
 	},
 	{},
 };
@@ -1486,6 +1495,7 @@ MODULE_DEVICE_TABLE(of, ucc_uart_match);
 static struct platform_driver ucc_uart_of_driver = {
 	.driver = {
 		.name = "ucc_uart",
+		.owner = THIS_MODULE,
 		.of_match_table    = ucc_uart_match,
 	},
 	.probe  	= ucc_uart_probe,
@@ -1508,11 +1518,9 @@ static int __init ucc_uart_init(void)
 	}
 
 	ret = platform_driver_register(&ucc_uart_of_driver);
-	if (ret) {
+	if (ret)
 		printk(KERN_ERR
 		       "ucc-uart: could not register platform driver\n");
-		uart_unregister_driver(&ucc_uart_driver);
-	}
 
 	return ret;
 }

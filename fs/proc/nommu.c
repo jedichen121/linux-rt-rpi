@@ -25,7 +25,7 @@
 #include <linux/seq_file.h>
 #include <linux/hugetlb.h>
 #include <linux/vmalloc.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <asm/pgtable.h>
 #include <asm/tlb.h>
 #include <asm/div64.h>
@@ -39,20 +39,19 @@ static int nommu_region_show(struct seq_file *m, struct vm_region *region)
 	unsigned long ino = 0;
 	struct file *file;
 	dev_t dev = 0;
-	int flags;
+	int flags, len;
 
 	flags = region->vm_flags;
 	file = region->vm_file;
 
 	if (file) {
-		struct inode *inode = file_inode(region->vm_file);
+		struct inode *inode = region->vm_file->f_path.dentry->d_inode;
 		dev = inode->i_sb->s_dev;
 		ino = inode->i_ino;
 	}
 
-	seq_setwidth(m, 25 + sizeof(void *) * 6 - 1);
 	seq_printf(m,
-		   "%08lx-%08lx %c%c%c%c %08llx %02x:%02x %lu ",
+		   "%08lx-%08lx %c%c%c%c %08llx %02x:%02x %lu %n",
 		   region->vm_start,
 		   region->vm_end,
 		   flags & VM_READ ? 'r' : '-',
@@ -60,11 +59,14 @@ static int nommu_region_show(struct seq_file *m, struct vm_region *region)
 		   flags & VM_EXEC ? 'x' : '-',
 		   flags & VM_MAYSHARE ? flags & VM_SHARED ? 'S' : 's' : 'p',
 		   ((loff_t)region->vm_pgoff) << PAGE_SHIFT,
-		   MAJOR(dev), MINOR(dev), ino);
+		   MAJOR(dev), MINOR(dev), ino, &len);
 
 	if (file) {
-		seq_pad(m, ' ');
-		seq_file_path(m, file, "");
+		len = 25 + sizeof(void *) * 6 - len;
+		if (len < 1)
+			len = 1;
+		seq_printf(m, "%*c", len, ' ');
+		seq_path(m, &file->f_path, "");
 	}
 
 	seq_putc(m, '\n');
@@ -113,10 +115,22 @@ static const struct seq_operations proc_nommu_region_list_seqop = {
 	.show	= nommu_region_list_show
 };
 
+static int proc_nommu_region_list_open(struct inode *inode, struct file *file)
+{
+	return seq_open(file, &proc_nommu_region_list_seqop);
+}
+
+static const struct file_operations proc_nommu_region_list_operations = {
+	.open    = proc_nommu_region_list_open,
+	.read    = seq_read,
+	.llseek  = seq_lseek,
+	.release = seq_release,
+};
+
 static int __init proc_nommu_init(void)
 {
-	proc_create_seq("maps", S_IRUGO, NULL, &proc_nommu_region_list_seqop);
+	proc_create("maps", S_IRUGO, NULL, &proc_nommu_region_list_operations);
 	return 0;
 }
 
-fs_initcall(proc_nommu_init);
+module_init(proc_nommu_init);

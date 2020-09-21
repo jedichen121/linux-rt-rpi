@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/kernel/futex_compat.c
  *
@@ -11,10 +10,8 @@
 #include <linux/compat.h>
 #include <linux/nsproxy.h>
 #include <linux/futex.h>
-#include <linux/ptrace.h>
-#include <linux/syscalls.h>
 
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 
 
 /*
@@ -118,9 +115,9 @@ void compat_exit_robust_list(struct task_struct *curr)
 	}
 }
 
-COMPAT_SYSCALL_DEFINE2(set_robust_list,
-		struct compat_robust_list_head __user *, head,
-		compat_size_t, len)
+asmlinkage long
+compat_sys_set_robust_list(struct compat_robust_list_head __user *head,
+			   compat_size_t len)
 {
 	if (!futex_cmpxchg_enabled)
 		return -ENOSYS;
@@ -133,34 +130,45 @@ COMPAT_SYSCALL_DEFINE2(set_robust_list,
 	return 0;
 }
 
-COMPAT_SYSCALL_DEFINE3(get_robust_list, int, pid,
-			compat_uptr_t __user *, head_ptr,
-			compat_size_t __user *, len_ptr)
+asmlinkage long
+compat_sys_get_robust_list(int pid, compat_uptr_t __user *head_ptr,
+			   compat_size_t __user *len_ptr)
 {
 	struct compat_robust_list_head __user *head;
 	unsigned long ret;
-	struct task_struct *p;
+	const struct cred *cred = current_cred(), *pcred;
 
 	if (!futex_cmpxchg_enabled)
 		return -ENOSYS;
 
-	rcu_read_lock();
-
-	ret = -ESRCH;
 	if (!pid)
-		p = current;
+		head = current->compat_robust_list;
 	else {
+		struct task_struct *p;
+
+		ret = -ESRCH;
+		rcu_read_lock();
 		p = find_task_by_vpid(pid);
 		if (!p)
 			goto err_unlock;
+		ret = -EPERM;
+		pcred = __task_cred(p);
+		/* If victim is in different user_ns, then uids are not
+		   comparable, so we must have CAP_SYS_PTRACE */
+		if (cred->user->user_ns != pcred->user->user_ns) {
+			if (!ns_capable(pcred->user->user_ns, CAP_SYS_PTRACE))
+				goto err_unlock;
+			goto ok;
+		}
+		/* If victim is in same user_ns, then uids are comparable */
+		if (cred->euid != pcred->euid &&
+		    cred->euid != pcred->uid &&
+		    !ns_capable(pcred->user->user_ns, CAP_SYS_PTRACE))
+			goto err_unlock;
+ok:
+		head = p->compat_robust_list;
+		rcu_read_unlock();
 	}
-
-	ret = -EPERM;
-	if (!ptrace_may_access(p, PTRACE_MODE_READ_REALCREDS))
-		goto err_unlock;
-
-	head = p->compat_robust_list;
-	rcu_read_unlock();
 
 	if (put_user(sizeof(*head), len_ptr))
 		return -EFAULT;
@@ -172,9 +180,9 @@ err_unlock:
 	return ret;
 }
 
-COMPAT_SYSCALL_DEFINE6(futex, u32 __user *, uaddr, int, op, u32, val,
-		struct compat_timespec __user *, utime, u32 __user *, uaddr2,
-		u32, val3)
+asmlinkage long compat_sys_futex(u32 __user *uaddr, int op, u32 val,
+		struct compat_timespec __user *utime, u32 __user *uaddr2,
+		u32 val3)
 {
 	struct timespec ts;
 	ktime_t t, *tp = NULL;
@@ -184,7 +192,7 @@ COMPAT_SYSCALL_DEFINE6(futex, u32 __user *, uaddr, int, op, u32, val,
 	if (utime && (cmd == FUTEX_WAIT || cmd == FUTEX_LOCK_PI ||
 		      cmd == FUTEX_WAIT_BITSET ||
 		      cmd == FUTEX_WAIT_REQUEUE_PI)) {
-		if (compat_get_timespec(&ts, utime))
+		if (get_compat_timespec(&ts, utime))
 			return -EFAULT;
 		if (!timespec_valid(&ts))
 			return -EINVAL;

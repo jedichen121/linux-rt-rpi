@@ -1,12 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0
-#include <linux/sched/signal.h>
-#include <linux/sched/task.h>
-#include <linux/sched/task_stack.h>
+#include <linux/sched.h>
 #include <linux/slab.h>
 #include <asm/processor.h>
 #include <asm/fpu.h>
-#include <asm/traps.h>
-#include <asm/ptrace.h>
 
 int init_fpu(struct task_struct *tsk)
 {
@@ -48,7 +43,7 @@ void __fpu_state_restore(void)
 	restore_fpu(tsk);
 
 	task_thread_info(tsk)->status |= TS_USEDFPU;
-	tsk->thread.fpu_counter++;
+	tsk->fpu_counter++;
 }
 
 void fpu_state_restore(struct pt_regs *regs)

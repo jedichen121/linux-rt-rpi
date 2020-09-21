@@ -38,9 +38,9 @@
 #include <asm/machdep.h>
 #include <asm/cputable.h>
 #include <asm/firmware.h>
+#include <asm/system.h>
 #include <asm/rtas.h>
 #include <asm/cputhreads.h>
-#include <asm/code-patching.h>
 
 #include "interrupt.h"
 #include <asm/udbg.h>
@@ -68,11 +68,11 @@ static cpumask_t of_spin_map;
  *	0	- failure
  *	1	- success
  */
-static inline int smp_startup_cpu(unsigned int lcpu)
+static inline int __devinit smp_startup_cpu(unsigned int lcpu)
 {
 	int status;
-	unsigned long start_here =
-			__pa(ppc_function_entry(generic_secondary_smp_init));
+	unsigned long start_here = __pa((u32)*((unsigned long *)
+					       generic_secondary_smp_init));
 	unsigned int pcpu;
 	int start_cpu;
 
@@ -83,7 +83,7 @@ static inline int smp_startup_cpu(unsigned int lcpu)
 	pcpu = get_hard_smp_processor_id(lcpu);
 
 	/* Fixup atomic count: it exited inside IRQ handler. */
-	task_thread_info(paca_ptrs[lcpu]->__current)->preempt_count	= 0;
+	task_thread_info(paca[lcpu].__current)->preempt_count	= 0;
 
 	/*
 	 * If the RTAS start-cpu token does not exist then presume the
@@ -102,7 +102,14 @@ static inline int smp_startup_cpu(unsigned int lcpu)
 	return 1;
 }
 
-static void smp_cell_setup_cpu(int cpu)
+static int __init smp_iic_probe(void)
+{
+	iic_request_IPIs();
+
+	return cpumask_weight(cpu_possible_mask);
+}
+
+static void __devinit smp_cell_setup_cpu(int cpu)
 {
 	if (cpu != boot_cpuid)
 		iic_setup_cpu();
@@ -113,10 +120,9 @@ static void smp_cell_setup_cpu(int cpu)
 	mtspr(SPRN_DABRX, DABRX_KERNEL | DABRX_USER);
 }
 
-static int smp_cell_kick_cpu(int nr)
+static int __devinit smp_cell_kick_cpu(int nr)
 {
-	if (nr < 0 || nr >= nr_cpu_ids)
-		return -EINVAL;
+	BUG_ON(nr < 0 || nr >= NR_CPUS);
 
 	if (!smp_startup_cpu(nr))
 		return -ENOENT;
@@ -126,17 +132,30 @@ static int smp_cell_kick_cpu(int nr)
 	 * cpu_start field to become non-zero After we set cpu_start,
 	 * the processor will continue on to secondary_start
 	 */
-	paca_ptrs[nr]->cpu_start = 1;
+	paca[nr].cpu_start = 1;
 
 	return 0;
 }
 
+static int smp_cell_cpu_bootable(unsigned int nr)
+{
+	/* Special case - we inhibit secondary thread startup
+	 * during boot if the user requests it.  Odd-numbered
+	 * cpus are assumed to be secondary threads.
+	 */
+	if (system_state < SYSTEM_RUNNING &&
+	    cpu_has_feature(CPU_FTR_SMT) &&
+	    !smt_enabled_at_boot && cpu_thread_in_core(nr) != 0)
+		return 0;
+
+	return 1;
+}
 static struct smp_ops_t bpa_iic_smp_ops = {
 	.message_pass	= iic_message_pass,
-	.probe		= iic_request_IPIs,
+	.probe		= smp_iic_probe,
 	.kick_cpu	= smp_cell_kick_cpu,
 	.setup_cpu	= smp_cell_setup_cpu,
-	.cpu_bootable	= smp_generic_cpu_bootable,
+	.cpu_bootable	= smp_cell_cpu_bootable,
 };
 
 /* This is called very early */

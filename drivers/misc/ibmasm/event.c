@@ -18,7 +18,7 @@
  *
  * Copyright (C) IBM Corporation, 2004
  *
- * Author: Max AsbÃ¶ck <amax@us.ibm.com>
+ * Author: Max Asböck <amax@us.ibm.com>
  *
  */
 
@@ -155,7 +155,7 @@ int ibmasm_event_buffer_init(struct service_processor *sp)
 
 	buffer = kmalloc(sizeof(struct event_buffer), GFP_KERNEL);
 	if (!buffer)
-		return -ENOMEM;
+		return 1;
 
 	buffer->next_index = 0;
 	buffer->next_serial_number = 1;

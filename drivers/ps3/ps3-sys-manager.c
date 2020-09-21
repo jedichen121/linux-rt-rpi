@@ -22,7 +22,6 @@
 #include <linux/module.h>
 #include <linux/workqueue.h>
 #include <linux/reboot.h>
-#include <linux/sched/signal.h>
 
 #include <asm/firmware.h>
 #include <asm/lv1call.h>
@@ -707,7 +706,7 @@ static void ps3_sys_manager_work(struct ps3_system_bus_device *dev)
 	ps3_vuart_read_async(dev, PS3_SM_RX_MSG_LEN_MIN);
 }
 
-static int ps3_sys_manager_probe(struct ps3_system_bus_device *dev)
+static int __devinit ps3_sys_manager_probe(struct ps3_system_bus_device *dev)
 {
 	int result;
 	struct ps3_sys_manager_ops ops;

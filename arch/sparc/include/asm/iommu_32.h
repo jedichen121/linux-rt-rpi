@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /* iommu.h: Definitions for the sun4m IOMMU.
  *
  * Copyright (C) 1996 David S. Miller (davem@caip.rutgers.edu)
@@ -100,7 +99,7 @@ struct iommu_regs {
 #define IOPTE_WAZ           0x00000001 /* Write as zeros */
 
 struct iommu_struct {
-	struct iommu_regs __iomem *regs;
+	struct iommu_regs *regs;
 	iopte_t *page_table;
 	/* For convenience */
 	unsigned long start; /* First managed virtual address */
@@ -109,14 +108,14 @@ struct iommu_struct {
 	struct bit_map usemap;
 };
 
-static inline void iommu_invalidate(struct iommu_regs __iomem *regs)
+static inline void iommu_invalidate(struct iommu_regs *regs)
 {
-	sbus_writel(0, &regs->tlbflush);
+	regs->tlbflush = 0;
 }
 
-static inline void iommu_invalidate_page(struct iommu_regs __iomem *regs, unsigned long ba)
+static inline void iommu_invalidate_page(struct iommu_regs *regs, unsigned long ba)
 {
-	sbus_writel(ba & PAGE_MASK, &regs->pageflush);
+	regs->pageflush = (ba & PAGE_MASK);
 }
 
 #endif /* !(_SPARC_IOMMU_H) */

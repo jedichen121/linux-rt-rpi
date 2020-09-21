@@ -119,12 +119,12 @@
 
 
 /* MPC5200 device tree match tables */
-static const struct of_device_id mpc52xx_pic_ids[] __initconst = {
+static struct of_device_id mpc52xx_pic_ids[] __initdata = {
 	{ .compatible = "fsl,mpc5200-pic", },
 	{ .compatible = "mpc5200-pic", },
 	{}
 };
-static const struct of_device_id mpc52xx_sdma_ids[] __initconst = {
+static struct of_device_id mpc52xx_sdma_ids[] __initdata = {
 	{ .compatible = "fsl,mpc5200-bestcomm", },
 	{ .compatible = "mpc5200-bestcomm", },
 	{}
@@ -132,7 +132,7 @@ static const struct of_device_id mpc52xx_sdma_ids[] __initconst = {
 
 static struct mpc52xx_intr __iomem *intr;
 static struct mpc52xx_sdma __iomem *sdma;
-static struct irq_domain *mpc52xx_irqhost = NULL;
+static struct irq_host *mpc52xx_irqhost = NULL;
 
 static unsigned char mpc52xx_map_senses[4] = {
 	IRQ_TYPE_LEVEL_HIGH,
@@ -196,7 +196,7 @@ static int mpc52xx_extirq_set_type(struct irq_data *d, unsigned int flow_type)
 	ctrl_reg |= (type << (22 - (l2irq * 2)));
 	out_be32(&intr->ctrl, ctrl_reg);
 
-	irq_set_handler_locked(d, handler);
+	__irq_set_handler_locked(d->irq, handler);
 
 	return 0;
 }
@@ -301,7 +301,7 @@ static int mpc52xx_is_extirq(int l1, int l2)
 /**
  * mpc52xx_irqhost_xlate - translate virq# from device tree interrupts property
  */
-static int mpc52xx_irqhost_xlate(struct irq_domain *h, struct device_node *ct,
+static int mpc52xx_irqhost_xlate(struct irq_host *h, struct device_node *ct,
 				 const u32 *intspec, unsigned int intsize,
 				 irq_hw_number_t *out_hwirq,
 				 unsigned int *out_flags)
@@ -335,12 +335,12 @@ static int mpc52xx_irqhost_xlate(struct irq_domain *h, struct device_node *ct,
 /**
  * mpc52xx_irqhost_map - Hook to map from virq to an irq_chip structure
  */
-static int mpc52xx_irqhost_map(struct irq_domain *h, unsigned int virq,
+static int mpc52xx_irqhost_map(struct irq_host *h, unsigned int virq,
 			       irq_hw_number_t irq)
 {
 	int l1irq;
 	int l2irq;
-	struct irq_chip *uninitialized_var(irqchip);
+	struct irq_chip *irqchip;
 	void *hndlr;
 	int type;
 	u32 reg;
@@ -372,11 +372,10 @@ static int mpc52xx_irqhost_map(struct irq_domain *h, unsigned int virq,
 	case MPC52xx_IRQ_L1_MAIN: irqchip = &mpc52xx_main_irqchip; break;
 	case MPC52xx_IRQ_L1_PERP: irqchip = &mpc52xx_periph_irqchip; break;
 	case MPC52xx_IRQ_L1_SDMA: irqchip = &mpc52xx_sdma_irqchip; break;
-	case MPC52xx_IRQ_L1_CRIT:
-		pr_warn("%s: Critical IRQ #%d is unsupported! Nopping it.\n",
-			__func__, l2irq);
-		irq_set_chip(virq, &no_irq_chip);
-		return 0;
+	default:
+		pr_err("%s: invalid irq: virq=%i, l1=%i, l2=%i\n",
+		       __func__, virq, l1irq, l2irq);
+		return -EINVAL;
 	}
 
 	irq_set_chip_and_handler(virq, irqchip, handle_level_irq);
@@ -385,7 +384,7 @@ static int mpc52xx_irqhost_map(struct irq_domain *h, unsigned int virq,
 	return 0;
 }
 
-static const struct irq_domain_ops mpc52xx_irqhost_ops = {
+static struct irq_host_ops mpc52xx_irqhost_ops = {
 	.xlate = mpc52xx_irqhost_xlate,
 	.map = mpc52xx_irqhost_map,
 };
@@ -445,9 +444,9 @@ void __init mpc52xx_init_irq(void)
 	 * As last step, add an irq host to translate the real
 	 * hw irq information provided by the ofw to linux virq
 	 */
-	mpc52xx_irqhost = irq_domain_add_linear(picnode,
+	mpc52xx_irqhost = irq_alloc_host(picnode, IRQ_HOST_MAP_LINEAR,
 	                                 MPC52xx_IRQ_HIGHTESTHWIRQ,
-	                                 &mpc52xx_irqhost_ops, NULL);
+	                                 &mpc52xx_irqhost_ops, -1);
 
 	if (!mpc52xx_irqhost)
 		panic(__FILE__ ": Cannot allocate the IRQ host\n");
@@ -511,7 +510,7 @@ unsigned int mpc52xx_get_irq(void)
 			irq |= (MPC52xx_IRQ_L1_PERP << MPC52xx_IRQ_L1_OFFSET);
 		}
 	} else {
-		return 0;
+		return NO_IRQ;
 	}
 
 	return irq_linear_revmap(mpc52xx_irqhost, irq);

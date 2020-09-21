@@ -1,14 +1,10 @@
-# SPDX-License-Identifier: GPL-2.0
 config PPC_PSERIES
 	depends on PPC64 && PPC_BOOK3S
 	bool "IBM pSeries & new (POWER5-based) iSeries"
 	select HAVE_PCSPKR_PLATFORM
 	select MPIC
-	select OF_DYNAMIC
-	select PCI
 	select PCI_MSI
 	select PPC_XICS
-	select PPC_XIVE_SPAPR
 	select PPC_ICP_NATIVE
 	select PPC_ICP_HV
 	select PPC_ICS_RTAS
@@ -18,11 +14,8 @@ config PPC_PSERIES
 	select RTAS_ERROR_LOGGING
 	select PPC_UDBG_16550
 	select PPC_NATIVE
-	select PPC_DOORBELL
-	select HOTPLUG_CPU
-	select ARCH_RANDOM
-	select PPC_DOORBELL
-	select FORCE_SMP
+	select PPC_PCI_CHOICE if EXPERT
+	select ZLIB_DEFLATE
 	default y
 
 config PPC_SPLPAR
@@ -35,15 +28,15 @@ config PPC_SPLPAR
 	  processors, that is, which share physical processors between
 	  two or more partitions.
 
-config DTL
-	bool "Dispatch Trace Log"
-	depends on PPC_SPLPAR && DEBUG_FS
-	help
-	  SPLPAR machines can log hypervisor preempt & dispatch events to a
-	  kernel buffer. Saying Y here will enable logging these events,
-	  which are accessible through a debugfs file.
+config EEH
+	bool "PCI Extended Error Handling (EEH)" if EXPERT
+	depends on PPC_PSERIES && PCI
+	default y if !EXPERT
 
-	  Say N if you are unsure.
+config PSERIES_MSI
+       bool
+       depends on PCI_MSI && EEH
+       default y
 
 config PSERIES_ENERGY
 	tristate "pSeries energy management capabilities driver"
@@ -73,13 +66,13 @@ config IO_EVENT_IRQ
 
 	  This option will only enable the IO event platform code. You
 	  will still need to enable or compile the actual drivers
-	  that use this infrastructure to handle IO event interrupts.
+	  that use this infrastruture to handle IO event interrupts.
 
 	  Say Y if you are unsure.
 
 config LPARCFG
 	bool "LPAR Configuration Data"
-	depends on PPC_PSERIES
+	depends on PPC_PSERIES || PPC_ISERIES
 	help
 	Provide system capacity information via human readable
 	<key word>=<value> pairs through a /proc/ppc64/lparcfg interface.
@@ -118,25 +111,21 @@ config CMM
 	  will be reused for other LPARs. The interface allows firmware to
 	  balance memory across many LPARs.
 
-config HV_PERF_CTRS
-       bool "Hypervisor supplied PMU events (24x7 & GPCI)"
-       default y
-       depends on PERF_EVENTS && PPC_PSERIES
-       help
-	  Enable access to hypervisor supplied counters in perf. Currently,
-	  this enables code that uses the hcall GetPerfCounterInfo and 24x7
-	  interfaces to retrieve counters. GPCI exists on Power 6 and later
-	  systems. 24x7 is available on Power 8 and later systems.
-
-          If unsure, select Y.
-
-config IBMVIO
-	depends on PPC_PSERIES
-	bool
-	default y
-
-config IBMEBUS
-	depends on PPC_PSERIES && !CPU_LITTLE_ENDIAN
-	bool "Support for GX bus based adapters"
+config DTL
+	bool "Dispatch Trace Log"
+	depends on PPC_SPLPAR && DEBUG_FS
 	help
-	  Bus device driver for GX bus based adapters.
+	  SPLPAR machines can log hypervisor preempt & dispatch events to a
+	  kernel buffer. Saying Y here will enable logging these events,
+	  which are accessible through a debugfs file.
+
+	  Say N if you are unsure.
+
+config PSERIES_IDLE
+	tristate "Cpuidle driver for pSeries platforms"
+	depends on CPU_IDLE
+	depends on PPC_PSERIES
+	default y
+	help
+	  Select this option to enable processor idle state management
+	  through cpuidle subsystem.

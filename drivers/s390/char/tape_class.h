@@ -1,6 +1,6 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright IBM Corp. 2004   All Rights Reserved.
+ * (C) Copyright IBM Corp. 2004   All Rights Reserved.
+ * tape_class.h
  *
  * Tape class device support
  *
@@ -14,6 +14,7 @@
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/major.h>
+#include <linux/kobj_map.h>
 #include <linux/cdev.h>
 
 #include <linux/device.h>

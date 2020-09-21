@@ -1,9 +1,8 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 
 #ifndef __LINUX_JZ4740_ADC
 #define __LINUX_JZ4740_ADC
 
-struct device;
+#include <linux/device.h>
 
 /*
  * jz4740_adc_set_config - Configure a JZ4740 adc device

@@ -15,6 +15,7 @@
 #include <linux/interrupt.h>
 #include <linux/mc146818rtc.h>
 
+#include <asm/system.h>
 #include <asm/pci-bridge.h>
 
 #define ULI_PIRQA	0x08
@@ -59,7 +60,7 @@ static inline bool is_quirk_valid(void)
 }
 
 /* Bridge */
-static void early_uli5249(struct pci_dev *dev)
+static void __devinit early_uli5249(struct pci_dev *dev)
 {
 	unsigned char temp;
 
@@ -82,7 +83,7 @@ static void early_uli5249(struct pci_dev *dev)
 }
 
 
-static void quirk_uli1575(struct pci_dev *dev)
+static void __devinit quirk_uli1575(struct pci_dev *dev)
 {
 	int i;
 
@@ -139,7 +140,7 @@ static void quirk_uli1575(struct pci_dev *dev)
 	pci_write_config_byte(dev, 0x75, ULI_8259_IRQ15);
 }
 
-static void quirk_final_uli1575(struct pci_dev *dev)
+static void __devinit quirk_final_uli1575(struct pci_dev *dev)
 {
 	/* Set i8259 interrupt trigger
 	 * IRQ 3:  Level
@@ -175,7 +176,7 @@ static void quirk_final_uli1575(struct pci_dev *dev)
 }
 
 /* SATA */
-static void quirk_uli5288(struct pci_dev *dev)
+static void __devinit quirk_uli5288(struct pci_dev *dev)
 {
 	unsigned char c;
 	unsigned int d;
@@ -200,7 +201,7 @@ static void quirk_uli5288(struct pci_dev *dev)
 }
 
 /* PATA */
-static void quirk_uli5229(struct pci_dev *dev)
+static void __devinit quirk_uli5229(struct pci_dev *dev)
 {
 	unsigned short temp;
 
@@ -216,7 +217,7 @@ static void quirk_uli5229(struct pci_dev *dev)
 }
 
 /* We have to do a dummy read on the P2P for the RTC to work, WTF */
-static void quirk_final_uli5249(struct pci_dev *dev)
+static void __devinit quirk_final_uli5249(struct pci_dev *dev)
 {
 	int i;
 	u8 *dummy;
@@ -253,7 +254,7 @@ DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_AL, 0x5249, quirk_final_uli5249);
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_AL, 0x1575, quirk_final_uli1575);
 DECLARE_PCI_FIXUP_RESUME(PCI_VENDOR_ID_AL, 0x5229, quirk_uli5229);
 
-static void hpcd_quirk_uli1575(struct pci_dev *dev)
+static void __devinit hpcd_quirk_uli1575(struct pci_dev *dev)
 {
 	u32 temp32;
 
@@ -269,7 +270,7 @@ static void hpcd_quirk_uli1575(struct pci_dev *dev)
 	pci_write_config_dword(dev, 0x90, (temp32 | 1<<22));
 }
 
-static void hpcd_quirk_uli5288(struct pci_dev *dev)
+static void __devinit hpcd_quirk_uli5288(struct pci_dev *dev)
 {
 	unsigned char c;
 
@@ -295,7 +296,7 @@ static void hpcd_quirk_uli5288(struct pci_dev *dev)
  * IRQ14 is a sideband interrupt from IDE device to CPU and we use this
  * as the interrupt for IDE device.
  */
-static void hpcd_quirk_uli5229(struct pci_dev *dev)
+static void __devinit hpcd_quirk_uli5229(struct pci_dev *dev)
 {
 	unsigned char c;
 
@@ -317,11 +318,12 @@ static void hpcd_quirk_uli5229(struct pci_dev *dev)
  * bug by re-assigning a correct irq to 5288.
  *
  */
-static void hpcd_final_uli5288(struct pci_dev *dev)
+static void __devinit hpcd_final_uli5288(struct pci_dev *dev)
 {
 	struct pci_controller *hose = pci_bus_to_host(dev->bus);
 	struct device_node *hosenode = hose ? hose->dn : NULL;
-	struct of_phandle_args oirq;
+	struct of_irq oirq;
+	int virq, pin = 2;
 	u32 laddr[3];
 
 	if (!machine_is(mpc86xx_hpcd))
@@ -330,13 +332,12 @@ static void hpcd_final_uli5288(struct pci_dev *dev)
 	if (!hosenode)
 		return;
 
-	oirq.np = hosenode;
-	oirq.args[0] = 2;
-	oirq.args_count = 1;
 	laddr[0] = (hose->first_busno << 16) | (PCI_DEVFN(31, 0) << 8);
 	laddr[1] = laddr[2] = 0;
-	of_irq_parse_raw(laddr, &oirq);
-	dev->irq = irq_create_of_mapping(&oirq);
+	of_irq_map_raw(hosenode, &pin, 1, laddr, &oirq);
+	virq = irq_create_of_mapping(oirq.controller, oirq.specifier,
+				     oirq.size);
+	dev->irq = virq;
 }
 
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_AL, 0x1575, hpcd_quirk_uli1575);

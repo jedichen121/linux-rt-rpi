@@ -22,10 +22,9 @@
 #define EM86_INTERP	"/usr/bin/em86"
 #define EM86_I_NAME	"em86"
 
-static int load_em86(struct linux_binprm *bprm)
+static int load_em86(struct linux_binprm *bprm,struct pt_regs *regs)
 {
-	const char *i_name, *i_arg;
-	char *interp;
+	char *interp, *i_name, *i_arg;
 	struct file * file;
 	int retval;
 	struct elfhdr	elf_ex;
@@ -39,14 +38,11 @@ static int load_em86(struct linux_binprm *bprm)
 	/* First of all, some simple consistency checks */
 	if ((elf_ex.e_type != ET_EXEC && elf_ex.e_type != ET_DYN) ||
 		(!((elf_ex.e_machine == EM_386) || (elf_ex.e_machine == EM_486))) ||
-		!bprm->file->f_op->mmap) {
+		(!bprm->file->f_op || !bprm->file->f_op->mmap)) {
 			return -ENOEXEC;
 	}
 
-	/* Need to be able to load the file after exec */
-	if (bprm->interp_flags & BINPRM_FLAGS_PATH_INACCESSIBLE)
-		return -ENOENT;
-
+	bprm->recursion_depth++; /* Well, the bang-shell is implicit... */
 	allow_write_access(bprm->file);
 	fput(bprm->file);
 	bprm->file = NULL;
@@ -94,7 +90,7 @@ static int load_em86(struct linux_binprm *bprm)
 	if (retval < 0)
 		return retval;
 
-	return search_binary_handler(bprm);
+	return search_binary_handler(bprm, regs);
 }
 
 static struct linux_binfmt em86_format = {
@@ -104,8 +100,7 @@ static struct linux_binfmt em86_format = {
 
 static int __init init_em86_binfmt(void)
 {
-	register_binfmt(&em86_format);
-	return 0;
+	return register_binfmt(&em86_format);
 }
 
 static void __exit exit_em86_binfmt(void)

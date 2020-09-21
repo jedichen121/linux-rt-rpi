@@ -219,8 +219,6 @@ static int hal2_gain_get(struct snd_kcontrol *kcontrol,
 		l = (tmp >> H2I_C2_L_GAIN_SHIFT) & 15;
 		r = (tmp >> H2I_C2_R_GAIN_SHIFT) & 15;
 		break;
-	default:
-		return -EINVAL;
 	}
 	ucontrol->value.integer.value[0] = l;
 	ucontrol->value.integer.value[1] = r;
@@ -258,13 +256,11 @@ static int hal2_gain_put(struct snd_kcontrol *kcontrol,
 		new |= (r << H2I_C2_R_GAIN_SHIFT);
 		hal2_i_write32(hal2, H2I_ADC_C2, new);
 		break;
-	default:
-		return -EINVAL;
 	}
 	return old != new;
 }
 
-static const struct snd_kcontrol_new hal2_ctrl_headphone = {
+static struct snd_kcontrol_new hal2_ctrl_headphone __devinitdata = {
 	.iface          = SNDRV_CTL_ELEM_IFACE_MIXER,
 	.name           = "Headphone Playback Volume",
 	.access         = SNDRV_CTL_ELEM_ACCESS_READWRITE,
@@ -274,7 +270,7 @@ static const struct snd_kcontrol_new hal2_ctrl_headphone = {
 	.put            = hal2_gain_put,
 };
 
-static const struct snd_kcontrol_new hal2_ctrl_mic = {
+static struct snd_kcontrol_new hal2_ctrl_mic __devinitdata = {
 	.iface          = SNDRV_CTL_ELEM_IFACE_MIXER,
 	.name           = "Mic Capture Volume",
 	.access         = SNDRV_CTL_ELEM_ACCESS_READWRITE,
@@ -284,7 +280,7 @@ static const struct snd_kcontrol_new hal2_ctrl_mic = {
 	.put            = hal2_gain_put,
 };
 
-static int hal2_mixer_create(struct snd_hal2 *hal2)
+static int __devinit hal2_mixer_create(struct snd_hal2 *hal2)
 {
 	int err;
 
@@ -461,15 +457,15 @@ static int hal2_alloc_dmabuf(struct hal2_codec *codec)
 	int count = H2_BUF_SIZE / H2_BLOCK_SIZE;
 	int i;
 
-	codec->buffer = dma_alloc_attrs(NULL, H2_BUF_SIZE, &buffer_dma,
-					GFP_KERNEL, DMA_ATTR_NON_CONSISTENT);
+	codec->buffer = dma_alloc_noncoherent(NULL, H2_BUF_SIZE,
+					      &buffer_dma, GFP_KERNEL);
 	if (!codec->buffer)
 		return -ENOMEM;
-	desc = dma_alloc_attrs(NULL, count * sizeof(struct hal2_desc),
-			       &desc_dma, GFP_KERNEL, DMA_ATTR_NON_CONSISTENT);
+	desc = dma_alloc_noncoherent(NULL, count * sizeof(struct hal2_desc),
+				     &desc_dma, GFP_KERNEL);
 	if (!desc) {
-		dma_free_attrs(NULL, H2_BUF_SIZE, codec->buffer, buffer_dma,
-			       DMA_ATTR_NON_CONSISTENT);
+		dma_free_noncoherent(NULL, H2_BUF_SIZE,
+				     codec->buffer, buffer_dma);
 		return -ENOMEM;
 	}
 	codec->buffer_dma = buffer_dma;
@@ -490,13 +486,13 @@ static int hal2_alloc_dmabuf(struct hal2_codec *codec)
 
 static void hal2_free_dmabuf(struct hal2_codec *codec)
 {
-	dma_free_attrs(NULL, codec->desc_count * sizeof(struct hal2_desc),
-		       codec->desc, codec->desc_dma, DMA_ATTR_NON_CONSISTENT);
-	dma_free_attrs(NULL, H2_BUF_SIZE, codec->buffer, codec->buffer_dma,
-		       DMA_ATTR_NON_CONSISTENT);
+	dma_free_noncoherent(NULL, codec->desc_count * sizeof(struct hal2_desc),
+			     codec->desc, codec->desc_dma);
+	dma_free_noncoherent(NULL, H2_BUF_SIZE, codec->buffer,
+			     codec->buffer_dma);
 }
 
-static const struct snd_pcm_hardware hal2_pcm_hw = {
+static struct snd_pcm_hardware hal2_pcm_hw = {
 	.info = (SNDRV_PCM_INFO_MMAP |
 		 SNDRV_PCM_INFO_MMAP_VALID |
 		 SNDRV_PCM_INFO_INTERLEAVED |
@@ -616,9 +612,10 @@ static int hal2_playback_ack(struct snd_pcm_substream *substream)
 	struct hal2_codec *dac = &hal2->dac;
 
 	dac->pcm_indirect.hw_queue_size = H2_BUF_SIZE / 2;
-	return snd_pcm_indirect_playback_transfer(substream,
-						  &dac->pcm_indirect,
-						  hal2_playback_transfer);
+	snd_pcm_indirect_playback_transfer(substream,
+					   &dac->pcm_indirect,
+					   hal2_playback_transfer);
+	return 0;
 }
 
 static int hal2_capture_open(struct snd_pcm_substream *substream)
@@ -706,12 +703,13 @@ static int hal2_capture_ack(struct snd_pcm_substream *substream)
 	struct snd_hal2 *hal2 = snd_pcm_substream_chip(substream);
 	struct hal2_codec *adc = &hal2->adc;
 
-	return snd_pcm_indirect_capture_transfer(substream,
-						 &adc->pcm_indirect,
-						 hal2_capture_transfer);
+	snd_pcm_indirect_capture_transfer(substream,
+					  &adc->pcm_indirect,
+					  hal2_capture_transfer);
+	return 0;
 }
 
-static const struct snd_pcm_ops hal2_playback_ops = {
+static struct snd_pcm_ops hal2_playback_ops = {
 	.open =        hal2_playback_open,
 	.close =       hal2_playback_close,
 	.ioctl =       snd_pcm_lib_ioctl,
@@ -723,7 +721,7 @@ static const struct snd_pcm_ops hal2_playback_ops = {
 	.ack =         hal2_playback_ack,
 };
 
-static const struct snd_pcm_ops hal2_capture_ops = {
+static struct snd_pcm_ops hal2_capture_ops = {
 	.open =        hal2_capture_open,
 	.close =       hal2_capture_close,
 	.ioctl =       snd_pcm_lib_ioctl,
@@ -735,7 +733,7 @@ static const struct snd_pcm_ops hal2_capture_ops = {
 	.ack =         hal2_capture_ack,
 };
 
-static int hal2_pcm_create(struct snd_hal2 *hal2)
+static int __devinit hal2_pcm_create(struct snd_hal2 *hal2)
 {
 	struct snd_pcm *pcm;
 	int err;
@@ -814,7 +812,7 @@ static int hal2_create(struct snd_card *card, struct snd_hal2 **rchip)
 	struct hpc3_regs *hpc3 = hpc3c0;
 	int err;
 
-	hal2 = kzalloc(sizeof(*hal2), GFP_KERNEL);
+	hal2 = kzalloc(sizeof(struct snd_hal2), GFP_KERNEL);
 	if (!hal2)
 		return -ENOMEM;
 
@@ -876,13 +874,13 @@ static int hal2_create(struct snd_card *card, struct snd_hal2 **rchip)
 	return 0;
 }
 
-static int hal2_probe(struct platform_device *pdev)
+static int __devinit hal2_probe(struct platform_device *pdev)
 {
 	struct snd_card *card;
 	struct snd_hal2 *chip;
 	int err;
 
-	err = snd_card_new(&pdev->dev, index, id, THIS_MODULE, 0, &card);
+	err = snd_card_create(index, id, THIS_MODULE, 0, &card);
 	if (err < 0)
 		return err;
 
@@ -891,6 +889,7 @@ static int hal2_probe(struct platform_device *pdev)
 		snd_card_free(card);
 		return err;
 	}
+	snd_card_set_dev(card, &pdev->dev);
 
 	err = hal2_pcm_create(chip);
 	if (err < 0) {
@@ -918,20 +917,33 @@ static int hal2_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int hal2_remove(struct platform_device *pdev)
+static int __devexit hal2_remove(struct platform_device *pdev)
 {
 	struct snd_card *card = platform_get_drvdata(pdev);
 
 	snd_card_free(card);
+	platform_set_drvdata(pdev, NULL);
 	return 0;
 }
 
 static struct platform_driver hal2_driver = {
 	.probe	= hal2_probe,
-	.remove	= hal2_remove,
+	.remove	= __devexit_p(hal2_remove),
 	.driver = {
 		.name	= "sgihal2",
+		.owner	= THIS_MODULE,
 	}
 };
 
-module_platform_driver(hal2_driver);
+static int __init alsa_card_hal2_init(void)
+{
+	return platform_driver_register(&hal2_driver);
+}
+
+static void __exit alsa_card_hal2_exit(void)
+{
+	platform_driver_unregister(&hal2_driver);
+}
+
+module_init(alsa_card_hal2_init);
+module_exit(alsa_card_hal2_exit);

@@ -20,6 +20,10 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ *
+ * Should you need to contact me, the author, you can do so either by
+ * e-mail - mail your message to <vojtech@ucw.cz>, or by paper mail:
+ * Vojtech Pavlik, Simunkova 1594, Prague 8, 182 00 Czech Republic
  */
 
 #include <linux/delay.h>
@@ -171,7 +175,7 @@ static int __init ct82c710_detect(void)
 	return 0;
 }
 
-static int ct82c710_probe(struct platform_device *dev)
+static int __devinit ct82c710_probe(struct platform_device *dev)
 {
 	ct82c710_port = kzalloc(sizeof(struct serio), GFP_KERNEL);
 	if (!ct82c710_port)
@@ -195,7 +199,7 @@ static int ct82c710_probe(struct platform_device *dev)
 	return 0;
 }
 
-static int ct82c710_remove(struct platform_device *dev)
+static int __devexit ct82c710_remove(struct platform_device *dev)
 {
 	serio_unregister_port(ct82c710_port);
 
@@ -205,9 +209,10 @@ static int ct82c710_remove(struct platform_device *dev)
 static struct platform_driver ct82c710_driver = {
 	.driver		= {
 		.name	= "ct82c710",
+		.owner	= THIS_MODULE,
 	},
 	.probe		= ct82c710_probe,
-	.remove		= ct82c710_remove,
+	.remove		= __devexit_p(ct82c710_remove),
 };
 
 

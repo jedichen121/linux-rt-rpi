@@ -1,20 +1,40 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2000-2002 Silicon Graphics, Inc.
  * All Rights Reserved.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it would be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write the Free Software Foundation,
+ * Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 #include "xfs.h"
 #include "xfs_fs.h"
-#include "xfs_shared.h"
-#include "xfs_format.h"
-#include "xfs_log_format.h"
-#include "xfs_trans_resv.h"
-#include "xfs_mount.h"
-#include "xfs_inode.h"
-#include "xfs_error.h"
+#include "xfs_bit.h"
+#include "xfs_log.h"
+#include "xfs_inum.h"
 #include "xfs_trans.h"
-#include "xfs_trans_priv.h"
+#include "xfs_sb.h"
+#include "xfs_ag.h"
+#include "xfs_alloc.h"
 #include "xfs_quota.h"
+#include "xfs_mount.h"
+#include "xfs_bmap_btree.h"
+#include "xfs_inode.h"
+#include "xfs_itable.h"
+#include "xfs_bmap.h"
+#include "xfs_rtalloc.h"
+#include "xfs_error.h"
+#include "xfs_attr.h"
+#include "xfs_buf_item.h"
+#include "xfs_trans_priv.h"
 #include "xfs_qm.h"
 
 STATIC void	xfs_trans_alloc_dqinfo(xfs_trans_t *);
@@ -65,7 +85,7 @@ xfs_trans_log_dquot(
 	ASSERT(XFS_DQ_IS_LOCKED(dqp));
 
 	tp->t_flags |= XFS_TRANS_DIRTY;
-	set_bit(XFS_LI_DIRTY, &dqp->q_logitem.qli_item.li_flags);
+	dqp->q_logitem.qli_item.li_desc->lid_flags |= XFS_LID_DIRTY;
 }
 
 /*
@@ -78,35 +98,29 @@ xfs_trans_dup_dqinfo(
 	xfs_trans_t	*ntp)
 {
 	xfs_dqtrx_t	*oq, *nq;
-	int		i, j;
+	int		i,j;
 	xfs_dqtrx_t	*oqa, *nqa;
-	ulong		blk_res_used;
 
 	if (!otp->t_dqinfo)
 		return;
 
 	xfs_trans_alloc_dqinfo(ntp);
+	oqa = otp->t_dqinfo->dqa_usrdquots;
+	nqa = ntp->t_dqinfo->dqa_usrdquots;
 
 	/*
 	 * Because the quota blk reservation is carried forward,
 	 * it is also necessary to carry forward the DQ_DIRTY flag.
 	 */
-	if (otp->t_flags & XFS_TRANS_DQ_DIRTY)
+	if(otp->t_flags & XFS_TRANS_DQ_DIRTY)
 		ntp->t_flags |= XFS_TRANS_DQ_DIRTY;
 
-	for (j = 0; j < XFS_QM_TRANS_DQTYPES; j++) {
-		oqa = otp->t_dqinfo->dqs[j];
-		nqa = ntp->t_dqinfo->dqs[j];
+	for (j = 0; j < 2; j++) {
 		for (i = 0; i < XFS_QM_TRANS_MAXDQS; i++) {
-			blk_res_used = 0;
-
 			if (oqa[i].qt_dquot == NULL)
 				break;
 			oq = &oqa[i];
 			nq = &nqa[i];
-
-			if (oq->qt_blk_res && oq->qt_bcount_delta > 0)
-				blk_res_used = oq->qt_bcount_delta;
 
 			nq->qt_dquot = oq->qt_dquot;
 			nq->qt_bcount_delta = nq->qt_icount_delta = 0;
@@ -115,8 +129,8 @@ xfs_trans_dup_dqinfo(
 			/*
 			 * Transfer whatever is left of the reservations.
 			 */
-			nq->qt_blk_res = oq->qt_blk_res - blk_res_used;
-			oq->qt_blk_res = blk_res_used;
+			nq->qt_blk_res = oq->qt_blk_res - oq->qt_blk_res_used;
+			oq->qt_blk_res = oq->qt_blk_res_used;
 
 			nq->qt_rtblk_res = oq->qt_rtblk_res -
 				oq->qt_rtblk_res_used;
@@ -126,6 +140,8 @@ xfs_trans_dup_dqinfo(
 			oq->qt_ino_res = oq->qt_ino_res_used;
 
 		}
+		oqa = otp->t_dqinfo->dqa_grpdquots;
+		nqa = ntp->t_dqinfo->dqa_grpdquots;
 	}
 }
 
@@ -143,7 +159,8 @@ xfs_trans_mod_dquot_byino(
 
 	if (!XFS_IS_QUOTA_RUNNING(mp) ||
 	    !XFS_IS_QUOTA_ON(mp) ||
-	    xfs_is_quota_inode(&mp->m_sb, ip->i_ino))
+	    ip->i_ino == mp->m_sb.sb_uquotino ||
+	    ip->i_ino == mp->m_sb.sb_gquotino)
 		return;
 
 	if (tp->t_dqinfo == NULL)
@@ -151,28 +168,20 @@ xfs_trans_mod_dquot_byino(
 
 	if (XFS_IS_UQUOTA_ON(mp) && ip->i_udquot)
 		(void) xfs_trans_mod_dquot(tp, ip->i_udquot, field, delta);
-	if (XFS_IS_GQUOTA_ON(mp) && ip->i_gdquot)
+	if (XFS_IS_OQUOTA_ON(mp) && ip->i_gdquot)
 		(void) xfs_trans_mod_dquot(tp, ip->i_gdquot, field, delta);
-	if (XFS_IS_PQUOTA_ON(mp) && ip->i_pdquot)
-		(void) xfs_trans_mod_dquot(tp, ip->i_pdquot, field, delta);
 }
 
-STATIC struct xfs_dqtrx *
+STATIC xfs_dqtrx_t *
 xfs_trans_get_dqtrx(
-	struct xfs_trans	*tp,
-	struct xfs_dquot	*dqp)
+	xfs_trans_t	*tp,
+	xfs_dquot_t	*dqp)
 {
-	int			i;
-	struct xfs_dqtrx	*qa;
+	int		i;
+	xfs_dqtrx_t	*qa;
 
-	if (XFS_QM_ISUDQ(dqp))
-		qa = tp->t_dqinfo->dqs[XFS_QM_TRANS_USR];
-	else if (XFS_QM_ISGDQ(dqp))
-		qa = tp->t_dqinfo->dqs[XFS_QM_TRANS_GRP];
-	else if (XFS_QM_ISPDQ(dqp))
-		qa = tp->t_dqinfo->dqs[XFS_QM_TRANS_PRJ];
-	else
-		return NULL;
+	qa = XFS_QM_ISUDQ(dqp) ?
+		tp->t_dqinfo->dqa_usrdquots : tp->t_dqinfo->dqa_grpdquots;
 
 	for (i = 0; i < XFS_QM_TRANS_MAXDQS; i++) {
 		if (qa[i].qt_dquot == NULL ||
@@ -233,6 +242,10 @@ xfs_trans_mod_dquot(
 		 * disk blocks used.
 		 */
 	      case XFS_TRANS_DQ_BCOUNT:
+		if (qtrx->qt_blk_res && delta > 0) {
+			qtrx->qt_blk_res_used += (ulong)delta;
+			ASSERT(qtrx->qt_blk_res >= qtrx->qt_blk_res_used);
+		}
 		qtrx->qt_bcount_delta += delta;
 		break;
 
@@ -281,10 +294,11 @@ xfs_trans_mod_dquot(
 
 
 /*
- * Given an array of dqtrx structures, lock all the dquots associated and join
- * them to the transaction, provided they have been modified.  We know that the
- * highest number of dquots of one type - usr, grp and prj - involved in a
- * transaction is 3 so we don't need to make this very generic.
+ * Given an array of dqtrx structures, lock all the dquots associated
+ * and join them to the transaction, provided they have been modified.
+ * We know that the highest number of dquots (of one type - usr OR grp),
+ * involved in a transaction is 2 and that both usr and grp combined - 3.
+ * So, we don't attempt to make this very generic.
  */
 STATIC void
 xfs_trans_dqlockedjoin(
@@ -314,12 +328,12 @@ xfs_trans_dqlockedjoin(
  */
 void
 xfs_trans_apply_dquot_deltas(
-	struct xfs_trans	*tp)
+	xfs_trans_t		*tp)
 {
 	int			i, j;
-	struct xfs_dquot	*dqp;
-	struct xfs_dqtrx	*qtrx, *qa;
-	struct xfs_disk_dquot	*d;
+	xfs_dquot_t		*dqp;
+	xfs_dqtrx_t		*qtrx, *qa;
+	xfs_disk_dquot_t	*d;
 	long			totalbdelta;
 	long			totalrtbdelta;
 
@@ -327,10 +341,12 @@ xfs_trans_apply_dquot_deltas(
 		return;
 
 	ASSERT(tp->t_dqinfo);
-	for (j = 0; j < XFS_QM_TRANS_DQTYPES; j++) {
-		qa = tp->t_dqinfo->dqs[j];
-		if (qa[0].qt_dquot == NULL)
+	qa = tp->t_dqinfo->dqa_usrdquots;
+	for (j = 0; j < 2; j++) {
+		if (qa[0].qt_dquot == NULL) {
+			qa = tp->t_dqinfo->dqa_grpdquots;
 			continue;
+		}
 
 		/*
 		 * Lock all of the dquots and join them to the transaction.
@@ -398,7 +414,7 @@ xfs_trans_apply_dquot_deltas(
 			 * Start/reset the timer(s) if needed.
 			 */
 			if (d->d_id) {
-				xfs_qm_adjust_dqlimits(tp->t_mountp, dqp);
+				xfs_qm_adjust_dqlimits(tp->t_mountp, d);
 				xfs_qm_adjust_dqtimers(tp->t_mountp, d);
 			}
 
@@ -413,19 +429,15 @@ xfs_trans_apply_dquot_deltas(
 			 * reservation that a transaction structure knows of.
 			 */
 			if (qtrx->qt_blk_res != 0) {
-				ulong blk_res_used = 0;
-
-				if (qtrx->qt_bcount_delta > 0)
-					blk_res_used = qtrx->qt_bcount_delta;
-
-				if (qtrx->qt_blk_res != blk_res_used) {
-					if (qtrx->qt_blk_res > blk_res_used)
+				if (qtrx->qt_blk_res != qtrx->qt_blk_res_used) {
+					if (qtrx->qt_blk_res >
+					    qtrx->qt_blk_res_used)
 						dqp->q_res_bcount -= (xfs_qcnt_t)
 							(qtrx->qt_blk_res -
-							 blk_res_used);
+							 qtrx->qt_blk_res_used);
 					else
 						dqp->q_res_bcount -= (xfs_qcnt_t)
-							(blk_res_used -
+							(qtrx->qt_blk_res_used -
 							 qtrx->qt_blk_res);
 				}
 			} else {
@@ -485,6 +497,10 @@ xfs_trans_apply_dquot_deltas(
 			ASSERT(dqp->q_res_rtbcount >=
 				be64_to_cpu(dqp->q_core.d_rtbcount));
 		}
+		/*
+		 * Do the group quotas next
+		 */
+		qa = tp->t_dqinfo->dqa_grpdquots;
 	}
 }
 
@@ -502,14 +518,14 @@ xfs_trans_unreserve_and_mod_dquots(
 	int			i, j;
 	xfs_dquot_t		*dqp;
 	xfs_dqtrx_t		*qtrx, *qa;
-	bool                    locked;
+	boolean_t		locked;
 
 	if (!tp->t_dqinfo || !(tp->t_flags & XFS_TRANS_DQ_DIRTY))
 		return;
 
-	for (j = 0; j < XFS_QM_TRANS_DQTYPES; j++) {
-		qa = tp->t_dqinfo->dqs[j];
+	qa = tp->t_dqinfo->dqa_usrdquots;
 
+	for (j = 0; j < 2; j++) {
 		for (i = 0; i < XFS_QM_TRANS_MAXDQS; i++) {
 			qtrx = &qa[i];
 			/*
@@ -523,17 +539,17 @@ xfs_trans_unreserve_and_mod_dquots(
 			 * about the number of blocks used field, or deltas.
 			 * Also we don't bother to zero the fields.
 			 */
-			locked = false;
+			locked = B_FALSE;
 			if (qtrx->qt_blk_res) {
 				xfs_dqlock(dqp);
-				locked = true;
+				locked = B_TRUE;
 				dqp->q_res_bcount -=
 					(xfs_qcnt_t)qtrx->qt_blk_res;
 			}
 			if (qtrx->qt_ino_res) {
 				if (!locked) {
 					xfs_dqlock(dqp);
-					locked = true;
+					locked = B_TRUE;
 				}
 				dqp->q_res_icount -=
 					(xfs_qcnt_t)qtrx->qt_ino_res;
@@ -542,7 +558,7 @@ xfs_trans_unreserve_and_mod_dquots(
 			if (qtrx->qt_rtblk_res) {
 				if (!locked) {
 					xfs_dqlock(dqp);
-					locked = true;
+					locked = B_TRUE;
 				}
 				dqp->q_res_rtbcount -=
 					(xfs_qcnt_t)qtrx->qt_rtblk_res;
@@ -551,6 +567,7 @@ xfs_trans_unreserve_and_mod_dquots(
 				xfs_dqunlock(dqp);
 
 		}
+		qa = tp->t_dqinfo->dqa_grpdquots;
 	}
 }
 
@@ -560,18 +577,12 @@ xfs_quota_warn(
 	struct xfs_dquot	*dqp,
 	int			type)
 {
-	enum quota_type qtype;
-
+	/* no warnings for project quotas - we just return ENOSPC later */
 	if (dqp->dq_flags & XFS_DQ_PROJ)
-		qtype = PRJQUOTA;
-	else if (dqp->dq_flags & XFS_DQ_USER)
-		qtype = USRQUOTA;
-	else
-		qtype = GRPQUOTA;
-
-	quota_send_warning(make_kqid(&init_user_ns, qtype,
-				     be32_to_cpu(dqp->q_core.d_id)),
-			   mp->m_super->s_dev, type);
+		return;
+	quota_send_warning((dqp->dq_flags & XFS_DQ_USER) ? USRQUOTA : GRPQUOTA,
+			   be32_to_cpu(dqp->q_core.d_id), mp->m_super->s_dev,
+			   type);
 }
 
 /*
@@ -594,23 +605,20 @@ xfs_trans_dqresv(
 	time_t		timer;
 	xfs_qwarncnt_t	warns;
 	xfs_qwarncnt_t	warnlimit;
-	xfs_qcnt_t	total_count;
+	xfs_qcnt_t	count;
 	xfs_qcnt_t	*resbcountp;
 	xfs_quotainfo_t	*q = mp->m_quotainfo;
-	struct xfs_def_quota	*defq;
 
 
 	xfs_dqlock(dqp);
 
-	defq = xfs_get_defquota(dqp, q);
-
 	if (flags & XFS_TRANS_DQ_RES_BLKS) {
 		hardlimit = be64_to_cpu(dqp->q_core.d_blk_hardlimit);
 		if (!hardlimit)
-			hardlimit = defq->bhardlimit;
+			hardlimit = q->qi_bhardlimit;
 		softlimit = be64_to_cpu(dqp->q_core.d_blk_softlimit);
 		if (!softlimit)
-			softlimit = defq->bsoftlimit;
+			softlimit = q->qi_bsoftlimit;
 		timer = be32_to_cpu(dqp->q_core.d_btimer);
 		warns = be16_to_cpu(dqp->q_core.d_bwarns);
 		warnlimit = dqp->q_mount->m_quotainfo->qi_bwarnlimit;
@@ -619,10 +627,10 @@ xfs_trans_dqresv(
 		ASSERT(flags & XFS_TRANS_DQ_RES_RTBLKS);
 		hardlimit = be64_to_cpu(dqp->q_core.d_rtb_hardlimit);
 		if (!hardlimit)
-			hardlimit = defq->rtbhardlimit;
+			hardlimit = q->qi_rtbhardlimit;
 		softlimit = be64_to_cpu(dqp->q_core.d_rtb_softlimit);
 		if (!softlimit)
-			softlimit = defq->rtbsoftlimit;
+			softlimit = q->qi_rtbsoftlimit;
 		timer = be32_to_cpu(dqp->q_core.d_rtbtimer);
 		warns = be16_to_cpu(dqp->q_core.d_rtbwarns);
 		warnlimit = dqp->q_mount->m_quotainfo->qi_rtbwarnlimit;
@@ -632,20 +640,21 @@ xfs_trans_dqresv(
 	if ((flags & XFS_QMOPT_FORCE_RES) == 0 &&
 	    dqp->q_core.d_id &&
 	    ((XFS_IS_UQUOTA_ENFORCED(dqp->q_mount) && XFS_QM_ISUDQ(dqp)) ||
-	     (XFS_IS_GQUOTA_ENFORCED(dqp->q_mount) && XFS_QM_ISGDQ(dqp)) ||
-	     (XFS_IS_PQUOTA_ENFORCED(dqp->q_mount) && XFS_QM_ISPDQ(dqp)))) {
+	     (XFS_IS_OQUOTA_ENFORCED(dqp->q_mount) &&
+	      (XFS_QM_ISPDQ(dqp) || XFS_QM_ISGDQ(dqp))))) {
 		if (nblks > 0) {
 			/*
 			 * dquot is locked already. See if we'd go over the
 			 * hardlimit or exceed the timelimit if we allocate
 			 * nblks.
 			 */
-			total_count = *resbcountp + nblks;
-			if (hardlimit && total_count > hardlimit) {
+			if (hardlimit > 0ULL &&
+			    hardlimit <= nblks + *resbcountp) {
 				xfs_quota_warn(mp, dqp, QUOTA_NL_BHARDWARN);
 				goto error_return;
 			}
-			if (softlimit && total_count > softlimit) {
+			if (softlimit > 0ULL &&
+			    softlimit <= nblks + *resbcountp) {
 				if ((timer != 0 && get_seconds() > timer) ||
 				    (warns != 0 && warns >= warnlimit)) {
 					xfs_quota_warn(mp, dqp,
@@ -657,22 +666,22 @@ xfs_trans_dqresv(
 			}
 		}
 		if (ninos > 0) {
-			total_count = be64_to_cpu(dqp->q_core.d_icount) + ninos;
+			count = be64_to_cpu(dqp->q_core.d_icount);
 			timer = be32_to_cpu(dqp->q_core.d_itimer);
 			warns = be16_to_cpu(dqp->q_core.d_iwarns);
 			warnlimit = dqp->q_mount->m_quotainfo->qi_iwarnlimit;
 			hardlimit = be64_to_cpu(dqp->q_core.d_ino_hardlimit);
 			if (!hardlimit)
-				hardlimit = defq->ihardlimit;
+				hardlimit = q->qi_ihardlimit;
 			softlimit = be64_to_cpu(dqp->q_core.d_ino_softlimit);
 			if (!softlimit)
-				softlimit = defq->isoftlimit;
+				softlimit = q->qi_isoftlimit;
 
-			if (hardlimit && total_count > hardlimit) {
+			if (hardlimit > 0ULL && count >= hardlimit) {
 				xfs_quota_warn(mp, dqp, QUOTA_NL_IHARDWARN);
 				goto error_return;
 			}
-			if (softlimit && total_count > softlimit) {
+			if (softlimit > 0ULL && count >= softlimit) {
 				if  ((timer != 0 && get_seconds() > timer) ||
 				     (warns != 0 && warns >= warnlimit)) {
 					xfs_quota_warn(mp, dqp,
@@ -721,15 +730,15 @@ xfs_trans_dqresv(
 error_return:
 	xfs_dqunlock(dqp);
 	if (flags & XFS_QMOPT_ENOSPC)
-		return -ENOSPC;
-	return -EDQUOT;
+		return ENOSPC;
+	return EDQUOT;
 }
 
 
 /*
  * Given dquot(s), make disk block and/or inode reservations against them.
- * The fact that this does the reservation against user, group and
- * project quotas is important, because this follows a all-or-nothing
+ * The fact that this does the reservation against both the usr and
+ * grp/prj quotas is important, because this follows a both-or-nothing
  * approach.
  *
  * flags = XFS_QMOPT_FORCE_RES evades limit enforcement. Used by chown.
@@ -740,16 +749,15 @@ error_return:
  */
 int
 xfs_trans_reserve_quota_bydquots(
-	struct xfs_trans	*tp,
-	struct xfs_mount	*mp,
-	struct xfs_dquot	*udqp,
-	struct xfs_dquot	*gdqp,
-	struct xfs_dquot	*pdqp,
-	long			nblks,
-	long			ninos,
-	uint			flags)
+	xfs_trans_t	*tp,
+	xfs_mount_t	*mp,
+	xfs_dquot_t	*udqp,
+	xfs_dquot_t	*gdqp,
+	long		nblks,
+	long		ninos,
+	uint		flags)
 {
-	int		error;
+	int		resvd = 0, error;
 
 	if (!XFS_IS_QUOTA_RUNNING(mp) || !XFS_IS_QUOTA_ON(mp))
 		return 0;
@@ -764,34 +772,28 @@ xfs_trans_reserve_quota_bydquots(
 					(flags & ~XFS_QMOPT_ENOSPC));
 		if (error)
 			return error;
+		resvd = 1;
 	}
 
 	if (gdqp) {
 		error = xfs_trans_dqresv(tp, mp, gdqp, nblks, ninos, flags);
-		if (error)
-			goto unwind_usr;
-	}
-
-	if (pdqp) {
-		error = xfs_trans_dqresv(tp, mp, pdqp, nblks, ninos, flags);
-		if (error)
-			goto unwind_grp;
+		if (error) {
+			/*
+			 * can't do it, so backout previous reservation
+			 */
+			if (resvd) {
+				flags |= XFS_QMOPT_FORCE_RES;
+				xfs_trans_dqresv(tp, mp, udqp,
+						 -nblks, -ninos, flags);
+			}
+			return error;
+		}
 	}
 
 	/*
 	 * Didn't change anything critical, so, no need to log
 	 */
 	return 0;
-
-unwind_grp:
-	flags |= XFS_QMOPT_FORCE_RES;
-	if (gdqp)
-		xfs_trans_dqresv(tp, mp, gdqp, -nblks, -ninos, flags);
-unwind_usr:
-	flags |= XFS_QMOPT_FORCE_RES;
-	if (udqp)
-		xfs_trans_dqresv(tp, mp, udqp, -nblks, -ninos, flags);
-	return error;
 }
 
 
@@ -815,7 +817,8 @@ xfs_trans_reserve_quota_nblks(
 	if (XFS_IS_PQUOTA_ON(mp))
 		flags |= XFS_QMOPT_ENOSPC;
 
-	ASSERT(!xfs_is_quota_inode(&mp->m_sb, ip->i_ino));
+	ASSERT(ip->i_ino != mp->m_sb.sb_uquotino);
+	ASSERT(ip->i_ino != mp->m_sb.sb_gquotino);
 
 	ASSERT(xfs_isilocked(ip, XFS_ILOCK_EXCL));
 	ASSERT((flags & ~(XFS_QMOPT_FORCE_RES | XFS_QMOPT_ENOSPC)) ==
@@ -828,7 +831,6 @@ xfs_trans_reserve_quota_nblks(
 	 */
 	return xfs_trans_reserve_quota_bydquots(tp, mp,
 						ip->i_udquot, ip->i_gdquot,
-						ip->i_pdquot,
 						nblks, ninos, flags);
 }
 
@@ -867,14 +869,14 @@ xfs_trans_log_quotaoff_item(
 	xfs_qoff_logitem_t	*qlp)
 {
 	tp->t_flags |= XFS_TRANS_DIRTY;
-	set_bit(XFS_LI_DIRTY, &qlp->qql_item.li_flags);
+	qlp->qql_item.li_desc->lid_flags |= XFS_LID_DIRTY;
 }
 
 STATIC void
 xfs_trans_alloc_dqinfo(
 	xfs_trans_t	*tp)
 {
-	tp->t_dqinfo = kmem_zone_zalloc(xfs_qm_dqtrxzone, KM_SLEEP);
+	tp->t_dqinfo = kmem_zone_zalloc(xfs_Gqm->qm_dqtrxzone, KM_SLEEP);
 }
 
 void
@@ -883,6 +885,6 @@ xfs_trans_free_dqinfo(
 {
 	if (!tp->t_dqinfo)
 		return;
-	kmem_zone_free(xfs_qm_dqtrxzone, tp->t_dqinfo);
+	kmem_zone_free(xfs_Gqm->qm_dqtrxzone, tp->t_dqinfo);
 	tp->t_dqinfo = NULL;
 }

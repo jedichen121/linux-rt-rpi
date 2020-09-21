@@ -26,7 +26,6 @@
 #include <linux/fs.h>
 #include <linux/types.h>
 #include <linux/highmem.h>
-#include <linux/bio.h>
 
 #include <cluster/masklog.h>
 
@@ -80,7 +79,7 @@ int ocfs2_write_block(struct ocfs2_super *osb, struct buffer_head *bh,
 
 	get_bh(bh); /* for end_buffer_write_sync() */
 	bh->b_end_io = end_buffer_write_sync;
-	submit_bh(REQ_OP_WRITE, 0, bh);
+	submit_bh(WRITE, bh);
 
 	wait_on_buffer(bh);
 
@@ -91,6 +90,7 @@ int ocfs2_write_block(struct ocfs2_super *osb, struct buffer_head *bh,
 		 * information for this bh as it's not marked locally
 		 * uptodate. */
 		ret = -EIO;
+		put_bh(bh);
 		mlog_errno(ret);
 	}
 
@@ -115,7 +115,7 @@ int ocfs2_read_blocks_sync(struct ocfs2_super *osb, u64 block,
 		if (bhs[i] == NULL) {
 			bhs[i] = sb_getblk(osb->sb, block++);
 			if (bhs[i] == NULL) {
-				status = -ENOMEM;
+				status = -EIO;
 				mlog_errno(status);
 				goto bail;
 			}
@@ -140,21 +140,17 @@ int ocfs2_read_blocks_sync(struct ocfs2_super *osb, u64 block,
 
 		lock_buffer(bh);
 		if (buffer_jbd(bh)) {
-#ifdef CATCH_BH_JBD_RACES
 			mlog(ML_ERROR,
 			     "block %llu had the JBD bit set "
 			     "while I was in lock_buffer!",
 			     (unsigned long long)bh->b_blocknr);
 			BUG();
-#else
-			unlock_buffer(bh);
-			continue;
-#endif
 		}
 
+		clear_buffer_uptodate(bh);
 		get_bh(bh); /* for end_buffer_read_sync() */
 		bh->b_end_io = end_buffer_read_sync;
-		submit_bh(REQ_OP_READ, 0, bh);
+		submit_bh(READ, bh);
 	}
 
 	for (i = nr; i > 0; i--) {
@@ -218,7 +214,7 @@ int ocfs2_read_blocks(struct ocfs2_caching_info *ci, u64 block, int nr,
 			bhs[i] = sb_getblk(sb, block++);
 			if (bhs[i] == NULL) {
 				ocfs2_metadata_cache_io_unlock(ci);
-				status = -ENOMEM;
+				status = -EIO;
 				mlog_errno(status);
 				goto bail;
 			}
@@ -305,11 +301,12 @@ int ocfs2_read_blocks(struct ocfs2_caching_info *ci, u64 block, int nr,
 				continue;
 			}
 
+			clear_buffer_uptodate(bh);
 			get_bh(bh); /* for end_buffer_read_sync() */
 			if (validate)
 				set_buffer_needs_validate(bh);
 			bh->b_end_io = end_buffer_read_sync;
-			submit_bh(REQ_OP_READ, 0, bh);
+			submit_bh(READ, bh);
 			continue;
 		}
 	}
@@ -320,12 +317,6 @@ int ocfs2_read_blocks(struct ocfs2_caching_info *ci, u64 block, int nr,
 		bh = bhs[i];
 
 		if (!(flags & OCFS2_BH_READAHEAD)) {
-			if (status) {
-				/* Clear the rest of the buffers on error */
-				put_bh(bh);
-				bhs[i] = NULL;
-				continue;
-			}
 			/* We know this can't have changed as we hold the
 			 * owner sem. Avoid doing any work on the bh if the
 			 * journal has it. */
@@ -340,7 +331,6 @@ int ocfs2_read_blocks(struct ocfs2_caching_info *ci, u64 block, int nr,
 				 * for this bh as it's not marked locally
 				 * uptodate. */
 				status = -EIO;
-				clear_buffer_needs_validate(bh);
 				put_bh(bh);
 				bhs[i] = NULL;
 				continue;
@@ -424,12 +414,13 @@ int ocfs2_write_super_or_backup(struct ocfs2_super *osb,
 	get_bh(bh); /* for end_buffer_write_sync() */
 	bh->b_end_io = end_buffer_write_sync;
 	ocfs2_compute_meta_ecc(osb->sb, bh->b_data, &di->i_check);
-	submit_bh(REQ_OP_WRITE, 0, bh);
+	submit_bh(WRITE, bh);
 
 	wait_on_buffer(bh);
 
 	if (!buffer_uptodate(bh)) {
 		ret = -EIO;
+		put_bh(bh);
 		mlog_errno(ret);
 	}
 

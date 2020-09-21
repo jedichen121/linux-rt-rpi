@@ -1,10 +1,23 @@
-// SPDX-License-Identifier: GPL-2.0+
-//
-// siu_pcm.c - ALSA driver for Renesas SH7343, SH7722 SIU peripheral.
-//
-// Copyright (C) 2009-2010 Guennadi Liakhovetski <g.liakhovetski@gmx.de>
-// Copyright (C) 2006 Carlos Munoz <carlos@kenati.com>
-
+/*
+ * siu_pcm.c - ALSA driver for Renesas SH7343, SH7722 SIU peripheral.
+ *
+ * Copyright (C) 2009-2010 Guennadi Liakhovetski <g.liakhovetski@gmx.de>
+ * Copyright (C) 2006 Carlos Munoz <carlos@kenati.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ */
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/dmaengine.h>
@@ -22,7 +35,6 @@
 
 #include "siu.h"
 
-#define DRV_NAME "siu-i2s"
 #define GET_MAX_PERIODS(buf_bytes, period_bytes) \
 				((buf_bytes) / (period_bytes))
 #define PERIOD_OFFSET(buf_addr, period_num, period_bytes) \
@@ -118,8 +130,8 @@ static int siu_pcm_wr_set(struct siu_port *port_info,
 	sg_dma_len(&sg) = size;
 	sg_dma_address(&sg) = buff;
 
-	desc = dmaengine_prep_slave_sg(siu_stream->chan,
-		&sg, 1, DMA_MEM_TO_DEV, DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
+	desc = siu_stream->chan->device->device_prep_slave_sg(siu_stream->chan,
+		&sg, 1, DMA_TO_DEVICE, DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
 	if (!desc) {
 		dev_err(dev, "Failed to allocate a dma descriptor\n");
 		return -ENOMEM;
@@ -127,7 +139,7 @@ static int siu_pcm_wr_set(struct siu_port *port_info,
 
 	desc->callback = siu_dma_tx_complete;
 	desc->callback_param = siu_stream;
-	cookie = dmaengine_submit(desc);
+	cookie = desc->tx_submit(desc);
 	if (cookie < 0) {
 		dev_err(dev, "Failed to submit a dma transfer\n");
 		return cookie;
@@ -168,8 +180,8 @@ static int siu_pcm_rd_set(struct siu_port *port_info,
 	sg_dma_len(&sg) = size;
 	sg_dma_address(&sg) = buff;
 
-	desc = dmaengine_prep_slave_sg(siu_stream->chan,
-		&sg, 1, DMA_DEV_TO_MEM, DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
+	desc = siu_stream->chan->device->device_prep_slave_sg(siu_stream->chan,
+		&sg, 1, DMA_FROM_DEVICE, DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
 	if (!desc) {
 		dev_err(dev, "Failed to allocate dma descriptor\n");
 		return -ENOMEM;
@@ -177,7 +189,7 @@ static int siu_pcm_rd_set(struct siu_port *port_info,
 
 	desc->callback = siu_dma_tx_complete;
 	desc->callback_param = siu_stream;
-	cookie = dmaengine_submit(desc);
+	cookie = desc->tx_submit(desc);
 	if (cookie < 0) {
 		dev_err(dev, "Failed to submit dma descriptor\n");
 		return cookie;
@@ -318,9 +330,12 @@ static bool filter(struct dma_chan *chan, void *slave)
 {
 	struct sh_dmae_slave *param = slave;
 
-	pr_debug("%s: slave ID %d\n", __func__, param->shdma_slave.slave_id);
+	pr_debug("%s: slave ID %d\n", __func__, param->slave_id);
 
-	chan->private = &param->shdma_slave;
+	if (unlikely(param->dma_dev != chan->device->dev))
+		return false;
+
+	chan->private = param;
 	return true;
 }
 
@@ -328,8 +343,7 @@ static int siu_pcm_open(struct snd_pcm_substream *ss)
 {
 	/* Playback / Capture */
 	struct snd_soc_pcm_runtime *rtd = ss->private_data;
-	struct snd_soc_component *component = snd_soc_rtdcom_lookup(rtd, DRV_NAME);
-	struct siu_platform *pdata = component->dev->platform_data;
+	struct siu_platform *pdata = rtd->platform->dev->platform_data;
 	struct siu_info *info = siu_i2s_data;
 	struct siu_port *port_info = siu_port_info(ss);
 	struct siu_stream *siu_stream;
@@ -346,15 +360,16 @@ static int siu_pcm_open(struct snd_pcm_substream *ss)
 	if (ss->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		siu_stream = &port_info->playback;
 		param = &siu_stream->param;
-		param->shdma_slave.slave_id = port ? pdata->dma_slave_tx_b :
+		param->slave_id = port ? pdata->dma_slave_tx_b :
 			pdata->dma_slave_tx_a;
 	} else {
 		siu_stream = &port_info->capture;
 		param = &siu_stream->param;
-		param->shdma_slave.slave_id = port ? pdata->dma_slave_rx_b :
+		param->slave_id = port ? pdata->dma_slave_rx_b :
 			pdata->dma_slave_rx_a;
 	}
 
+	param->dma_dev = pdata->dma_dev;
 	/* Get DMA channel */
 	siu_stream->chan = dma_request_channel(mask, filter, param);
 	if (!siu_stream->chan) {
@@ -578,11 +593,12 @@ static void siu_pcm_free(struct snd_pcm *pcm)
 	tasklet_kill(&port_info->playback.tasklet);
 
 	siu_free_port(port_info);
+	snd_pcm_lib_preallocate_free_for_all(pcm);
 
 	dev_dbg(pcm->card->dev, "%s\n", __func__);
 }
 
-static const struct snd_pcm_ops siu_pcm_ops = {
+static struct snd_pcm_ops siu_pcm_ops = {
 	.open		= siu_pcm_open,
 	.close		= siu_pcm_close,
 	.ioctl		= snd_pcm_lib_ioctl,
@@ -593,10 +609,9 @@ static const struct snd_pcm_ops siu_pcm_ops = {
 	.pointer	= siu_pcm_pointer_dma,
 };
 
-struct snd_soc_component_driver siu_component = {
-	.name		= DRV_NAME,
+struct snd_soc_platform_driver siu_platform = {
 	.ops			= &siu_pcm_ops,
 	.pcm_new	= siu_pcm_new,
 	.pcm_free	= siu_pcm_free,
 };
-EXPORT_SYMBOL_GPL(siu_component);
+EXPORT_SYMBOL_GPL(siu_platform);

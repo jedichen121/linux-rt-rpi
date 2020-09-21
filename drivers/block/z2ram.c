@@ -43,6 +43,9 @@
 #include <linux/zorro.h>
 
 
+extern int m68k_realnum_memory;
+extern struct mem_info m68k_memory[NUM_MEMINFO];
+
 #define Z2MINOR_COMBINED      (0)
 #define Z2MINOR_Z2ONLY        (1)
 #define Z2MINOR_CHIPONLY      (2)
@@ -74,28 +77,26 @@ static void do_z2_request(struct request_queue *q)
 	while (req) {
 		unsigned long start = blk_rq_pos(req) << 9;
 		unsigned long len  = blk_rq_cur_bytes(req);
-		blk_status_t err = BLK_STS_OK;
+		int err = 0;
 
 		if (start + len > z2ram_size) {
 			pr_err(DEVICE_NAME ": bad access: block=%llu, "
 			       "count=%u\n",
 			       (unsigned long long)blk_rq_pos(req),
 			       blk_rq_cur_sectors(req));
-			err = BLK_STS_IOERR;
+			err = -EIO;
 			goto done;
 		}
 		while (len) {
 			unsigned long addr = start & Z2RAM_CHUNKMASK;
 			unsigned long size = Z2RAM_CHUNKSIZE - addr;
-			void *buffer = bio_data(req->bio);
-
 			if (len < size)
 				size = len;
 			addr += z2ram_map[ start >> Z2RAM_CHUNKSHIFT ];
 			if (rq_data_dir(req) == READ)
-				memcpy(buffer, (char *)addr, size);
+				memcpy(req->buffer, (char *)addr, size);
 			else
-				memcpy((char *)addr, buffer, size);
+				memcpy((char *)addr, req->buffer, size);
 			start += size;
 			len -= size;
 		}
@@ -115,8 +116,8 @@ get_z2ram( void )
 	if ( test_bit( i, zorro_unused_z2ram ) )
 	{
 	    z2_count++;
-	    z2ram_map[z2ram_size++] = (unsigned long)ZTWO_VADDR(Z2RAM_START) +
-				      (i << Z2RAM_CHUNKSHIFT);
+	    z2ram_map[ z2ram_size++ ] = 
+		ZTWO_VADDR( Z2RAM_START ) + ( i << Z2RAM_CHUNKSHIFT );
 	    clear_bit( i, zorro_unused_z2ram );
 	}
     }
@@ -197,9 +198,8 @@ static int z2_open(struct block_device *bdev, fmode_t mode)
 		vaddr = (unsigned long)z_remap_nocache_nonser(paddr, size);
 #endif
 		z2ram_map = 
-			kmalloc_array(size / Z2RAM_CHUNKSIZE,
-                                      sizeof(z2ram_map[0]),
-                                      GFP_KERNEL);
+			kmalloc((size/Z2RAM_CHUNKSIZE)*sizeof(z2ram_map[0]),
+				GFP_KERNEL);
 		if ( z2ram_map == NULL )
 		{
 		    printk( KERN_ERR DEVICE_NAME
@@ -309,18 +309,20 @@ err_out:
     return rc;
 }
 
-static void
+static int
 z2_release(struct gendisk *disk, fmode_t mode)
 {
     mutex_lock(&z2ram_mutex);
     if ( current_device == -1 ) {
     	mutex_unlock(&z2ram_mutex);
-    	return;
+    	return 0;
     }
     mutex_unlock(&z2ram_mutex);
     /*
      * FIXME: unmap memory
      */
+
+    return 0;
 }
 
 static const struct block_device_operations z2_fops =
@@ -333,7 +335,7 @@ static const struct block_device_operations z2_fops =
 static struct kobject *z2_find(dev_t dev, int *part, void *data)
 {
 	*part = 0;
-	return get_disk_and_module(z2ram_gendisk);
+	return get_disk(z2ram_gendisk);
 }
 
 static struct request_queue *z2_queue;

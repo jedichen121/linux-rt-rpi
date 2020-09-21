@@ -41,7 +41,7 @@
 #include "ubi-media.h"
 
 #define err_msg(fmt, ...)                                   \
-	pr_err("gluebi (pid %d): %s: " fmt "\n",            \
+	printk(KERN_DEBUG "gluebi (pid %d): %s: " fmt "\n", \
 	       current->pid, __func__, ##__VA_ARGS__)
 
 /**
@@ -99,6 +99,9 @@ static int gluebi_get_device(struct mtd_info *mtd)
 	struct gluebi_device *gluebi;
 	int ubi_mode = UBI_READONLY;
 
+	if (!try_module_get(THIS_MODULE))
+		return -ENODEV;
+
 	if (mtd->flags & MTD_WRITEABLE)
 		ubi_mode = UBI_READWRITE;
 
@@ -109,8 +112,8 @@ static int gluebi_get_device(struct mtd_info *mtd)
 		 * The MTD device is already referenced and this is just one
 		 * more reference. MTD allows many users to open the same
 		 * volume simultaneously and do not distinguish between
-		 * readers/writers/exclusive/meta openers as UBI does. So we do
-		 * not open the UBI volume again - just increase the reference
+		 * readers/writers/exclusive openers as UBI does. So we do not
+		 * open the UBI volume again - just increase the reference
 		 * counter and return.
 		 */
 		gluebi->refcnt += 1;
@@ -126,6 +129,7 @@ static int gluebi_get_device(struct mtd_info *mtd)
 				       ubi_mode);
 	if (IS_ERR(gluebi->desc)) {
 		mutex_unlock(&devices_mutex);
+		module_put(THIS_MODULE);
 		return PTR_ERR(gluebi->desc);
 	}
 	gluebi->refcnt += 1;
@@ -149,6 +153,7 @@ static void gluebi_put_device(struct mtd_info *mtd)
 	gluebi->refcnt -= 1;
 	if (gluebi->refcnt == 0)
 		ubi_close_volume(gluebi->desc);
+	module_put(THIS_MODULE);
 	mutex_unlock(&devices_mutex);
 }
 
@@ -166,17 +171,21 @@ static void gluebi_put_device(struct mtd_info *mtd)
 static int gluebi_read(struct mtd_info *mtd, loff_t from, size_t len,
 		       size_t *retlen, unsigned char *buf)
 {
-	int err = 0, lnum, offs, bytes_left;
+	int err = 0, lnum, offs, total_read;
 	struct gluebi_device *gluebi;
 
+	if (len < 0 || from < 0 || from + len > mtd->size)
+		return -EINVAL;
+
 	gluebi = container_of(mtd, struct gluebi_device, mtd);
+
 	lnum = div_u64_rem(from, mtd->erasesize, &offs);
-	bytes_left = len;
-	while (bytes_left) {
+	total_read = len;
+	while (total_read) {
 		size_t to_read = mtd->erasesize - offs;
 
-		if (to_read > bytes_left)
-			to_read = bytes_left;
+		if (to_read > total_read)
+			to_read = total_read;
 
 		err = ubi_read(gluebi->desc, lnum, buf, offs, to_read);
 		if (err)
@@ -184,11 +193,11 @@ static int gluebi_read(struct mtd_info *mtd, loff_t from, size_t len,
 
 		lnum += 1;
 		offs = 0;
-		bytes_left -= to_read;
+		total_read -= to_read;
 		buf += to_read;
 	}
 
-	*retlen = len - bytes_left;
+	*retlen = len - total_read;
 	return err;
 }
 
@@ -206,33 +215,40 @@ static int gluebi_read(struct mtd_info *mtd, loff_t from, size_t len,
 static int gluebi_write(struct mtd_info *mtd, loff_t to, size_t len,
 			size_t *retlen, const u_char *buf)
 {
-	int err = 0, lnum, offs, bytes_left;
+	int err = 0, lnum, offs, total_written;
 	struct gluebi_device *gluebi;
 
+	if (len < 0 || to < 0 || len + to > mtd->size)
+		return -EINVAL;
+
 	gluebi = container_of(mtd, struct gluebi_device, mtd);
+
+	if (!(mtd->flags & MTD_WRITEABLE))
+		return -EROFS;
+
 	lnum = div_u64_rem(to, mtd->erasesize, &offs);
 
 	if (len % mtd->writesize || offs % mtd->writesize)
 		return -EINVAL;
 
-	bytes_left = len;
-	while (bytes_left) {
+	total_written = len;
+	while (total_written) {
 		size_t to_write = mtd->erasesize - offs;
 
-		if (to_write > bytes_left)
-			to_write = bytes_left;
+		if (to_write > total_written)
+			to_write = total_written;
 
-		err = ubi_leb_write(gluebi->desc, lnum, buf, offs, to_write);
+		err = ubi_write(gluebi->desc, lnum, buf, offs, to_write);
 		if (err)
 			break;
 
 		lnum += 1;
 		offs = 0;
-		bytes_left -= to_write;
+		total_written -= to_write;
 		buf += to_write;
 	}
 
-	*retlen = len - bytes_left;
+	*retlen = len - total_written;
 	return err;
 }
 
@@ -249,12 +265,20 @@ static int gluebi_erase(struct mtd_info *mtd, struct erase_info *instr)
 	int err, i, lnum, count;
 	struct gluebi_device *gluebi;
 
+	if (instr->addr < 0 || instr->addr > mtd->size - mtd->erasesize)
+		return -EINVAL;
+	if (instr->len < 0 || instr->addr + instr->len > mtd->size)
+		return -EINVAL;
 	if (mtd_mod_by_ws(instr->addr, mtd) || mtd_mod_by_ws(instr->len, mtd))
 		return -EINVAL;
 
 	lnum = mtd_div_by_eb(instr->addr, mtd);
 	count = mtd_div_by_eb(instr->len, mtd);
+
 	gluebi = container_of(mtd, struct gluebi_device, mtd);
+
+	if (!(mtd->flags & MTD_WRITEABLE))
+		return -EROFS;
 
 	for (i = 0; i < count - 1; i++) {
 		err = ubi_leb_unmap(gluebi->desc, lnum + i);
@@ -272,9 +296,12 @@ static int gluebi_erase(struct mtd_info *mtd, struct erase_info *instr)
 	if (err)
 		goto out_err;
 
+	instr->state = MTD_ERASE_DONE;
+	mtd_erase_callback(instr);
 	return 0;
 
 out_err:
+	instr->state = MTD_ERASE_FAILED;
 	instr->fail_addr = (long long)lnum * mtd->erasesize;
 	return err;
 }
@@ -313,11 +340,11 @@ static int gluebi_create(struct ubi_device_info *di,
 	mtd->owner      = THIS_MODULE;
 	mtd->writesize  = di->min_io_size;
 	mtd->erasesize  = vi->usable_leb_size;
-	mtd->_read       = gluebi_read;
-	mtd->_write      = gluebi_write;
-	mtd->_erase      = gluebi_erase;
-	mtd->_get_device = gluebi_get_device;
-	mtd->_put_device = gluebi_put_device;
+	mtd->read       = gluebi_read;
+	mtd->write      = gluebi_write;
+	mtd->erase      = gluebi_erase;
+	mtd->get_device = gluebi_get_device;
+	mtd->put_device = gluebi_put_device;
 
 	/*
 	 * In case of dynamic a volume, MTD device size is just volume size. In
@@ -333,8 +360,9 @@ static int gluebi_create(struct ubi_device_info *di,
 	mutex_lock(&devices_mutex);
 	g = find_gluebi_nolock(vi->ubi_num, vi->vol_id);
 	if (g)
-		err_msg("gluebi MTD device %d form UBI device %d volume %d already exists",
-			g->mtd.index, vi->ubi_num, vi->vol_id);
+		err_msg("gluebi MTD device %d form UBI device %d volume %d "
+			"already exists", g->mtd.index, vi->ubi_num,
+			vi->vol_id);
 	mutex_unlock(&devices_mutex);
 
 	if (mtd_device_register(mtd, NULL, 0)) {
@@ -367,8 +395,8 @@ static int gluebi_remove(struct ubi_volume_info *vi)
 	mutex_lock(&devices_mutex);
 	gluebi = find_gluebi_nolock(vi->ubi_num, vi->vol_id);
 	if (!gluebi) {
-		err_msg("got remove notification for unknown UBI device %d volume %d",
-			vi->ubi_num, vi->vol_id);
+		err_msg("got remove notification for unknown UBI device %d "
+			"volume %d", vi->ubi_num, vi->vol_id);
 		err = -ENOENT;
 	} else if (gluebi->refcnt)
 		err = -EBUSY;
@@ -381,8 +409,9 @@ static int gluebi_remove(struct ubi_volume_info *vi)
 	mtd = &gluebi->mtd;
 	err = mtd_device_unregister(mtd);
 	if (err) {
-		err_msg("cannot remove fake MTD device %d, UBI device %d, volume %d, error %d",
-			mtd->index, gluebi->ubi_num, gluebi->vol_id, err);
+		err_msg("cannot remove fake MTD device %d, UBI device %d, "
+			"volume %d, error %d", mtd->index, gluebi->ubi_num,
+			gluebi->vol_id, err);
 		mutex_lock(&devices_mutex);
 		list_add_tail(&gluebi->list, &gluebi_devices);
 		mutex_unlock(&devices_mutex);
@@ -412,8 +441,8 @@ static int gluebi_updated(struct ubi_volume_info *vi)
 	gluebi = find_gluebi_nolock(vi->ubi_num, vi->vol_id);
 	if (!gluebi) {
 		mutex_unlock(&devices_mutex);
-		err_msg("got update notification for unknown UBI device %d volume %d",
-			vi->ubi_num, vi->vol_id);
+		err_msg("got update notification for unknown UBI device %d "
+			"volume %d", vi->ubi_num, vi->vol_id);
 		return -ENOENT;
 	}
 
@@ -439,8 +468,8 @@ static int gluebi_resized(struct ubi_volume_info *vi)
 	gluebi = find_gluebi_nolock(vi->ubi_num, vi->vol_id);
 	if (!gluebi) {
 		mutex_unlock(&devices_mutex);
-		err_msg("got update notification for unknown UBI device %d volume %d",
-			vi->ubi_num, vi->vol_id);
+		err_msg("got update notification for unknown UBI device %d "
+			"volume %d", vi->ubi_num, vi->vol_id);
 		return -ENOENT;
 	}
 	gluebi->mtd.size = vi->used_bytes;
@@ -497,9 +526,9 @@ static void __exit ubi_gluebi_exit(void)
 
 		err = mtd_device_unregister(mtd);
 		if (err)
-			err_msg("error %d while removing gluebi MTD device %d, UBI device %d, volume %d - ignoring",
-				err, mtd->index, gluebi->ubi_num,
-				gluebi->vol_id);
+			err_msg("error %d while removing gluebi MTD device %d, "
+				"UBI device %d, volume %d - ignoring", err,
+				mtd->index, gluebi->ubi_num, gluebi->vol_id);
 		kfree(mtd->name);
 		kfree(gluebi);
 	}

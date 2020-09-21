@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * security/tomoyo/audit.c
  *
@@ -113,7 +112,7 @@ out:
  *
  * Returns file type string.
  */
-static inline const char *tomoyo_filetype(const umode_t mode)
+static inline const char *tomoyo_filetype(const mode_t mode)
 {
 	switch (mode & S_IFMT) {
 	case S_IFREG:
@@ -156,9 +155,11 @@ static char *tomoyo_print_header(struct tomoyo_request_info *r)
 	u8 i;
 	if (!buffer)
 		return NULL;
-
-	tomoyo_convert_time(ktime_get_real_seconds(), &stamp);
-
+	{
+		struct timeval tv;
+		do_gettimeofday(&tv);
+		tomoyo_convert_time(tv.tv_sec, &stamp);
+	}
 	pos = snprintf(buffer, tomoyo_buffer_len - 1,
 		       "#%04u/%02u/%02u %02u:%02u:%02u# profile=%u mode=%s "
 		       "granted=%s (global-pid=%u) task={ pid=%u ppid=%u "
@@ -167,14 +168,9 @@ static char *tomoyo_print_header(struct tomoyo_request_info *r)
 		       stamp.day, stamp.hour, stamp.min, stamp.sec, r->profile,
 		       tomoyo_mode[r->mode], tomoyo_yesno(r->granted), gpid,
 		       tomoyo_sys_getpid(), tomoyo_sys_getppid(),
-		       from_kuid(&init_user_ns, current_uid()),
-		       from_kgid(&init_user_ns, current_gid()),
-		       from_kuid(&init_user_ns, current_euid()),
-		       from_kgid(&init_user_ns, current_egid()),
-		       from_kuid(&init_user_ns, current_suid()),
-		       from_kgid(&init_user_ns, current_sgid()),
-		       from_kuid(&init_user_ns, current_fsuid()),
-		       from_kgid(&init_user_ns, current_fsgid()));
+		       current_uid(), current_gid(), current_euid(),
+		       current_egid(), current_suid(), current_sgid(),
+		       current_fsuid(), current_fsgid());
 	if (!obj)
 		goto no_obj_info;
 	if (!obj->validate_done) {
@@ -184,7 +180,7 @@ static char *tomoyo_print_header(struct tomoyo_request_info *r)
 	for (i = 0; i < TOMOYO_MAX_PATH_STAT; i++) {
 		struct tomoyo_mini_stat *stat;
 		unsigned int dev;
-		umode_t mode;
+		mode_t mode;
 		if (!obj->stat_valid[i])
 			continue;
 		stat = &obj->stat[i];
@@ -195,19 +191,15 @@ static char *tomoyo_print_header(struct tomoyo_request_info *r)
 					tomoyo_buffer_len - 1 - pos,
 					" path%u.parent={ uid=%u gid=%u "
 					"ino=%lu perm=0%o }", (i >> 1) + 1,
-					from_kuid(&init_user_ns, stat->uid),
-					from_kgid(&init_user_ns, stat->gid),
-					(unsigned long)stat->ino,
-					stat->mode & S_IALLUGO);
+					stat->uid, stat->gid, (unsigned long)
+					stat->ino, stat->mode & S_IALLUGO);
 			continue;
 		}
 		pos += snprintf(buffer + pos, tomoyo_buffer_len - 1 - pos,
 				" path%u={ uid=%u gid=%u ino=%lu major=%u"
 				" minor=%u perm=0%o type=%s", (i >> 1) + 1,
-				from_kuid(&init_user_ns, stat->uid),
-				from_kgid(&init_user_ns, stat->gid),
-				(unsigned long)stat->ino,
-				MAJOR(dev), MINOR(dev),
+				stat->uid, stat->gid, (unsigned long)
+				stat->ino, MAJOR(dev), MINOR(dev),
 				mode & S_IALLUGO, tomoyo_filetype(mode));
 		if (S_ISCHR(mode) || S_ISBLK(mode)) {
 			dev = stat->rdev;
@@ -454,16 +446,16 @@ void tomoyo_read_log(struct tomoyo_io_buffer *head)
  * tomoyo_poll_log - Wait for an audit log.
  *
  * @file: Pointer to "struct file".
- * @wait: Pointer to "poll_table". Maybe NULL.
+ * @wait: Pointer to "poll_table".
  *
- * Returns EPOLLIN | EPOLLRDNORM when ready to read an audit log.
+ * Returns POLLIN | POLLRDNORM when ready to read an audit log.
  */
-__poll_t tomoyo_poll_log(struct file *file, poll_table *wait)
+int tomoyo_poll_log(struct file *file, poll_table *wait)
 {
 	if (tomoyo_log_count)
-		return EPOLLIN | EPOLLRDNORM;
+		return POLLIN | POLLRDNORM;
 	poll_wait(file, &tomoyo_log_wait, wait);
 	if (tomoyo_log_count)
-		return EPOLLIN | EPOLLRDNORM;
+		return POLLIN | POLLRDNORM;
 	return 0;
 }

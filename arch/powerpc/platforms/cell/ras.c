@@ -123,8 +123,7 @@ static int __init cbe_ptcal_enable_on_node(int nid, int order)
 
 	area->nid = nid;
 	area->order = order;
-	area->pages = __alloc_pages_node(area->nid,
-						GFP_KERNEL|__GFP_THISNODE,
+	area->pages = alloc_pages_exact_node(area->nid, GFP_KERNEL|GFP_THISNODE,
 						area->order);
 
 	if (!area->pages) {
@@ -196,8 +195,8 @@ static int __init cbe_ptcal_enable(void)
 	for_each_node_by_type(np, "cpu") {
 		const u32 *nid = of_get_property(np, "node-id", NULL);
 		if (!nid) {
-			printk(KERN_ERR "%s: node %pOF is missing node-id?\n",
-					__func__, np);
+			printk(KERN_ERR "%s: node %s is missing node-id?\n",
+					__func__, np->full_name);
 			continue;
 		}
 		cbe_ptcal_enable_on_node(*nid, order);
@@ -298,7 +297,7 @@ int cbe_sysreset_hack(void)
 }
 #endif /* CONFIG_PPC_IBM_CELL_RESETBUTTON */
 
-static int __init cbe_ptcal_init(void)
+int __init cbe_ptcal_init(void)
 {
 	int ret;
 	ptcal_start_tok = rtas_token("ibm,cbe-start-ptcal");

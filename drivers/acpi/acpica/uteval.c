@@ -1,11 +1,45 @@
-// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /******************************************************************************
  *
  * Module Name: uteval - Object evaluation
  *
- * Copyright (C) 2000 - 2018, Intel Corp.
- *
  *****************************************************************************/
+
+/*
+ * Copyright (C) 2000 - 2011, Intel Corp.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions, and the following disclaimer,
+ *    without modification.
+ * 2. Redistributions in binary form must reproduce at minimum a disclaimer
+ *    substantially similar to the "NO WARRANTY" disclaimer below
+ *    ("Disclaimer") and any redistribution must be conditioned upon
+ *    including a substantially similar Disclaimer requirement for further
+ *    binary redistribution.
+ * 3. Neither the names of the above-listed copyright holders nor the names
+ *    of any contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * Alternatively, this software may be distributed under the terms of the
+ * GNU General Public License ("GPL") version 2 as published by the Free
+ * Software Foundation.
+ *
+ * NO WARRANTY
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+ * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGES.
+ */
 
 #include <acpi/acpi.h>
 #include "accommon.h"
@@ -19,7 +53,7 @@ ACPI_MODULE_NAME("uteval")
  * FUNCTION:    acpi_ut_evaluate_object
  *
  * PARAMETERS:  prefix_node         - Starting node
- *              path                - Path to object from starting node
+ *              Path                - Path to object from starting node
  *              expected_return_types - Bitmap of allowed return types
  *              return_desc         - Where a return value is stored
  *
@@ -35,7 +69,7 @@ ACPI_MODULE_NAME("uteval")
 
 acpi_status
 acpi_ut_evaluate_object(struct acpi_namespace_node *prefix_node,
-			const char *path,
+			char *path,
 			u32 expected_return_btypes,
 			union acpi_operand_object **return_desc)
 {
@@ -53,7 +87,7 @@ acpi_ut_evaluate_object(struct acpi_namespace_node *prefix_node,
 	}
 
 	info->prefix_node = prefix_node;
-	info->relative_pathname = path;
+	info->pathname = path;
 
 	/* Evaluate the object/method */
 
@@ -89,27 +123,22 @@ acpi_ut_evaluate_object(struct acpi_namespace_node *prefix_node,
 
 	switch ((info->return_object)->common.type) {
 	case ACPI_TYPE_INTEGER:
-
 		return_btype = ACPI_BTYPE_INTEGER;
 		break;
 
 	case ACPI_TYPE_BUFFER:
-
 		return_btype = ACPI_BTYPE_BUFFER;
 		break;
 
 	case ACPI_TYPE_STRING:
-
 		return_btype = ACPI_BTYPE_STRING;
 		break;
 
 	case ACPI_TYPE_PACKAGE:
-
 		return_btype = ACPI_BTYPE_PACKAGE;
 		break;
 
 	default:
-
 		return_btype = 0;
 		break;
 	}
@@ -147,7 +176,7 @@ acpi_ut_evaluate_object(struct acpi_namespace_node *prefix_node,
 
 	*return_desc = info->return_object;
 
-cleanup:
+      cleanup:
 	ACPI_FREE(info);
 	return_ACPI_STATUS(status);
 }
@@ -158,7 +187,7 @@ cleanup:
  *
  * PARAMETERS:  object_name         - Object name to be evaluated
  *              device_node         - Node for the device
- *              value               - Where the value is returned
+ *              Value               - Where the value is returned
  *
  * RETURN:      Status
  *
@@ -170,7 +199,7 @@ cleanup:
  ******************************************************************************/
 
 acpi_status
-acpi_ut_evaluate_numeric_object(const char *object_name,
+acpi_ut_evaluate_numeric_object(char *object_name,
 				struct acpi_namespace_node *device_node,
 				u64 *value)
 {
@@ -200,13 +229,12 @@ acpi_ut_evaluate_numeric_object(const char *object_name,
  * FUNCTION:    acpi_ut_execute_STA
  *
  * PARAMETERS:  device_node         - Node for the device
- *              flags               - Where the status flags are returned
+ *              Flags               - Where the status flags are returned
  *
  * RETURN:      Status
  *
  * DESCRIPTION: Executes _STA for selected device and stores results in
- *              *Flags. If _STA does not exist, then the device is assumed
- *              to be present/functional/enabled (as per the ACPI spec).
+ *              *Flags.
  *
  *              NOTE: Internal function, no parameter validation
  *
@@ -224,11 +252,6 @@ acpi_ut_execute_STA(struct acpi_namespace_node *device_node, u32 * flags)
 					 ACPI_BTYPE_INTEGER, &obj_desc);
 	if (ACPI_FAILURE(status)) {
 		if (AE_NOT_FOUND == status) {
-			/*
-			 * if _STA does not exist, then (as per the ACPI specification),
-			 * the returned flags will indicate that the device is present,
-			 * functional, and enabled.
-			 */
 			ACPI_DEBUG_PRINT((ACPI_DB_EXEC,
 					  "_STA on %4.4s was not found, assuming device is present\n",
 					  acpi_ut_get_node_name(device_node)));

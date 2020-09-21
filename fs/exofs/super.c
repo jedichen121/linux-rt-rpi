@@ -2,7 +2,7 @@
  * Copyright (C) 2005, 2006
  * Avishay Traeger (avishay@gmail.com)
  * Copyright (C) 2008, 2009
- * Boaz Harrosh <ooo@electrozaur.com>
+ * Boaz Harrosh <bharrosh@panasas.com>
  *
  * Copyrights for code taken from ext2:
  *     Copyright (C) 1992, 1993, 1994, 1995
@@ -38,7 +38,6 @@
 #include <linux/module.h>
 #include <linux/exportfs.h>
 #include <linux/slab.h>
-#include <linux/iversion.h>
 
 #include "exofs.h"
 
@@ -101,7 +100,6 @@ static int parse_options(char *options, struct exofs_mountopt *opts)
 		token = match_token(p, tokens, args);
 		switch (token) {
 		case Opt_name:
-			kfree(opts->dev_name);
 			opts->dev_name = match_strdup(&args[0]);
 			if (unlikely(!opts->dev_name)) {
 				EXOFS_ERR("Error allocating dev_name");
@@ -124,7 +122,7 @@ static int parse_options(char *options, struct exofs_mountopt *opts)
 			if (match_int(&args[0], &option))
 				return -EINVAL;
 			if (option <= 0) {
-				EXOFS_ERR("Timeout must be > 0");
+				EXOFS_ERR("Timout must be > 0");
 				return -EINVAL;
 			}
 			opts->timeout = option * HZ;
@@ -161,13 +159,14 @@ static struct inode *exofs_alloc_inode(struct super_block *sb)
 	if (!oi)
 		return NULL;
 
-	inode_set_iversion(&oi->vfs_inode, 1);
+	oi->vfs_inode.i_version = 1;
 	return &oi->vfs_inode;
 }
 
 static void exofs_i_callback(struct rcu_head *head)
 {
 	struct inode *inode = container_of(head, struct inode, i_rcu);
+	INIT_LIST_HEAD(&inode->i_dentry);
 	kmem_cache_free(exofs_inode_cachep, exofs_i(inode));
 }
 
@@ -194,12 +193,9 @@ static void exofs_init_once(void *foo)
  */
 static int init_inodecache(void)
 {
-	exofs_inode_cachep = kmem_cache_create_usercopy("exofs_inode_cache",
+	exofs_inode_cachep = kmem_cache_create("exofs_inode_cache",
 				sizeof(struct exofs_i_info), 0,
-				SLAB_RECLAIM_ACCOUNT | SLAB_MEM_SPREAD |
-				SLAB_ACCOUNT,
-				offsetof(struct exofs_i_info, i_data),
-				sizeof_field(struct exofs_i_info, i_data),
+				SLAB_RECLAIM_ACCOUNT | SLAB_MEM_SPREAD,
 				exofs_init_once);
 	if (exofs_inode_cachep == NULL)
 		return -ENOMEM;
@@ -211,11 +207,6 @@ static int init_inodecache(void)
  */
 static void destroy_inodecache(void)
 {
-	/*
-	 * Make sure all delayed rcu free inodes are flushed before we
-	 * destroy cache.
-	 */
-	rcu_barrier();
 	kmem_cache_destroy(exofs_inode_cachep);
 }
 
@@ -230,7 +221,7 @@ void exofs_make_credential(u8 cred_a[OSD_CAP_LEN], const struct osd_obj_id *obj)
 static int exofs_read_kern(struct osd_dev *od, u8 *cred, struct osd_obj_id *obj,
 		    u64 offset, void *p, unsigned length)
 {
-	struct osd_request *or = osd_start_request(od);
+	struct osd_request *or = osd_start_request(od, GFP_KERNEL);
 /*	struct osd_sense_info osi = {.key = 0};*/
 	int ret;
 
@@ -394,10 +385,12 @@ static int exofs_sync_fs(struct super_block *sb, int wait)
 	if (unlikely(ret))
 		goto out;
 
+	lock_super(sb);
+
 	ios->length = offsetof(struct exofs_fscb, s_dev_table_oid);
 	memset(fscb, 0, ios->length);
 	fscb->s_nextid = cpu_to_le64(sbi->s_nextid);
-	fscb->s_numfiles = cpu_to_le64(sbi->s_numfiles);
+	fscb->s_numfiles = cpu_to_le32(sbi->s_numfiles);
 	fscb->s_magic = cpu_to_le16(sb->s_magic);
 	fscb->s_newfs = 0;
 	fscb->s_version = EXOFS_FSCB_VER;
@@ -408,12 +401,24 @@ static int exofs_sync_fs(struct super_block *sb, int wait)
 	ret = ore_write(ios);
 	if (unlikely(ret))
 		EXOFS_ERR("%s: ore_write failed.\n", __func__);
+	else
+		sb->s_dirt = 0;
 
+
+	unlock_super(sb);
 out:
 	EXOFS_DBGMSG("s_nextid=0x%llx ret=%d\n", _LLU(sbi->s_nextid), ret);
 	ore_put_io_state(ios);
 	kfree(fscb);
 	return ret;
+}
+
+static void exofs_write_super(struct super_block *sb)
+{
+	if (!(sb->s_flags & MS_RDONLY))
+		exofs_sync_fs(sb, 1);
+	else
+		sb->s_dirt = 0;
 }
 
 static void _exofs_print_device(const char *msg, const char *dev_path,
@@ -468,7 +473,7 @@ static void exofs_put_super(struct super_block *sb)
 	_exofs_print_device("Unmounting", NULL, ore_comp_dev(&sbi->oc, 0),
 			    sbi->one_comp.obj.partition);
 
-	exofs_sysfs_sb_del(sbi);
+	bdi_destroy(&sbi->bdi);
 	exofs_free_sbi(sbi);
 	sb->s_fs_info = NULL;
 }
@@ -525,8 +530,7 @@ static int exofs_devs_2_odi(struct exofs_dt_device_info *dt_dev,
 			     struct osd_dev_info *odi)
 {
 	odi->systemid_len = le32_to_cpu(dt_dev->systemid_len);
-	if (likely(odi->systemid_len))
-		memcpy(odi->systemid, dt_dev->systemid, OSD_SYSTEMID_LEN);
+	memcpy(odi->systemid, dt_dev->systemid, odi->systemid_len);
 
 	odi->osdname_len = le32_to_cpu(dt_dev->osdname_len);
 	odi->osdname = dt_dev->osdname;
@@ -547,29 +551,30 @@ static int exofs_devs_2_odi(struct exofs_dt_device_info *dt_dev,
 	return !(odi->systemid_len || odi->osdname_len);
 }
 
-static int __alloc_dev_table(struct exofs_sb_info *sbi, unsigned numdevs,
+int __alloc_dev_table(struct exofs_sb_info *sbi, unsigned numdevs,
 		      struct exofs_dev **peds)
 {
-	/* Twice bigger table: See exofs_init_comps() and comment at
-	 * exofs_read_lookup_dev_table()
-	 */
-	const size_t numores = numdevs * 2 - 1;
+	struct __alloc_ore_devs_and_exofs_devs {
+		/* Twice bigger table: See exofs_init_comps() and comment at
+		 * exofs_read_lookup_dev_table()
+		 */
+		struct ore_dev *oreds[numdevs * 2 - 1];
+		struct exofs_dev eds[numdevs];
+	} *aoded;
 	struct exofs_dev *eds;
 	unsigned i;
 
-	sbi->oc.ods = kzalloc(numores * sizeof(struct ore_dev *) +
-			      numdevs * sizeof(struct exofs_dev), GFP_KERNEL);
-	if (unlikely(!sbi->oc.ods)) {
-		EXOFS_ERR("ERROR: failed allocating Device array[%d]\n",
+	aoded = kzalloc(sizeof(*aoded), GFP_KERNEL);
+	if (unlikely(!aoded)) {
+		EXOFS_ERR("ERROR: faild allocating Device array[%d]\n",
 			  numdevs);
 		return -ENOMEM;
 	}
 
-	/* Start of allocated struct exofs_dev entries */
-	*peds = eds = (void *)sbi->oc.ods[numores];
-	/* Initialize pointers into struct exofs_dev */
+	sbi->oc.ods = aoded->oreds;
+	*peds = eds = aoded->eds;
 	for (i = 0; i < numdevs; ++i)
-		sbi->oc.ods[i] = &eds[i].ored;
+		aoded->oreds[i] = &eds[i].ored;
 	return 0;
 }
 
@@ -627,12 +632,6 @@ static int exofs_read_lookup_dev_table(struct exofs_sb_info *sbi,
 	memcpy(&sbi->oc.ods[numdevs], &sbi->oc.ods[0],
 		(numdevs - 1) * sizeof(sbi->oc.ods[0]));
 
-	/* create sysfs subdir under which we put the device table
-	 * And cluster layout. A Superblock is identified by the string:
-	 *	"dev[0].osdname"_"pid"
-	 */
-	exofs_sysfs_sb_add(sbi, &dt->dt_dev_table[0]);
-
 	for (i = 0; i < numdevs; i++) {
 		struct exofs_fscb fscb;
 		struct osd_dev_info odi;
@@ -658,7 +657,6 @@ static int exofs_read_lookup_dev_table(struct exofs_sb_info *sbi,
 			eds[i].ored.od = fscb_od;
 			++sbi->oc.numdevs;
 			fscb_od = NULL;
-			exofs_sysfs_odev_add(&eds[i], sbi);
 			continue;
 		}
 
@@ -684,7 +682,6 @@ static int exofs_read_lookup_dev_table(struct exofs_sb_info *sbi,
 				  odi.osdname);
 			goto out;
 		}
-		exofs_sysfs_odev_add(&eds[i], sbi);
 
 		/* TODO: verify other information is correct and FS-uuid
 		 *	 matches. Benny what did you say about device table
@@ -748,6 +745,7 @@ static int exofs_fill_super(struct super_block *sb, void *data, int silent)
 	sbi->one_comp.obj.partition = opts->pid;
 	sbi->one_comp.obj.id = 0;
 	exofs_make_credential(sbi->one_comp.cred, &sbi->one_comp.obj);
+	sbi->oc.numdevs = 1;
 	sbi->oc.single_comp = EC_SINGLE_COMP;
 	sbi->oc.comps = &sbi->one_comp;
 
@@ -757,7 +755,6 @@ static int exofs_fill_super(struct super_block *sb, void *data, int silent)
 	sb->s_blocksize = EXOFS_BLKSIZE;
 	sb->s_blocksize_bits = EXOFS_BLKSHIFT;
 	sb->s_maxbytes = MAX_LFS_FILESIZE;
-	sb->s_max_links = EXOFS_LINK_MAX;
 	atomic_set(&sbi->s_curr_pending, 0);
 	sb->s_bdev = NULL;
 	sb->s_dev = 0;
@@ -806,18 +803,13 @@ static int exofs_fill_super(struct super_block *sb, void *data, int silent)
 			goto free_sbi;
 
 		ore_comp_set_dev(&sbi->oc, 0, od);
-		sbi->oc.numdevs = 1;
 	}
 
 	__sbi_read_stats(sbi);
 
 	/* set up operation vectors */
-	ret = super_setup_bdi(sb);
-	if (ret) {
-		EXOFS_DBGMSG("Failed to super_setup_bdi\n");
-		goto free_sbi;
-	}
-	sb->s_bdi->ra_pages = __ra_pages(&sbi->layout);
+	sbi->bdi.ra_pages = __ra_pages(&sbi->layout);
+	sb->s_bdi = &sbi->bdi;
 	sb->s_fs_info = sbi;
 	sb->s_op = &exofs_sops;
 	sb->s_export_op = &exofs_export_ops;
@@ -827,8 +819,9 @@ static int exofs_fill_super(struct super_block *sb, void *data, int silent)
 		ret = PTR_ERR(root);
 		goto free_sbi;
 	}
-	sb->s_root = d_make_root(root);
+	sb->s_root = d_alloc_root(root);
 	if (!sb->s_root) {
+		iput(root);
 		EXOFS_ERR("ERROR: get root inode failed\n");
 		ret = -ENOMEM;
 		goto free_sbi;
@@ -843,7 +836,12 @@ static int exofs_fill_super(struct super_block *sb, void *data, int silent)
 		goto free_sbi;
 	}
 
-	exofs_sysfs_dbg_print();
+	ret = bdi_setup_and_register(&sbi->bdi, "exofs", BDI_CAP_MAP_COPY);
+	if (ret) {
+		EXOFS_DBGMSG("Failed to bdi_setup_and_register\n");
+		goto free_sbi;
+	}
+
 	_exofs_print_device("Mounting", opts->dev_name,
 			    ore_comp_dev(&sbi->oc, 0),
 			    sbi->one_comp.obj.partition);
@@ -867,10 +865,8 @@ static struct dentry *exofs_mount(struct file_system_type *type,
 	int ret;
 
 	ret = parse_options(data, &opts);
-	if (ret) {
-		kfree(opts.dev_name);
+	if (ret)
 		return ERR_PTR(ret);
-	}
 
 	if (!opts.dev_name)
 		opts.dev_name = dev_name;
@@ -944,6 +940,7 @@ static const struct super_operations exofs_sops = {
 	.write_inode    = exofs_write_inode,
 	.evict_inode    = exofs_evict_inode,
 	.put_super      = exofs_put_super,
+	.write_super    = exofs_write_super,
 	.sync_fs	= exofs_sync_fs,
 	.statfs         = exofs_statfs,
 };
@@ -959,7 +956,7 @@ static struct dentry *exofs_get_parent(struct dentry *child)
 	if (!ino)
 		return ERR_PTR(-ESTALE);
 
-	return d_obtain_alias(exofs_iget(child->d_sb, ino));
+	return d_obtain_alias(exofs_iget(child->d_inode->i_sb, ino));
 }
 
 static struct inode *exofs_nfs_get_inode(struct super_block *sb,
@@ -1011,7 +1008,6 @@ static struct file_system_type exofs_type = {
 	.mount          = exofs_mount,
 	.kill_sb        = generic_shutdown_super,
 };
-MODULE_ALIAS_FS("exofs");
 
 static int __init init_exofs(void)
 {
@@ -1025,9 +1021,6 @@ static int __init init_exofs(void)
 	if (err)
 		goto out_d;
 
-	/* We don't fail if sysfs creation failed */
-	exofs_sysfs_init();
-
 	return 0;
 out_d:
 	destroy_inodecache();
@@ -1037,7 +1030,6 @@ out:
 
 static void __exit exit_exofs(void)
 {
-	exofs_sysfs_uninit();
 	unregister_filesystem(&exofs_type);
 	destroy_inodecache();
 }

@@ -13,7 +13,6 @@
 
 #include <linux/module.h>
 #include <linux/interrupt.h>
-#include <linux/io.h>
 #include <linux/irq.h>
 #include <linux/pm.h>
 #include <linux/platform_device.h>
@@ -25,7 +24,8 @@
 
 #include <asm/io.h>
 
-#include <linux/w1.h>
+#include "../w1.h"
+#include "../w1_int.h"
 
 
 #define DS1WM_CMD	0x00	/* R/W 4 bits command */
@@ -95,8 +95,7 @@ static struct {
 
 struct ds1wm_data {
 	void     __iomem *map;
-	unsigned int      bus_shift; /* # of shifts to calc register offsets */
-	bool      is_hw_big_endian;
+	int      bus_shift; /* # of shifts to calc register offsets */
 	struct platform_device *pdev;
 	const struct mfd_cell   *cell;
 	int      irq;
@@ -116,65 +115,12 @@ struct ds1wm_data {
 static inline void ds1wm_write_register(struct ds1wm_data *ds1wm_data, u32 reg,
 					u8 val)
 {
-	if (ds1wm_data->is_hw_big_endian) {
-		switch (ds1wm_data->bus_shift) {
-		case 0:
-			iowrite8(val, ds1wm_data->map + (reg << 0));
-			break;
-		case 1:
-			iowrite16be((u16)val, ds1wm_data->map + (reg << 1));
-			break;
-		case 2:
-			iowrite32be((u32)val, ds1wm_data->map + (reg << 2));
-			break;
-		}
-	} else {
-		switch (ds1wm_data->bus_shift) {
-		case 0:
-			iowrite8(val, ds1wm_data->map + (reg << 0));
-			break;
-		case 1:
-			iowrite16((u16)val, ds1wm_data->map + (reg << 1));
-			break;
-		case 2:
-			iowrite32((u32)val, ds1wm_data->map + (reg << 2));
-			break;
-		}
-	}
+	__raw_writeb(val, ds1wm_data->map + (reg << ds1wm_data->bus_shift));
 }
 
 static inline u8 ds1wm_read_register(struct ds1wm_data *ds1wm_data, u32 reg)
 {
-	u32 val = 0;
-
-	if (ds1wm_data->is_hw_big_endian) {
-		switch (ds1wm_data->bus_shift) {
-		case 0:
-			val = ioread8(ds1wm_data->map + (reg << 0));
-			break;
-		case 1:
-			val = ioread16be(ds1wm_data->map + (reg << 1));
-			break;
-		case 2:
-			val = ioread32be(ds1wm_data->map + (reg << 2));
-			break;
-		}
-	} else {
-		switch (ds1wm_data->bus_shift) {
-		case 0:
-			val = ioread8(ds1wm_data->map + (reg << 0));
-			break;
-		case 1:
-			val = ioread16(ds1wm_data->map + (reg << 1));
-			break;
-		case 2:
-			val = ioread32(ds1wm_data->map + (reg << 2));
-			break;
-		}
-	}
-	dev_dbg(&ds1wm_data->pdev->dev,
-		"ds1wm_read_register reg: %d, 32 bit val:%x\n", reg, val);
-	return (u8)val;
+	return __raw_readb(ds1wm_data->map + (reg << ds1wm_data->bus_shift));
 }
 
 
@@ -308,17 +254,17 @@ static int ds1wm_find_divisor(int gclk)
 static void ds1wm_up(struct ds1wm_data *ds1wm_data)
 {
 	int divisor;
-	struct device *dev = &ds1wm_data->pdev->dev;
-	struct ds1wm_driver_data *plat = dev_get_platdata(dev);
+	struct ds1wm_driver_data *plat = ds1wm_data->pdev->dev.platform_data;
 
 	if (ds1wm_data->cell->enable)
 		ds1wm_data->cell->enable(ds1wm_data->pdev);
 
 	divisor = ds1wm_find_divisor(plat->clock_rate);
-	dev_dbg(dev, "found divisor 0x%x for clock %d\n",
-		divisor, plat->clock_rate);
+	dev_dbg(&ds1wm_data->pdev->dev,
+		"found divisor 0x%x for clock %d\n", divisor, plat->clock_rate);
 	if (divisor == 0) {
-		dev_err(dev, "no suitable divisor for %dHz clock\n",
+		dev_err(&ds1wm_data->pdev->dev,
+			"no suitable divisor for %dHz clock\n",
 			plat->clock_rate);
 		return;
 	}
@@ -388,9 +334,7 @@ static void ds1wm_search(void *data, struct w1_master *master_dev,
 			return;
 		}
 
-		mutex_lock(&master_dev->bus_mutex);
 		if (ds1wm_reset(ds1wm_data)) {
-			mutex_unlock(&master_dev->bus_mutex);
 			dev_dbg(&ds1wm_data->pdev->dev,
 				"pass: %d reset error (or no slaves)\n", pass);
 			break;
@@ -403,7 +347,7 @@ static void ds1wm_search(void *data, struct w1_master *master_dev,
 			"pass: %d entering ASM\n", pass);
 		ds1wm_write_register(ds1wm_data, DS1WM_CMD, DS1WM_CMD_SRA);
 		dev_dbg(&ds1wm_data->pdev->dev,
-			"pass: %d beginning nibble loop\n", pass);
+			"pass: %d begining nibble loop\n", pass);
 
 		r_prime = 0;
 		d = 0;
@@ -443,7 +387,6 @@ static void ds1wm_search(void *data, struct w1_master *master_dev,
 
 		}
 		if (ds1wm_data->read_error) {
-			mutex_unlock(&master_dev->bus_mutex);
 			dev_err(&ds1wm_data->pdev->dev,
 				"pass: %d read error, retrying\n", pass);
 			break;
@@ -457,7 +400,6 @@ static void ds1wm_search(void *data, struct w1_master *master_dev,
 		dev_dbg(&ds1wm_data->pdev->dev,
 			"pass: %d resetting bus\n", pass);
 		ds1wm_reset(ds1wm_data);
-		mutex_unlock(&master_dev->bus_mutex);
 		if ((r_prime & ((u64)1 << 63)) && (d & ((u64)1 << 63))) {
 			dev_err(&ds1wm_data->pdev->dev,
 				"pass: %d bus error, retrying\n", pass);
@@ -509,84 +451,60 @@ static int ds1wm_probe(struct platform_device *pdev)
 	struct ds1wm_driver_data *plat;
 	struct resource *res;
 	int ret;
-	u8 inten;
 
 	if (!pdev)
 		return -ENODEV;
 
-	ds1wm_data = devm_kzalloc(&pdev->dev, sizeof(*ds1wm_data), GFP_KERNEL);
+	ds1wm_data = kzalloc(sizeof(*ds1wm_data), GFP_KERNEL);
 	if (!ds1wm_data)
 		return -ENOMEM;
 
 	platform_set_drvdata(pdev, ds1wm_data);
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res)
-		return -ENXIO;
-	ds1wm_data->map = devm_ioremap(&pdev->dev, res->start,
-				       resource_size(res));
-	if (!ds1wm_data->map)
-		return -ENOMEM;
+	if (!res) {
+		ret = -ENXIO;
+		goto err0;
+	}
+	ds1wm_data->map = ioremap(res->start, resource_size(res));
+	if (!ds1wm_data->map) {
+		ret = -ENOMEM;
+		goto err0;
+	}
+
+	/* calculate bus shift from mem resource */
+	ds1wm_data->bus_shift = resource_size(res) >> 3;
 
 	ds1wm_data->pdev = pdev;
 	ds1wm_data->cell = mfd_get_cell(pdev);
-	if (!ds1wm_data->cell)
-		return -ENODEV;
-	plat = dev_get_platdata(&pdev->dev);
-	if (!plat)
-		return -ENODEV;
-
-	/* how many bits to shift register number to get register offset */
-	if (plat->bus_shift > 2) {
-		dev_err(&ds1wm_data->pdev->dev,
-			"illegal bus shift %d, not written",
-			ds1wm_data->bus_shift);
-		return -EINVAL;
+	if (!ds1wm_data->cell) {
+		ret = -ENODEV;
+		goto err1;
 	}
-
-	ds1wm_data->bus_shift = plat->bus_shift;
-	/* make sure resource has space for 8 registers */
-	if ((8 << ds1wm_data->bus_shift) > resource_size(res)) {
-		dev_err(&ds1wm_data->pdev->dev,
-			"memory resource size %d to small, should be %d\n",
-			(int)resource_size(res),
-			8 << ds1wm_data->bus_shift);
-		return -EINVAL;
+	plat = pdev->dev.platform_data;
+	if (!plat) {
+		ret = -ENODEV;
+		goto err1;
 	}
-
-	ds1wm_data->is_hw_big_endian = plat->is_hw_big_endian;
 
 	res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (!res)
-		return -ENXIO;
+	if (!res) {
+		ret = -ENXIO;
+		goto err1;
+	}
 	ds1wm_data->irq = res->start;
 	ds1wm_data->int_en_reg_none = (plat->active_high ? DS1WM_INTEN_IAS : 0);
 	ds1wm_data->reset_recover_delay = plat->reset_recover_delay;
-
-	/* Mask interrupts, set IAS before claiming interrupt */
-	inten = ds1wm_read_register(ds1wm_data, DS1WM_INT_EN);
-	ds1wm_write_register(ds1wm_data,
-		DS1WM_INT_EN, ds1wm_data->int_en_reg_none);
 
 	if (res->flags & IORESOURCE_IRQ_HIGHEDGE)
 		irq_set_irq_type(ds1wm_data->irq, IRQ_TYPE_EDGE_RISING);
 	if (res->flags & IORESOURCE_IRQ_LOWEDGE)
 		irq_set_irq_type(ds1wm_data->irq, IRQ_TYPE_EDGE_FALLING);
-	if (res->flags & IORESOURCE_IRQ_HIGHLEVEL)
-		irq_set_irq_type(ds1wm_data->irq, IRQ_TYPE_LEVEL_HIGH);
-	if (res->flags & IORESOURCE_IRQ_LOWLEVEL)
-		irq_set_irq_type(ds1wm_data->irq, IRQ_TYPE_LEVEL_LOW);
 
-	ret = devm_request_irq(&pdev->dev, ds1wm_data->irq, ds1wm_isr,
-			IRQF_SHARED, "ds1wm", ds1wm_data);
-	if (ret) {
-		dev_err(&ds1wm_data->pdev->dev,
-			"devm_request_irq %d failed with errno %d\n",
-			ds1wm_data->irq,
-			ret);
-
-		return ret;
-	}
+	ret = request_irq(ds1wm_data->irq, ds1wm_isr,
+			IRQF_DISABLED | IRQF_SHARED, "ds1wm", ds1wm_data);
+	if (ret)
+		goto err1;
 
 	ds1wm_up(ds1wm_data);
 
@@ -594,19 +512,17 @@ static int ds1wm_probe(struct platform_device *pdev)
 
 	ret = w1_add_master_device(&ds1wm_master);
 	if (ret)
-		goto err;
+		goto err2;
 
-	dev_dbg(&ds1wm_data->pdev->dev,
-		"ds1wm: probe successful, IAS: %d, rec.delay: %d, clockrate: %d, bus-shift: %d, is Hw Big Endian: %d\n",
-		plat->active_high,
-		plat->reset_recover_delay,
-		plat->clock_rate,
-		ds1wm_data->bus_shift,
-		ds1wm_data->is_hw_big_endian);
 	return 0;
 
-err:
+err2:
 	ds1wm_down(ds1wm_data);
+	free_irq(ds1wm_data->irq, ds1wm_data);
+err1:
+	iounmap(ds1wm_data->map);
+err0:
+	kfree(ds1wm_data);
 
 	return ret;
 }
@@ -640,6 +556,9 @@ static int ds1wm_remove(struct platform_device *pdev)
 
 	w1_remove_master_device(&ds1wm_master);
 	ds1wm_down(ds1wm_data);
+	free_irq(ds1wm_data->irq, ds1wm_data);
+	iounmap(ds1wm_data->map);
+	kfree(ds1wm_data);
 
 	return 0;
 }
@@ -656,7 +575,7 @@ static struct platform_driver ds1wm_driver = {
 
 static int __init ds1wm_init(void)
 {
-	pr_info("DS1WM w1 busmaster driver - (c) 2004 Szabolcs Gyurko\n");
+	printk("DS1WM w1 busmaster driver - (c) 2004 Szabolcs Gyurko\n");
 	return platform_driver_register(&ds1wm_driver);
 }
 

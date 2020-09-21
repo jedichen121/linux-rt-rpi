@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Platform dependent support for DIG64 platforms.
  *
@@ -23,7 +22,7 @@
 
 #include <asm/io.h>
 #include <asm/machvec.h>
-#include <asm/setup.h>
+#include <asm/system.h>
 
 void __init
 dig_setup (char **cmdline_p)

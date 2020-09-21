@@ -1,11 +1,45 @@
-// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /******************************************************************************
  *
  * Module Name: evglock - Global Lock support
  *
- * Copyright (C) 2000 - 2018, Intel Corp.
- *
  *****************************************************************************/
+
+/*
+ * Copyright (C) 2000 - 2011, Intel Corp.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions, and the following disclaimer,
+ *    without modification.
+ * 2. Redistributions in binary form must reproduce at minimum a disclaimer
+ *    substantially similar to the "NO WARRANTY" disclaimer below
+ *    ("Disclaimer") and any redistribution must be conditioned upon
+ *    including a substantially similar Disclaimer requirement for further
+ *    binary redistribution.
+ * 3. Neither the names of the above-listed copyright holders nor the names
+ *    of any contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * Alternatively, this software may be distributed under the terms of the
+ * GNU General Public License ("GPL") version 2 as published by the Free
+ * Software Foundation.
+ *
+ * NO WARRANTY
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+ * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGES.
+ */
 
 #include <acpi/acpi.h>
 #include "accommon.h"
@@ -14,7 +48,7 @@
 
 #define _COMPONENT          ACPI_EVENTS
 ACPI_MODULE_NAME("evglock")
-#if (!ACPI_REDUCED_HARDWARE)	/* Entire module */
+
 /* Local prototypes */
 static u32 acpi_ev_global_lock_handler(void *context);
 
@@ -35,12 +69,6 @@ acpi_status acpi_ev_init_global_lock_handler(void)
 	acpi_status status;
 
 	ACPI_FUNCTION_TRACE(ev_init_global_lock_handler);
-
-	/* If Hardware Reduced flag is set, there is no global lock */
-
-	if (acpi_gbl_reduced_hardware) {
-		return_ACPI_STATUS(AE_OK);
-	}
 
 	/* Attempt installation of the global lock handler */
 
@@ -94,7 +122,6 @@ acpi_status acpi_ev_remove_global_lock_handler(void)
 	status = acpi_remove_fixed_event_handler(ACPI_EVENT_GLOBAL,
 						 acpi_ev_global_lock_handler);
 
-	acpi_os_delete_lock(acpi_gbl_global_lock_pending_lock);
 	return_ACPI_STATUS(status);
 }
 
@@ -102,7 +129,7 @@ acpi_status acpi_ev_remove_global_lock_handler(void)
  *
  * FUNCTION:    acpi_ev_global_lock_handler
  *
- * PARAMETERS:  context         - From thread interface, not used
+ * PARAMETERS:  Context         - From thread interface, not used
  *
  * RETURN:      ACPI_INTERRUPT_HANDLED
  *
@@ -139,7 +166,7 @@ static u32 acpi_ev_global_lock_handler(void *context)
 
 	acpi_gbl_global_lock_pending = FALSE;
 
-cleanup_and_exit:
+      cleanup_and_exit:
 
 	acpi_os_release_lock(acpi_gbl_global_lock_pending_lock, flags);
 	return (ACPI_INTERRUPT_HANDLED);
@@ -149,7 +176,7 @@ cleanup_and_exit:
  *
  * FUNCTION:    acpi_ev_acquire_global_lock
  *
- * PARAMETERS:  timeout         - Max time to wait for the lock, in millisec.
+ * PARAMETERS:  Timeout         - Max time to wait for the lock, in millisec.
  *
  * RETURN:      Status
  *
@@ -306,5 +333,3 @@ acpi_status acpi_ev_release_global_lock(void)
 	acpi_os_release_mutex(acpi_gbl_global_lock_mutex->mutex.os_mutex);
 	return_ACPI_STATUS(status);
 }
-
-#endif				/* !ACPI_REDUCED_HARDWARE */

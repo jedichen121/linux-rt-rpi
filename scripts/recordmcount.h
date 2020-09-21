@@ -163,11 +163,11 @@ static int mcount_adjust = 0;
 
 static int MIPS_is_fake_mcount(Elf_Rel const *rp)
 {
-	static Elf_Addr old_r_offset = ~(Elf_Addr)0;
+	static Elf_Addr old_r_offset;
 	Elf_Addr current_r_offset = _w(rp->r_offset);
 	int is_fake;
 
-	is_fake = (old_r_offset != ~(Elf_Addr)0) &&
+	is_fake = old_r_offset &&
 		(current_r_offset - old_r_offset == MIPS_FAKEMCOUNT_OFFSET);
 	old_r_offset = current_r_offset;
 
@@ -261,13 +261,11 @@ static unsigned get_mcountsym(Elf_Sym const *const sym0,
 		&sym0[Elf_r_sym(relp)];
 	char const *symname = &str0[w(symp->st_name)];
 	char const *mcount = gpfx == '_' ? "_mcount" : "mcount";
-	char const *fentry = "__fentry__";
 
 	if (symname[0] == '.')
 		++symname;  /* ppc64 hack */
 	if (strcmp(mcount, symname) == 0 ||
-	    (altmcount && strcmp(altmcount, symname) == 0) ||
-	    (strcmp(fentry, symname) == 0))
+	    (altmcount && strcmp(altmcount, symname) == 0))
 		mcountsym = Elf_r_sym(relp);
 
 	return mcountsym;
@@ -326,8 +324,7 @@ static uint_t *sift_rel_mcount(uint_t *mlocp,
 		if (!mcountsym)
 			mcountsym = get_mcountsym(sym0, relp, str0);
 
-		if (mcountsym && mcountsym == Elf_r_sym(relp) &&
-				!is_fake_mcount(relp)) {
+		if (mcountsym == Elf_r_sym(relp) && !is_fake_mcount(relp)) {
 			uint_t const addend =
 				_w(_w(relp->r_offset) - recval + mcount_adjust);
 			mrelp->r_offset = _w(offbase
@@ -378,7 +375,7 @@ static void nop_mcount(Elf_Shdr const *const relhdr,
 
 		if (mcountsym == Elf_r_sym(relp) && !is_fake_mcount(relp)) {
 			if (make_nop)
-				ret = make_nop((void *)ehdr, _w(shdr->sh_offset) + _w(relp->r_offset));
+				ret = make_nop((void *)ehdr, shdr->sh_offset + relp->r_offset);
 			if (warn_on_notrace_sect && !once) {
 				printf("Section %s has mcount callers being ignored\n",
 				       txtname);
@@ -442,7 +439,7 @@ static unsigned find_secsym_ndx(unsigned const txtndx,
 			return symp - sym0;
 		}
 	}
-	fprintf(stderr, "Cannot find symbol for section %u: %s.\n",
+	fprintf(stderr, "Cannot find symbol for section %d: %s.\n",
 		txtndx, txtname);
 	fail_file();
 }
@@ -465,7 +462,7 @@ __has_rel_mcount(Elf_Shdr const *const relhdr,  /* is SHT_REL or SHT_RELA */
 		succeed_file();
 	}
 	if (w(txthdr->sh_type) != SHT_PROGBITS ||
-	    !(_w(txthdr->sh_flags) & SHF_EXECINSTR))
+	    !(w(txthdr->sh_flags) & SHF_EXECINSTR))
 		return NULL;
 	return txtname;
 }

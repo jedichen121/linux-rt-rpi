@@ -1,5 +1,8 @@
 /*
+ *	w1_io.c
+ *
  * Copyright (c) 2004 Evgeniy Polyakov <zbr@ioremap.net>
+ *
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -10,6 +13,10 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #include <asm/io.h>
@@ -18,13 +25,11 @@
 #include <linux/moduleparam.h>
 #include <linux/module.h>
 
-#include "w1_internal.h"
+#include "w1.h"
+#include "w1_log.h"
 
 static int w1_delay_parm = 1;
 module_param_named(delay_coef, w1_delay_parm, int, 0);
-
-static int w1_disable_irqs = 0;
-module_param_named(disable_irqs, w1_disable_irqs, int, 0);
 
 static u8 w1_crc8_table[] = {
 	0, 94, 188, 226, 97, 63, 221, 131, 194, 156, 126, 32, 163, 253, 31, 65,
@@ -54,11 +59,9 @@ static void w1_write_bit(struct w1_master *dev, int bit);
 static u8 w1_read_bit(struct w1_master *dev);
 
 /**
- * w1_touch_bit() - Generates a write-0 or write-1 cycle and samples the level.
- * @dev:	the master device
- * @bit:	0 - write a 0, 1 - write a 0 read the level
+ * Generates a write-0 or write-1 cycle and samples the level.
  */
-u8 w1_touch_bit(struct w1_master *dev, int bit)
+static u8 w1_touch_bit(struct w1_master *dev, int bit)
 {
 	if (dev->bus_master->touch_bit)
 		return dev->bus_master->touch_bit(dev->bus_master->data, bit);
@@ -69,21 +72,13 @@ u8 w1_touch_bit(struct w1_master *dev, int bit)
 		return 0;
 	}
 }
-EXPORT_SYMBOL_GPL(w1_touch_bit);
 
 /**
- * w1_write_bit() - Generates a write-0 or write-1 cycle.
- * @dev:	the master device
- * @bit:	bit to write
- *
+ * Generates a write-0 or write-1 cycle.
  * Only call if dev->bus_master->touch_bit is NULL
  */
 static void w1_write_bit(struct w1_master *dev, int bit)
 {
-	unsigned long flags = 0;
-
-	if(w1_disable_irqs) local_irq_save(flags);
-
 	if (bit) {
 		dev->bus_master->write_bit(dev->bus_master->data, 0);
 		w1_delay(6);
@@ -95,17 +90,14 @@ static void w1_write_bit(struct w1_master *dev, int bit)
 		dev->bus_master->write_bit(dev->bus_master->data, 1);
 		w1_delay(10);
 	}
-
-	if(w1_disable_irqs) local_irq_restore(flags);
 }
 
 /**
- * w1_pre_write() - pre-write operations
- * @dev:	the master device
- *
  * Pre-write operation, currently only supporting strong pullups.
  * Program the hardware for a strong pullup, if one has been requested and
  * the hardware supports it.
+ *
+ * @param dev     the master device
  */
 static void w1_pre_write(struct w1_master *dev)
 {
@@ -117,12 +109,11 @@ static void w1_pre_write(struct w1_master *dev)
 }
 
 /**
- * w1_post_write() - post-write options
- * @dev:	the master device
- *
  * Post-write operation, currently only supporting strong pullups.
  * If a strong pullup was requested, clear it if the hardware supports
  * them, or execute the delay otherwise, in either case clear the request.
+ *
+ * @param dev     the master device
  */
 static void w1_post_write(struct w1_master *dev)
 {
@@ -136,9 +127,10 @@ static void w1_post_write(struct w1_master *dev)
 }
 
 /**
- * w1_write_8() - Writes 8 bits.
- * @dev:	the master device
- * @byte:	the byte to write
+ * Writes 8 bits.
+ *
+ * @param dev     the master device
+ * @param byte    the byte to write
  */
 void w1_write_8(struct w1_master *dev, u8 byte)
 {
@@ -160,15 +152,13 @@ EXPORT_SYMBOL_GPL(w1_write_8);
 
 
 /**
- * w1_read_bit() - Generates a write-1 cycle and samples the level.
- * @dev:	the master device
- *
+ * Generates a write-1 cycle and samples the level.
  * Only call if dev->bus_master->touch_bit is NULL
  */
 static u8 w1_read_bit(struct w1_master *dev)
 {
 	int result;
-	unsigned long flags = 0;
+	unsigned long flags;
 
 	/* sample timing is critical here */
 	local_irq_save(flags);
@@ -186,18 +176,16 @@ static u8 w1_read_bit(struct w1_master *dev)
 }
 
 /**
- * w1_triplet() - * Does a triplet - used for searching ROM addresses.
- * @dev:	the master device
- * @bdir:	the bit to write if both id_bit and comp_bit are 0
- *
+ * Does a triplet - used for searching ROM addresses.
  * Return bits:
  *  bit 0 = id_bit
  *  bit 1 = comp_bit
  *  bit 2 = dir_taken
- *
  * If both bits 0 & 1 are set, the search should be restarted.
  *
- * Return:        bit fields - see above
+ * @param dev     the master device
+ * @param bdir    the bit to write if both id_bit and comp_bit are 0
+ * @return        bit fields - see above
  */
 u8 w1_triplet(struct w1_master *dev, int bdir)
 {
@@ -227,13 +215,12 @@ u8 w1_triplet(struct w1_master *dev, int bdir)
 		return retval;
 	}
 }
-EXPORT_SYMBOL_GPL(w1_triplet);
 
 /**
- * w1_read_8() - Reads 8 bits.
- * @dev:	the master device
+ * Reads 8 bits.
  *
- * Return:        the byte read
+ * @param dev     the master device
+ * @return        the byte read
  */
 u8 w1_read_8(struct w1_master *dev)
 {
@@ -251,10 +238,11 @@ u8 w1_read_8(struct w1_master *dev)
 EXPORT_SYMBOL_GPL(w1_read_8);
 
 /**
- * w1_write_block() - Writes a series of bytes.
- * @dev:	the master device
- * @buf:	pointer to the data to write
- * @len:	the number of bytes to write
+ * Writes a series of bytes.
+ *
+ * @param dev     the master device
+ * @param buf     pointer to the data to write
+ * @param len     the number of bytes to write
  */
 void w1_write_block(struct w1_master *dev, const u8 *buf, int len)
 {
@@ -272,10 +260,11 @@ void w1_write_block(struct w1_master *dev, const u8 *buf, int len)
 EXPORT_SYMBOL_GPL(w1_write_block);
 
 /**
- * w1_touch_block() - Touches a series of bytes.
- * @dev:	the master device
- * @buf:	pointer to the data to write
- * @len:	the number of bytes to write
+ * Touches a series of bytes.
+ *
+ * @param dev     the master device
+ * @param buf     pointer to the data to write
+ * @param len     the number of bytes to write
  */
 void w1_touch_block(struct w1_master *dev, u8 *buf, int len)
 {
@@ -296,11 +285,12 @@ void w1_touch_block(struct w1_master *dev, u8 *buf, int len)
 EXPORT_SYMBOL_GPL(w1_touch_block);
 
 /**
- * w1_read_block() - Reads a series of bytes.
- * @dev:	the master device
- * @buf:	pointer to the buffer to fill
- * @len:	the number of bytes to read
- * Return:	the number of bytes read
+ * Reads a series of bytes.
+ *
+ * @param dev     the master device
+ * @param buf     pointer to the buffer to fill
+ * @param len     the number of bytes to read
+ * @return        the number of bytes read
  */
 u8 w1_read_block(struct w1_master *dev, u8 *buf, int len)
 {
@@ -320,16 +310,14 @@ u8 w1_read_block(struct w1_master *dev, u8 *buf, int len)
 EXPORT_SYMBOL_GPL(w1_read_block);
 
 /**
- * w1_reset_bus() - Issues a reset bus sequence.
- * @dev:	the master device
- * Return:	0=Device present, 1=No device present or error
+ * Issues a reset bus sequence.
+ *
+ * @param  dev The bus master pointer
+ * @return     0=Device present, 1=No device present or error
  */
 int w1_reset_bus(struct w1_master *dev)
 {
 	int result;
-	unsigned long flags = 0;
-
-	if(w1_disable_irqs) local_irq_save(flags);
 
 	if (dev->bus_master->reset_bus)
 		result = dev->bus_master->reset_bus(dev->bus_master->data) & 0x1;
@@ -342,20 +330,18 @@ int w1_reset_bus(struct w1_master *dev)
 		 * cpu for such a short amount of time AND get it back in
 		 * the maximum amount of time.
 		 */
-		w1_delay(500);
+		w1_delay(480);
 		dev->bus_master->write_bit(dev->bus_master->data, 1);
 		w1_delay(70);
 
 		result = dev->bus_master->read_bit(dev->bus_master->data) & 0x1;
-		/* minimum 70 (above) + 430 = 500 us
+		/* minmum 70 (above) + 410 = 480 us
 		 * There aren't any timing requirements between a reset and
 		 * the following transactions.  Sleeping is safe here.
 		 */
-		/* w1_delay(430); min required time */
+		/* w1_delay(410); min required time */
 		msleep(1);
 	}
-
-	if(w1_disable_irqs) local_irq_restore(flags);
 
 	return result;
 }
@@ -383,15 +369,12 @@ void w1_search_devices(struct w1_master *dev, u8 search_type, w1_slave_found_cal
 }
 
 /**
- * w1_reset_select_slave() - reset and select a slave
- * @sl:		the slave to select
- *
  * Resets the bus and then selects the slave by sending either a skip rom
- * or a rom match.  A skip rom is issued if there is only one device
- * registered on the bus.
+ * or a rom match.
  * The w1 master lock must be held.
  *
- * Return:	0=success, anything else=error
+ * @param sl	the slave to select
+ * @return 	0=success, anything else=error
  */
 int w1_reset_select_slave(struct w1_slave *sl)
 {
@@ -412,9 +395,6 @@ int w1_reset_select_slave(struct w1_slave *sl)
 EXPORT_SYMBOL_GPL(w1_reset_select_slave);
 
 /**
- * w1_reset_resume_command() - resume instead of another match ROM
- * @dev:	the master device
- *
  * When the workflow with a slave amongst many requires several
  * successive commands a reset between each, this function is similar
  * to doing a reset then a match ROM for the last matched ROM. The
@@ -426,22 +406,21 @@ EXPORT_SYMBOL_GPL(w1_reset_select_slave);
  * doesn't work of course, but the resume command is the next best thing.
  *
  * The w1 master lock must be held.
+ *
+ * @param dev     the master device
  */
 int w1_reset_resume_command(struct w1_master *dev)
 {
 	if (w1_reset_bus(dev))
 		return -1;
 
-	w1_write_8(dev, dev->slave_count > 1 ? W1_RESUME_CMD : W1_SKIP_ROM);
+	/* This will make only the last matched slave perform a skip ROM. */
+	w1_write_8(dev, W1_RESUME_CMD);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(w1_reset_resume_command);
 
 /**
- * w1_next_pullup() - register for a strong pullup
- * @dev:	the master device
- * @delay:	time in milliseconds
- *
  * Put out a strong pull-up of the specified duration after the next write
  * operation.  Not all hardware supports strong pullups.  Hardware that
  * doesn't support strong pullups will sleep for the given time after the
@@ -449,7 +428,8 @@ EXPORT_SYMBOL_GPL(w1_reset_resume_command);
  * the next write, specifying zero will clear a previous request.
  * The w1 master lock must be held.
  *
- * Return:	0=success, anything else=error
+ * @param delay	time in milliseconds
+ * @return	0=success, anything else=error
  */
 void w1_next_pullup(struct w1_master *dev, int delay)
 {

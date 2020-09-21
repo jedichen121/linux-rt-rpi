@@ -52,6 +52,7 @@
 #include <linux/bitops.h>
 #include <linux/random.h>
 #include <asm/io.h>
+#include <asm/system.h>
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/firmware.h>
@@ -68,7 +69,7 @@
 #include <linux/seq_file.h>
 #include <net/net_namespace.h>
 
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <linux/init.h>
 
 #include <linux/yam.h>
@@ -76,7 +77,7 @@
 /* --------------------------------------------------------------------- */
 
 static const char yam_drvname[] = "yam";
-static const char yam_drvinfo[] __initconst = KERN_INFO \
+static const char yam_drvinfo[] __initdata = KERN_INFO \
 	"YAM driver version 0.8 by F1OAT/F6FBB\n";
 
 /* --------------------------------------------------------------------- */
@@ -157,7 +158,7 @@ static struct net_device *yam_devs[NR_PORTS];
 
 static struct yam_mcs *yam_data;
 
-static DEFINE_TIMER(yam_timer, NULL);
+static DEFINE_TIMER(yam_timer, NULL, 0, 0);
 
 /* --------------------------------------------------------------------- */
 
@@ -402,6 +403,7 @@ static unsigned char *add_mcs(unsigned char *bits, int bitrate,
 
 	/* Allocate a new mcs */
 	if ((p = kmalloc(sizeof(struct yam_mcs), GFP_KERNEL)) == NULL) {
+		printk(KERN_WARNING "YAM: no memory to allocate mcs\n");
 		release_firmware(fw);
 		return NULL;
 	}
@@ -597,11 +599,8 @@ static netdev_tx_t yam_send_packet(struct sk_buff *skb,
 {
 	struct yam_port *yp = netdev_priv(dev);
 
-	if (skb->protocol == htons(ETH_P_IP))
-		return ax25_ip_xmit(skb);
-
 	skb_queue_tail(&yp->send_queue, skb);
-	netif_trans_update(dev);
+	dev->trans_start = jiffies;
 	return NETDEV_TX_OK;
 }
 
@@ -641,13 +640,13 @@ static void yam_arbitrate(struct net_device *dev)
 	yp->slotcnt = yp->slot / 10;
 
 	/* is random > persist ? */
-	if ((prandom_u32() % 256) > yp->pers)
+	if ((random32() % 256) > yp->pers)
 		return;
 
 	yam_start_tx(dev, yp);
 }
 
-static void yam_dotimer(struct timer_list *unused)
+static void yam_dotimer(unsigned long dummy)
 {
 	int i;
 
@@ -841,6 +840,20 @@ static const struct seq_operations yam_seqops = {
 	.stop = yam_seq_stop,
 	.show = yam_seq_show,
 };
+
+static int yam_info_open(struct inode *inode, struct file *file)
+{
+	return seq_open(file, &yam_seqops);
+}
+
+static const struct file_operations yam_info_fops = {
+	.owner = THIS_MODULE,
+	.open = yam_info_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = seq_release,
+};
+
 #endif
 
 
@@ -855,7 +868,7 @@ static int yam_open(struct net_device *dev)
 
 	printk(KERN_INFO "Trying %s at iobase 0x%lx irq %u\n", dev->name, dev->base_addr, dev->irq);
 
-	if (!yp->bitrate)
+	if (!dev || !yp->bitrate)
 		return -ENXIO;
 	if (!dev->base_addr || dev->base_addr > 0x1000 - YAM_EXTENT ||
 		dev->irq < 2 || dev->irq > 15) {
@@ -877,7 +890,7 @@ static int yam_open(struct net_device *dev)
 		goto out_release_base;
 	}
 	outb(0, IER(dev->base_addr));
-	if (request_irq(dev->irq, yam_interrupt, IRQF_SHARED, dev->name, dev)) {
+	if (request_irq(dev->irq, yam_interrupt, IRQF_DISABLED | IRQF_SHARED, dev->name, dev)) {
 		printk(KERN_ERR "%s: irq %d busy\n", dev->name, dev->irq);
 		ret = -EBUSY;
 		goto out_release_base;
@@ -962,12 +975,13 @@ static int yam_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 	case SIOCYAMSMCS:
 		if (netif_running(dev))
 			return -EINVAL;		/* Cannot change this parameter when up */
-		ym = memdup_user(ifr->ifr_data,
-				 sizeof(struct yamdrv_ioctl_mcs));
-		if (IS_ERR(ym))
-			return PTR_ERR(ym);
-		if (ym->cmd != SIOCYAMSMCS)
-			return -EINVAL;
+		if ((ym = kmalloc(sizeof(struct yamdrv_ioctl_mcs), GFP_KERNEL)) == NULL)
+			return -ENOBUFS;
+		ym->bitrate = 9600;
+		if (copy_from_user(ym, ifr->ifr_data, sizeof(struct yamdrv_ioctl_mcs))) {
+			kfree(ym);
+			return -EFAULT;
+		}
 		if (ym->bitrate > YAM_MAXBITRATE) {
 			kfree(ym);
 			return -EINVAL;
@@ -983,8 +997,6 @@ static int yam_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		if (copy_from_user(&yi, ifr->ifr_data, sizeof(struct yamdrv_ioctl_cfg)))
 			 return -EFAULT;
 
-		if (yi.cmd != SIOCYAMSCFG)
-			return -EINVAL;
 		if ((yi.cfg.mask & YAM_IOBASE) && netif_running(dev))
 			return -EINVAL;		/* Cannot change this parameter when up */
 		if ((yi.cfg.mask & YAM_IRQ) && netif_running(dev))
@@ -1048,7 +1060,6 @@ static int yam_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		break;
 
 	case SIOCYAMGCFG:
-		memset(&yi, 0, sizeof(yi));
 		yi.cfg.mask = 0xffffffff;
 		yi.cfg.iobase = yp->iobase;
 		yi.cfg.irq = yp->irq;
@@ -1138,7 +1149,7 @@ static int __init yam_init_driver(void)
 		sprintf(name, "yam%d", i);
 		
 		dev = alloc_netdev(sizeof(struct yam_port), name,
-				   NET_NAME_UNKNOWN, yam_setup);
+				   yam_setup);
 		if (!dev) {
 			pr_err("yam: cannot allocate net device\n");
 			err = -ENOMEM;
@@ -1154,11 +1165,11 @@ static int __init yam_init_driver(void)
 
 	}
 
-	timer_setup(&yam_timer, yam_dotimer, 0);
+	yam_timer.function = yam_dotimer;
 	yam_timer.expires = jiffies + HZ / 100;
 	add_timer(&yam_timer);
 
-	proc_create_seq("yam", 0444, init_net.proc_net, &yam_seqops);
+	proc_net_fops_create(&init_net, "yam", S_IRUGO, &yam_info_fops);
 	return 0;
  error:
 	while (--i >= 0) {
@@ -1175,7 +1186,7 @@ static void __exit yam_cleanup_driver(void)
 	struct yam_mcs *p;
 	int i;
 
-	del_timer_sync(&yam_timer);
+	del_timer(&yam_timer);
 	for (i = 0; i < NR_PORTS; i++) {
 		struct net_device *dev = yam_devs[i];
 		if (dev) {
@@ -1190,7 +1201,7 @@ static void __exit yam_cleanup_driver(void)
 		kfree(p);
 	}
 
-	remove_proc_entry("yam", init_net.proc_net);
+	proc_net_remove(&init_net, "yam");
 }
 
 /* --------------------------------------------------------------------- */

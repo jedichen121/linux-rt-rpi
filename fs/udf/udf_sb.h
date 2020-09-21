@@ -1,10 +1,11 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __LINUX_UDF_SB_H
 #define __LINUX_UDF_SB_H
 
 #include <linux/mutex.h>
 #include <linux/bitops.h>
-#include <linux/magic.h>
+
+/* Since UDF 2.01 is ISO 13346 based... */
+#define UDF_SUPER_MAGIC			0x15013346
 
 #define UDF_MAX_READ_VERSION		0x0250
 #define UDF_MAX_WRITE_VERSION		0x0201
@@ -23,15 +24,14 @@
 #define UDF_FLAG_NLS_MAP		9
 #define UDF_FLAG_UTF8			10
 #define UDF_FLAG_UID_FORGET     11    /* save -1 for uid to disk */
-#define UDF_FLAG_GID_FORGET     12
-#define UDF_FLAG_UID_SET	13
-#define UDF_FLAG_GID_SET	14
-#define UDF_FLAG_SESSION_SET	15
-#define UDF_FLAG_LASTBLOCK_SET	16
-#define UDF_FLAG_BLOCKSIZE_SET	17
-#define UDF_FLAG_INCONSISTENT	18
-#define UDF_FLAG_RW_INCOMPAT	19	/* Set when we find RW incompatible
-					 * feature */
+#define UDF_FLAG_UID_IGNORE     12    /* use sb uid instead of on disk uid */
+#define UDF_FLAG_GID_FORGET     13
+#define UDF_FLAG_GID_IGNORE     14
+#define UDF_FLAG_UID_SET	15
+#define UDF_FLAG_GID_SET	16
+#define UDF_FLAG_SESSION_SET	17
+#define UDF_FLAG_LASTBLOCK_SET	18
+#define UDF_FLAG_BLOCKSIZE_SET	19
 
 #define UDF_PART_FLAG_UNALLOC_BITMAP	0x0001
 #define UDF_PART_FLAG_UNALLOC_TABLE	0x0002
@@ -50,7 +50,7 @@
 #define UDF_SPARABLE_MAP15		0x1522U
 #define UDF_METADATA_MAP25		0x2511U
 
-#define UDF_INVALID_MODE		((umode_t)-1)
+#define UDF_INVALID_MODE		((mode_t)-1)
 
 #pragma pack(1) /* XXX(hch): Why?  This file just defines in-core structures */
 
@@ -63,11 +63,6 @@ struct udf_meta_data {
 	__u32	s_bitmap_file_loc;
 	__u32	s_alloc_unit_size;
 	__u16	s_align_unit_size;
-	/*
-	 * Partition Reference Number of the associated physical / sparable
-	 * partition
-	 */
-	__u16   s_phys_partition_ref;
 	int	s_flags;
 	struct inode *s_metadata_fe;
 	struct inode *s_mirror_fe;
@@ -85,9 +80,10 @@ struct udf_virtual_data {
 };
 
 struct udf_bitmap {
+	__u32			s_extLength;
 	__u32			s_extPosition;
-	int			s_nr_groups;
-	struct buffer_head 	*s_block_bitmap[0];
+	__u16			s_nr_groups;
+	struct buffer_head 	**s_block_bitmap;
 };
 
 struct udf_part_map {
@@ -131,16 +127,16 @@ struct udf_sb_info {
 	struct buffer_head	*s_lvid_bh;
 
 	/* Default permissions */
-	umode_t			s_umask;
-	kgid_t			s_gid;
-	kuid_t			s_uid;
-	umode_t			s_fmode;
-	umode_t			s_dmode;
+	mode_t			s_umask;
+	gid_t			s_gid;
+	uid_t			s_uid;
+	mode_t			s_fmode;
+	mode_t			s_dmode;
 	/* Lock protecting consistency of above permission settings */
 	rwlock_t		s_cred_lock;
 
 	/* Root Info */
-	struct timespec64	s_record_time;
+	struct timespec		s_record_time;
 
 	/* Fileset Info */
 	__u16			s_serial_number;
@@ -167,7 +163,7 @@ static inline struct udf_sb_info *UDF_SB(struct super_block *sb)
 	return sb->s_fs_info;
 }
 
-struct logicalVolIntegrityDescImpUse *udf_sb_lvidiu(struct super_block *sb);
+struct logicalVolIntegrityDescImpUse *udf_sb_lvidiu(struct udf_sb_info *sbi);
 
 int udf_compute_nr_groups(struct super_block *sb, u32 partition);
 

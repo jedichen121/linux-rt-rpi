@@ -26,6 +26,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/i2c.h>
 #include <linux/mutex.h>
@@ -78,7 +79,6 @@ static int __isl29003_read_reg(struct i2c_client *client,
 			       u32 reg, u8 mask, u8 shift)
 {
 	struct isl29003_data *data = i2c_get_clientdata(client);
-
 	return (data->reg_cache[reg] & mask) >> shift;
 }
 
@@ -161,7 +161,6 @@ static int isl29003_get_power_state(struct i2c_client *client)
 {
 	struct isl29003_data *data = i2c_get_clientdata(client);
 	u8 cmdreg = data->reg_cache[ISL29003_REG_COMMAND];
-
 	return ~cmdreg & ISL29003_ADC_PD;
 }
 
@@ -198,7 +197,6 @@ static ssize_t isl29003_show_range(struct device *dev,
 				   struct device_attribute *attr, char *buf)
 {
 	struct i2c_client *client = to_i2c_client(dev);
-
 	return sprintf(buf, "%i\n", isl29003_get_range(client));
 }
 
@@ -210,11 +208,7 @@ static ssize_t isl29003_store_range(struct device *dev,
 	unsigned long val;
 	int ret;
 
-	ret = kstrtoul(buf, 10, &val);
-	if (ret)
-		return ret;
-
-	if (val > 3)
+	if ((strict_strtoul(buf, 10, &val) < 0) || (val > 3))
 		return -EINVAL;
 
 	ret = isl29003_set_range(client, val);
@@ -234,7 +228,6 @@ static ssize_t isl29003_show_resolution(struct device *dev,
 					char *buf)
 {
 	struct i2c_client *client = to_i2c_client(dev);
-
 	return sprintf(buf, "%d\n", isl29003_get_resolution(client));
 }
 
@@ -246,11 +239,7 @@ static ssize_t isl29003_store_resolution(struct device *dev,
 	unsigned long val;
 	int ret;
 
-	ret = kstrtoul(buf, 10, &val);
-	if (ret)
-		return ret;
-
-	if (val > 3)
+	if ((strict_strtoul(buf, 10, &val) < 0) || (val > 3))
 		return -EINVAL;
 
 	ret = isl29003_set_resolution(client, val);
@@ -268,7 +257,6 @@ static ssize_t isl29003_show_mode(struct device *dev,
 				  struct device_attribute *attr, char *buf)
 {
 	struct i2c_client *client = to_i2c_client(dev);
-
 	return sprintf(buf, "%d\n", isl29003_get_mode(client));
 }
 
@@ -279,11 +267,7 @@ static ssize_t isl29003_store_mode(struct device *dev,
 	unsigned long val;
 	int ret;
 
-	ret = kstrtoul(buf, 10, &val);
-	if (ret)
-		return ret;
-
-	if (val > 2)
+	if ((strict_strtoul(buf, 10, &val) < 0) || (val > 2))
 		return -EINVAL;
 
 	ret = isl29003_set_mode(client, val);
@@ -303,7 +287,6 @@ static ssize_t isl29003_show_power_state(struct device *dev,
 					 char *buf)
 {
 	struct i2c_client *client = to_i2c_client(dev);
-
 	return sprintf(buf, "%d\n", isl29003_get_power_state(client));
 }
 
@@ -315,11 +298,7 @@ static ssize_t isl29003_store_power_state(struct device *dev,
 	unsigned long val;
 	int ret;
 
-	ret = kstrtoul(buf, 10, &val);
-	if (ret)
-		return ret;
-
-	if (val > 1)
+	if ((strict_strtoul(buf, 10, &val) < 0) || (val > 1))
 		return -EINVAL;
 
 	ret = isl29003_set_power_state(client, val);
@@ -367,7 +346,6 @@ static int isl29003_init_client(struct i2c_client *client)
 	 * if one of the reads fails, we consider the init failed */
 	for (i = 0; i < ARRAY_SIZE(data->reg_cache); i++) {
 		int v = i2c_smbus_read_byte_data(client, i);
-
 		if (v < 0)
 			return -ENODEV;
 
@@ -387,7 +365,7 @@ static int isl29003_init_client(struct i2c_client *client)
  * I2C layer
  */
 
-static int isl29003_probe(struct i2c_client *client,
+static int __devinit isl29003_probe(struct i2c_client *client,
 				    const struct i2c_device_id *id)
 {
 	struct i2c_adapter *adapter = to_i2c_adapter(client->dev.parent);
@@ -423,7 +401,7 @@ exit_kfree:
 	return err;
 }
 
-static int isl29003_remove(struct i2c_client *client)
+static int __devexit isl29003_remove(struct i2c_client *client)
 {
 	sysfs_remove_group(&client->dev.kobj, &isl29003_attr_group);
 	isl29003_set_power_state(client, 0);
@@ -431,20 +409,18 @@ static int isl29003_remove(struct i2c_client *client)
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
-static int isl29003_suspend(struct device *dev)
+#ifdef CONFIG_PM
+static int isl29003_suspend(struct i2c_client *client, pm_message_t mesg)
 {
-	struct i2c_client *client = to_i2c_client(dev);
 	struct isl29003_data *data = i2c_get_clientdata(client);
 
 	data->power_state_before_suspend = isl29003_get_power_state(client);
 	return isl29003_set_power_state(client, 0);
 }
 
-static int isl29003_resume(struct device *dev)
+static int isl29003_resume(struct i2c_client *client)
 {
 	int i;
-	struct i2c_client *client = to_i2c_client(dev);
 	struct isl29003_data *data = i2c_get_clientdata(client);
 
 	/* restore registers from cache */
@@ -456,12 +432,10 @@ static int isl29003_resume(struct device *dev)
 		data->power_state_before_suspend);
 }
 
-static SIMPLE_DEV_PM_OPS(isl29003_pm_ops, isl29003_suspend, isl29003_resume);
-#define ISL29003_PM_OPS (&isl29003_pm_ops)
-
 #else
-#define ISL29003_PM_OPS NULL
-#endif /* CONFIG_PM_SLEEP */
+#define isl29003_suspend	NULL
+#define isl29003_resume		NULL
+#endif /* CONFIG_PM */
 
 static const struct i2c_device_id isl29003_id[] = {
 	{ "isl29003", 0 },
@@ -472,16 +446,30 @@ MODULE_DEVICE_TABLE(i2c, isl29003_id);
 static struct i2c_driver isl29003_driver = {
 	.driver = {
 		.name	= ISL29003_DRV_NAME,
-		.pm	= ISL29003_PM_OPS,
+		.owner	= THIS_MODULE,
 	},
+	.suspend = isl29003_suspend,
+	.resume	= isl29003_resume,
 	.probe	= isl29003_probe,
-	.remove	= isl29003_remove,
+	.remove	= __devexit_p(isl29003_remove),
 	.id_table = isl29003_id,
 };
 
-module_i2c_driver(isl29003_driver);
+static int __init isl29003_init(void)
+{
+	return i2c_add_driver(&isl29003_driver);
+}
+
+static void __exit isl29003_exit(void)
+{
+	i2c_del_driver(&isl29003_driver);
+}
 
 MODULE_AUTHOR("Daniel Mack <daniel@caiaq.de>");
 MODULE_DESCRIPTION("ISL29003 ambient light sensor driver");
 MODULE_LICENSE("GPL v2");
 MODULE_VERSION(DRIVER_VERSION);
+
+module_init(isl29003_init);
+module_exit(isl29003_exit);
+

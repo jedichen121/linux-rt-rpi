@@ -14,7 +14,7 @@
  *
  *  going from the lowest priority to the highest.  CPUs in the INVALID state
  *  are not eligible for routing.  The system maintains this state with
- *  a 2 dimensional bitmap (the first for priority class, the second for CPUs
+ *  a 2 dimensional bitmap (the first for priority class, the second for cpus
  *  in that class).  Therefore a typical application without affinity
  *  restrictions can find a suitable CPU with O(1) complexity (e.g. two bit
  *  searches).  For tasks with affinity restrictions, the algorithm has a
@@ -26,7 +26,9 @@
  *  as published by the Free Software Foundation; version 2
  *  of the License.
  */
-#include "sched.h"
+
+#include <linux/gfp.h>
+#include "cpupri.h"
 
 /* Convert between a 140 based task->prio, and our 102 based cpupri */
 static int convert_prio(int prio)
@@ -58,15 +60,16 @@ static int convert_prio(int prio)
  * any discrepancies created by racing against the uncertainty of the current
  * priority configuration.
  *
- * Return: (int)bool - CPUs were found
+ * Returns: (int)bool - CPUs were found
  */
 int cpupri_find(struct cpupri *cp, struct task_struct *p,
 		struct cpumask *lowest_mask)
 {
-	int idx = 0;
-	int task_pri = convert_prio(p->prio);
+	int                  idx      = 0;
+	int                  task_pri = convert_prio(p->prio);
 
-	BUG_ON(task_pri >= CPUPRI_NR_PRIORITIES);
+	if (task_pri >= MAX_RT_PRIO)
+		return 0;
 
 	for (idx = 0; idx < task_pri; idx++) {
 		struct cpupri_vec *vec  = &cp->pri_to_cpu[idx];
@@ -123,10 +126,10 @@ int cpupri_find(struct cpupri *cp, struct task_struct *p,
 }
 
 /**
- * cpupri_set - update the CPU priority setting
+ * cpupri_set - update the cpu priority setting
  * @cp: The cpupri context
- * @cpu: The target CPU
- * @newpri: The priority (INVALID-RT99) to assign to this CPU
+ * @cpu: The target cpu
+ * @pri: The priority (INVALID-RT99) to assign to this CPU
  *
  * Note: Assumes cpu_rq(cpu)->lock is locked
  *
@@ -134,9 +137,9 @@ int cpupri_find(struct cpupri *cp, struct task_struct *p,
  */
 void cpupri_set(struct cpupri *cp, int cpu, int newpri)
 {
-	int *currpri = &cp->cpu_to_pri[cpu];
-	int oldpri = *currpri;
-	int do_mb = 0;
+	int                 *currpri = &cp->cpu_to_pri[cpu];
+	int                  oldpri  = *currpri;
+	int                  do_mb = 0;
 
 	newpri = convert_prio(newpri);
 
@@ -146,7 +149,7 @@ void cpupri_set(struct cpupri *cp, int cpu, int newpri)
 		return;
 
 	/*
-	 * If the CPU was currently mapped to a different value, we
+	 * If the cpu was currently mapped to a different value, we
 	 * need to map it to the new value then remove the old value.
 	 * Note, we must add the new value first, otherwise we risk the
 	 * cpu being missed by the priority loop in cpupri_find.
@@ -160,7 +163,7 @@ void cpupri_set(struct cpupri *cp, int cpu, int newpri)
 		 * do a write memory barrier, and then update the count, to
 		 * make sure the vector is visible when count is set.
 		 */
-		smp_mb__before_atomic();
+		smp_mb__before_atomic_inc();
 		atomic_inc(&(vec)->count);
 		do_mb = 1;
 	}
@@ -180,14 +183,14 @@ void cpupri_set(struct cpupri *cp, int cpu, int newpri)
 		 * the new priority vec.
 		 */
 		if (do_mb)
-			smp_mb__after_atomic();
+			smp_mb__after_atomic_inc();
 
 		/*
 		 * When removing from the vector, we decrement the counter first
 		 * do a memory barrier and then clear the mask.
 		 */
 		atomic_dec(&(vec)->count);
-		smp_mb__after_atomic();
+		smp_mb__after_atomic_inc();
 		cpumask_clear_cpu(cpu, vec->mask);
 	}
 
@@ -197,12 +200,15 @@ void cpupri_set(struct cpupri *cp, int cpu, int newpri)
 /**
  * cpupri_init - initialize the cpupri structure
  * @cp: The cpupri context
+ * @bootmem: true if allocations need to use bootmem
  *
- * Return: -ENOMEM on memory allocation failure.
+ * Returns: -ENOMEM if memory fails.
  */
 int cpupri_init(struct cpupri *cp)
 {
 	int i;
+
+	memset(cp, 0, sizeof(*cp));
 
 	for (i = 0; i < CPUPRI_NR_PRIORITIES; i++) {
 		struct cpupri_vec *vec = &cp->pri_to_cpu[i];
@@ -212,13 +218,8 @@ int cpupri_init(struct cpupri *cp)
 			goto cleanup;
 	}
 
-	cp->cpu_to_pri = kcalloc(nr_cpu_ids, sizeof(int), GFP_KERNEL);
-	if (!cp->cpu_to_pri)
-		goto cleanup;
-
 	for_each_possible_cpu(i)
 		cp->cpu_to_pri[i] = CPUPRI_INVALID;
-
 	return 0;
 
 cleanup:
@@ -235,7 +236,6 @@ void cpupri_cleanup(struct cpupri *cp)
 {
 	int i;
 
-	kfree(cp->cpu_to_pri);
 	for (i = 0; i < CPUPRI_NR_PRIORITIES; i++)
 		free_cpumask_var(cp->pri_to_cpu[i].mask);
 }

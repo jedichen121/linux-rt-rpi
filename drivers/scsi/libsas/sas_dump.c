@@ -24,6 +24,10 @@
 
 #include "sas_dump.h"
 
+static const char *sas_hae_str[] = {
+	[0] = "HAE_RESET",
+};
+
 static const char *sas_porte_str[] = {
 	[0] = "PORTE_BYTES_DMAED",
 	[1] = "PORTE_BROADCAST_RCVD",
@@ -37,7 +41,6 @@ static const char *sas_phye_str[] = {
 	[1] = "PHYE_OOB_DONE",
 	[2] = "PHYE_OOB_ERROR",
 	[3] = "PHYE_SPINUP_HOLD",
-	[4] = "PHYE_RESUME_TIMEOUT",
 };
 
 void sas_dprint_porte(int phyid, enum port_event pe)
@@ -47,6 +50,12 @@ void sas_dprint_porte(int phyid, enum port_event pe)
 void sas_dprint_phye(int phyid, enum phy_event pe)
 {
 	SAS_DPRINTK("phy%d: phy event: %s\n", phyid, sas_phye_str[pe]);
+}
+
+void sas_dprint_hae(struct sas_ha_struct *sas_ha, enum ha_event he)
+{
+	SAS_DPRINTK("ha %s: %s event\n", dev_name(sas_ha->dev),
+		    sas_hae_str[he]);
 }
 
 void sas_dump_port(struct asd_sas_port *port)

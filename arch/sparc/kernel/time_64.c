@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /* time.c: UltraSparc timer and TOD clock support.
  *
  * Copyright (C) 1997, 2008 David S. Miller (davem@davemloft.net)
@@ -28,10 +27,13 @@
 #include <linux/jiffies.h>
 #include <linux/cpufreq.h>
 #include <linux/percpu.h>
+#include <linux/miscdevice.h>
+#include <linux/rtc.h>
 #include <linux/rtc/m48t59.h>
 #include <linux/kernel_stat.h>
 #include <linux/clockchips.h>
 #include <linux/clocksource.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/ftrace.h>
 
@@ -44,16 +46,15 @@
 #include <asm/smp.h>
 #include <asm/sections.h>
 #include <asm/cpudata.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <asm/irq_regs.h>
-#include <asm/cacheflush.h>
 
 #include "entry.h"
-#include "kernel.h"
 
 DEFINE_SPINLOCK(rtc_lock);
 
-unsigned int __read_mostly vdso_fix_stick;
+#define TICK_PRIV_BIT	(1UL << 63)
+#define TICKCMP_IRQ_BIT	(1UL << 63)
 
 #ifdef CONFIG_SMP
 unsigned long profile_pc(struct pt_regs *regs)
@@ -164,44 +165,13 @@ static unsigned long tick_add_tick(unsigned long adj)
 	return new_tick;
 }
 
-/* Searches for cpu clock frequency with given cpuid in OpenBoot tree */
-static unsigned long cpuid_to_freq(phandle node, int cpuid)
-{
-	bool is_cpu_node = false;
-	unsigned long freq = 0;
-	char type[128];
-
-	if (!node)
-		return freq;
-
-	if (prom_getproperty(node, "device_type", type, sizeof(type)) != -1)
-		is_cpu_node = (strcmp(type, "cpu") == 0);
-
-	/* try upa-portid then cpuid to get cpuid, see prom_64.c */
-	if (is_cpu_node && (prom_getint(node, "upa-portid") == cpuid ||
-			    prom_getint(node, "cpuid") == cpuid))
-		freq = prom_getintdefault(node, "clock-frequency", 0);
-	if (!freq)
-		freq = cpuid_to_freq(prom_getchild(node), cpuid);
-	if (!freq)
-		freq = cpuid_to_freq(prom_getsibling(node), cpuid);
-
-	return freq;
-}
-
-static unsigned long tick_get_frequency(void)
-{
-	return cpuid_to_freq(prom_root_node, hard_smp_processor_id());
-}
-
-static struct sparc64_tick_ops tick_operations __cacheline_aligned = {
+static struct sparc64_tick_ops tick_operations __read_mostly = {
 	.name		=	"tick",
 	.init_tick	=	tick_init_tick,
 	.disable_irq	=	tick_disable_irq,
 	.get_tick	=	tick_get_tick,
 	.add_tick	=	tick_add_tick,
 	.add_compare	=	tick_add_compare,
-	.get_frequency	=	tick_get_frequency,
 	.softint_mask	=	1UL << 0,
 };
 
@@ -281,11 +251,6 @@ static int stick_add_compare(unsigned long adj)
 	return ((long)(new_tick - (orig_tick+adj))) > 0L;
 }
 
-static unsigned long stick_get_frequency(void)
-{
-	return prom_getintdefault(prom_root_node, "stick-frequency", 0);
-}
-
 static struct sparc64_tick_ops stick_operations __read_mostly = {
 	.name		=	"stick",
 	.init_tick	=	stick_init_tick,
@@ -293,7 +258,6 @@ static struct sparc64_tick_ops stick_operations __read_mostly = {
 	.get_tick	=	stick_get_tick,
 	.add_tick	=	stick_add_tick,
 	.add_compare	=	stick_add_compare,
-	.get_frequency	=	stick_get_frequency,
 	.softint_mask	=	1UL << 16,
 };
 
@@ -314,6 +278,9 @@ static struct sparc64_tick_ops stick_operations __read_mostly = {
  * 2) write high
  * 3) write low
  */
+#define HBIRD_STICKCMP_ADDR	0x1fe0000f060UL
+#define HBIRD_STICK_ADDR	0x1fe0000f070UL
+
 static unsigned long __hbird_read_stick(void)
 {
 	unsigned long ret, tmp1, tmp2, tmp3;
@@ -415,11 +382,6 @@ static int hbtick_add_compare(unsigned long adj)
 	return ((long)(val2 - val)) > 0L;
 }
 
-static unsigned long hbtick_get_frequency(void)
-{
-	return prom_getintdefault(prom_root_node, "stick-frequency", 0);
-}
-
 static struct sparc64_tick_ops hbtick_operations __read_mostly = {
 	.name		=	"hbtick",
 	.init_tick	=	hbtick_init_tick,
@@ -427,9 +389,23 @@ static struct sparc64_tick_ops hbtick_operations __read_mostly = {
 	.get_tick	=	hbtick_get_tick,
 	.add_tick	=	hbtick_add_tick,
 	.add_compare	=	hbtick_add_compare,
-	.get_frequency	=	hbtick_get_frequency,
 	.softint_mask	=	1UL << 0,
 };
+
+static unsigned long timer_ticks_per_nsec_quotient __read_mostly;
+
+int update_persistent_clock(struct timespec now)
+{
+	struct rtc_device *rtc = rtc_class_open("rtc0");
+	int err = -1;
+
+	if (rtc) {
+		err = rtc_set_mmss(rtc, now.tv_sec);
+		rtc_class_close(rtc);
+	}
+
+	return err;
+}
 
 unsigned long cmos_regs;
 EXPORT_SYMBOL(cmos_regs);
@@ -443,7 +419,7 @@ static struct platform_device rtc_cmos_device = {
 	.num_resources	= 1,
 };
 
-static int rtc_probe(struct platform_device *op)
+static int __devinit rtc_probe(struct platform_device *op)
 {
 	struct resource *r;
 
@@ -490,6 +466,7 @@ static struct platform_driver rtc_driver = {
 	.probe		= rtc_probe,
 	.driver = {
 		.name = "rtc",
+		.owner = THIS_MODULE,
 		.of_match_table = rtc_match,
 	},
 };
@@ -500,7 +477,7 @@ static struct platform_device rtc_bq4802_device = {
 	.num_resources	= 1,
 };
 
-static int bq4802_probe(struct platform_device *op)
+static int __devinit bq4802_probe(struct platform_device *op)
 {
 
 	printk(KERN_INFO "%s: BQ4802 regs at 0x%llx\n",
@@ -522,6 +499,7 @@ static struct platform_driver bq4802_driver = {
 	.probe		= bq4802_probe,
 	.driver = {
 		.name = "bq4802",
+		.owner = THIS_MODULE,
 		.of_match_table = bq4802_match,
 	},
 };
@@ -556,7 +534,7 @@ static struct platform_device m48t59_rtc = {
 	},
 };
 
-static int mostek_probe(struct platform_device *op)
+static int __devinit mostek_probe(struct platform_device *op)
 {
 	struct device_node *dp = op->dev.of_node;
 
@@ -585,6 +563,7 @@ static struct platform_driver mostek_driver = {
 	.probe		= mostek_probe,
 	.driver = {
 		.name = "mostek",
+		.owner = THIS_MODULE,
 		.of_match_table = mostek_match,
 	},
 };
@@ -620,17 +599,34 @@ static int __init clock_init(void)
  */
 fs_initcall(clock_init);
 
-/* Return true if this is Hummingbird, aka Ultra-IIe */
-static bool is_hummingbird(void)
+/* This is gets the master TICK_INT timer going. */
+static unsigned long sparc64_init_timers(void)
 {
-	unsigned long ver, manuf, impl;
+	struct device_node *dp;
+	unsigned long freq;
 
-	__asm__ __volatile__ ("rdpr %%ver, %0"
-			      : "=&r" (ver));
-	manuf = ((ver >> 48) & 0xffff);
-	impl = ((ver >> 32) & 0xffff);
+	dp = of_find_node_by_path("/");
+	if (tlb_type == spitfire) {
+		unsigned long ver, manuf, impl;
 
-	return (manuf == 0x17 && impl == 0x13);
+		__asm__ __volatile__ ("rdpr %%ver, %0"
+				      : "=&r" (ver));
+		manuf = ((ver >> 48) & 0xffff);
+		impl = ((ver >> 32) & 0xffff);
+		if (manuf == 0x17 && impl == 0x13) {
+			/* Hummingbird, aka Ultra-IIe */
+			tick_ops = &hbtick_operations;
+			freq = of_getintprop_default(dp, "stick-frequency", 0);
+		} else {
+			tick_ops = &tick_operations;
+			freq = local_cpu_data().clock_tick;
+		}
+	} else {
+		tick_ops = &stick_operations;
+		freq = of_getintprop_default(dp, "stick-frequency", 0);
+	}
+
+	return freq;
 }
 
 struct freq_table {
@@ -663,7 +659,8 @@ static int sparc64_cpufreq_notifier(struct notifier_block *nb, unsigned long val
 		ft->clock_tick_ref = cpu_data(cpu).clock_tick;
 	}
 	if ((val == CPUFREQ_PRECHANGE  && freq->old < freq->new) ||
-	    (val == CPUFREQ_POSTCHANGE && freq->old > freq->new)) {
+	    (val == CPUFREQ_POSTCHANGE && freq->old > freq->new) ||
+	    (val == CPUFREQ_RESUMECHANGE)) {
 		cpu_data(cpu).clock_tick =
 			cpufreq_scale(ft->clock_tick_ref,
 				      ft->ref_freq,
@@ -692,29 +689,42 @@ core_initcall(register_sparc64_cpufreq_notifier);
 static int sparc64_next_event(unsigned long delta,
 			      struct clock_event_device *evt)
 {
-	return tick_operations.add_compare(delta) ? -ETIME : 0;
+	return tick_ops->add_compare(delta) ? -ETIME : 0;
 }
 
-static int sparc64_timer_shutdown(struct clock_event_device *evt)
+static void sparc64_timer_setup(enum clock_event_mode mode,
+				struct clock_event_device *evt)
 {
-	tick_operations.disable_irq();
-	return 0;
+	switch (mode) {
+	case CLOCK_EVT_MODE_ONESHOT:
+	case CLOCK_EVT_MODE_RESUME:
+		break;
+
+	case CLOCK_EVT_MODE_SHUTDOWN:
+		tick_ops->disable_irq();
+		break;
+
+	case CLOCK_EVT_MODE_PERIODIC:
+	case CLOCK_EVT_MODE_UNUSED:
+		WARN_ON(1);
+		break;
+	}
 }
 
 static struct clock_event_device sparc64_clockevent = {
-	.features		= CLOCK_EVT_FEAT_ONESHOT,
-	.set_state_shutdown	= sparc64_timer_shutdown,
-	.set_next_event		= sparc64_next_event,
-	.rating			= 100,
-	.shift			= 30,
-	.irq			= -1,
+	.features	= CLOCK_EVT_FEAT_ONESHOT,
+	.set_mode	= sparc64_timer_setup,
+	.set_next_event	= sparc64_next_event,
+	.rating		= 100,
+	.shift		= 30,
+	.irq		= -1,
 };
 static DEFINE_PER_CPU(struct clock_event_device, sparc64_events);
 
 void __irq_entry timer_interrupt(int irq, struct pt_regs *regs)
 {
 	struct pt_regs *old_regs = set_irq_regs(regs);
-	unsigned long tick_mask = tick_operations.softint_mask;
+	unsigned long tick_mask = tick_ops->softint_mask;
 	int cpu = smp_processor_id();
 	struct clock_event_device *evt = &per_cpu(sparc64_events, cpu);
 
@@ -723,7 +733,7 @@ void __irq_entry timer_interrupt(int irq, struct pt_regs *regs)
 	irq_enter();
 
 	local_cpu_data().irq0_irqs++;
-	kstat_incr_irq_this_cpu(0);
+	kstat_incr_irqs_this_cpu(0, irq_to_desc(0));
 
 	if (unlikely(!evt->event_handler)) {
 		printk(KERN_WARNING
@@ -736,7 +746,7 @@ void __irq_entry timer_interrupt(int irq, struct pt_regs *regs)
 	set_irq_regs(old_regs);
 }
 
-void setup_sparc64_timer(void)
+void __devinit setup_sparc64_timer(void)
 {
 	struct clock_event_device *sevt;
 	unsigned long pstate;
@@ -749,14 +759,14 @@ void setup_sparc64_timer(void)
 			     : "=r" (pstate)
 			     : "i" (PSTATE_IE));
 
-	tick_operations.init_tick();
+	tick_ops->init_tick();
 
 	/* Restore PSTATE_IE. */
 	__asm__ __volatile__("wrpr	%0, 0x0, %%pstate"
 			     : /* no outputs */
 			     : "r" (pstate));
 
-	sevt = this_cpu_ptr(&sparc64_events);
+	sevt = &__get_cpu_var(sparc64_events);
 
 	memcpy(sevt, &sparc64_clockevent, sizeof(*sevt));
 	sevt->cpumask = cpumask_of(smp_processor_id());
@@ -776,10 +786,12 @@ static unsigned long tb_ticks_per_usec __read_mostly;
 
 void __delay(unsigned long loops)
 {
-	unsigned long bclock = get_tick();
+	unsigned long bclock, now;
 
-	while ((get_tick() - bclock) < loops)
-		;
+	bclock = tick_ops->get_tick();
+	do {
+		now = tick_ops->get_tick();
+	} while ((now-bclock) < loops);
 }
 EXPORT_SYMBOL(__delay);
 
@@ -789,86 +801,34 @@ void udelay(unsigned long usecs)
 }
 EXPORT_SYMBOL(udelay);
 
-static u64 clocksource_tick_read(struct clocksource *cs)
+static cycle_t clocksource_tick_read(struct clocksource *cs)
 {
-	return get_tick();
-}
-
-static void __init get_tick_patch(void)
-{
-	unsigned int *addr, *instr, i;
-	struct get_tick_patch *p;
-
-	if (tlb_type == spitfire && is_hummingbird())
-		return;
-
-	for (p = &__get_tick_patch; p < &__get_tick_patch_end; p++) {
-		instr = (tlb_type == spitfire) ? p->tick : p->stick;
-		addr = (unsigned int *)(unsigned long)p->addr;
-		for (i = 0; i < GET_TICK_NINSTR; i++) {
-			addr[i] = instr[i];
-			/* ensure that address is modified before flush */
-			wmb();
-			flushi(&addr[i]);
-		}
-	}
-}
-
-static void __init init_tick_ops(struct sparc64_tick_ops *ops)
-{
-	unsigned long freq, quotient, tick;
-
-	freq = ops->get_frequency();
-	quotient = clocksource_hz2mult(freq, SPARC64_NSEC_PER_CYC_SHIFT);
-	tick = ops->get_tick();
-
-	ops->offset = (tick * quotient) >> SPARC64_NSEC_PER_CYC_SHIFT;
-	ops->ticks_per_nsec_quotient = quotient;
-	ops->frequency = freq;
-	tick_operations = *ops;
-	get_tick_patch();
-}
-
-void __init time_init_early(void)
-{
-	if (tlb_type == spitfire) {
-		if (is_hummingbird()) {
-			init_tick_ops(&hbtick_operations);
-			clocksource_tick.archdata.vclock_mode = VCLOCK_NONE;
-		} else {
-			init_tick_ops(&tick_operations);
-			clocksource_tick.archdata.vclock_mode = VCLOCK_TICK;
-			vdso_fix_stick = 1;
-		}
-	} else {
-		init_tick_ops(&stick_operations);
-		clocksource_tick.archdata.vclock_mode = VCLOCK_STICK;
-	}
+	return tick_ops->get_tick();
 }
 
 void __init time_init(void)
 {
-	unsigned long freq;
+	unsigned long freq = sparc64_init_timers();
 
-	freq = tick_operations.frequency;
 	tb_ticks_per_usec = freq / USEC_PER_SEC;
 
-	clocksource_tick.name = tick_operations.name;
+	timer_ticks_per_nsec_quotient =
+		clocksource_hz2mult(freq, SPARC64_NSEC_PER_CYC_SHIFT);
+
+	clocksource_tick.name = tick_ops->name;
 	clocksource_tick.read = clocksource_tick_read;
 
 	clocksource_register_hz(&clocksource_tick, freq);
 	printk("clocksource: mult[%x] shift[%d]\n",
 	       clocksource_tick.mult, clocksource_tick.shift);
 
-	sparc64_clockevent.name = tick_operations.name;
+	sparc64_clockevent.name = tick_ops->name;
 	clockevents_calc_mult_shift(&sparc64_clockevent, freq, 4);
 
 	sparc64_clockevent.max_delta_ns =
 		clockevent_delta2ns(0x7fffffffffffffffUL, &sparc64_clockevent);
-	sparc64_clockevent.max_delta_ticks = 0x7fffffffffffffffUL;
 	sparc64_clockevent.min_delta_ns =
 		clockevent_delta2ns(0xF, &sparc64_clockevent);
-	sparc64_clockevent.min_delta_ticks = 0xF;
 
 	printk("clockevent: mult[%x] shift[%d]\n",
 	       sparc64_clockevent.mult, sparc64_clockevent.shift);
@@ -878,21 +838,14 @@ void __init time_init(void)
 
 unsigned long long sched_clock(void)
 {
-	unsigned long quotient = tick_operations.ticks_per_nsec_quotient;
-	unsigned long offset = tick_operations.offset;
+	unsigned long ticks = tick_ops->get_tick();
 
-	/* Use barrier so the compiler emits the loads first and overlaps load
-	 * latency with reading tick, because reading %tick/%stick is a
-	 * post-sync instruction that will flush and restart subsequent
-	 * instructions after it commits.
-	 */
-	barrier();
-
-	return ((get_tick() * quotient) >> SPARC64_NSEC_PER_CYC_SHIFT) - offset;
+	return (ticks * timer_ticks_per_nsec_quotient)
+		>> SPARC64_NSEC_PER_CYC_SHIFT;
 }
 
-int read_current_timer(unsigned long *timer_val)
+int __devinit read_current_timer(unsigned long *timer_val)
 {
-	*timer_val = get_tick();
+	*timer_val = tick_ops->get_tick();
 	return 0;
 }

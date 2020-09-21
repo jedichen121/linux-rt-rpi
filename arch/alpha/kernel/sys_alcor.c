@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *	linux/arch/alpha/kernel/sys_alcor.c
  *
@@ -19,6 +18,7 @@
 #include <linux/bitops.h>
 
 #include <asm/ptrace.h>
+#include <asm/system.h>
 #include <asm/io.h>
 #include <asm/dma.h>
 #include <asm/mmu_context.h>
@@ -182,10 +182,10 @@ alcor_init_irq(void)
  * comes in on.  This makes interrupt processing much easier.
  */
 
-static int
+static int __init
 alcor_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
-	static char irq_tab[7][5] = {
+	static char irq_tab[7][5] __initdata = {
 		/*INT    INTA   INTB   INTC   INTD */
 		/* note: IDSEL 17 is XLT only */
 		{16+13, 16+13, 16+13, 16+13, 16+13},	/* IdSel 17,  TULIP  */

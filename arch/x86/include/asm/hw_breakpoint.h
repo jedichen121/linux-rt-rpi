@@ -1,9 +1,7 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef	_I386_HW_BREAKPOINT_H
 #define	_I386_HW_BREAKPOINT_H
 
-#include <uapi/asm/hw_breakpoint.h>
-
+#ifdef	__KERNEL__
 #define	__ARCH_HW_BREAKPOINT_H
 
 /*
@@ -13,7 +11,6 @@
  */
 struct arch_hw_breakpoint {
 	unsigned long	address;
-	unsigned long	mask;
 	u8		len;
 	u8		type;
 };
@@ -49,14 +46,11 @@ static inline int hw_breakpoint_slots(int type)
 	return HBP_NUM;
 }
 
-struct perf_event_attr;
 struct perf_event;
 struct pmu;
 
-extern int arch_check_bp_in_kernelspace(struct arch_hw_breakpoint *hw);
-extern int hw_breakpoint_arch_parse(struct perf_event *bp,
-				    const struct perf_event_attr *attr,
-				    struct arch_hw_breakpoint *hw);
+extern int arch_check_bp_in_kernelspace(struct perf_event *bp);
+extern int arch_validate_hwbkpt_settings(struct perf_event *bp);
 extern int hw_breakpoint_exceptions_notify(struct notifier_block *unused,
 					   unsigned long val, void *data);
 
@@ -77,4 +71,6 @@ extern int arch_bp_generic_fields(int x86_len, int x86_type,
 
 extern struct pmu perf_ops_bp;
 
+#endif	/* __KERNEL__ */
 #endif	/* _I386_HW_BREAKPOINT_H */
+

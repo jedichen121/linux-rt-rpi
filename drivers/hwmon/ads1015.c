@@ -31,10 +31,9 @@
 #include <linux/hwmon-sysfs.h>
 #include <linux/err.h>
 #include <linux/mutex.h>
-#include <linux/of_device.h>
 #include <linux/of.h>
 
-#include <linux/platform_data/ads1015.h>
+#include <linux/i2c/ads1015.h>
 
 /* ADS1015 registers */
 enum {
@@ -47,39 +46,29 @@ static const unsigned int fullscale_table[8] = {
 	6144, 4096, 2048, 1024, 512, 256, 256, 256 };
 
 /* Data rates in samples per second */
-static const unsigned int data_rate_table_1015[8] = {
-	128, 250, 490, 920, 1600, 2400, 3300, 3300
-};
-
-static const unsigned int data_rate_table_1115[8] = {
-	8, 16, 32, 64, 128, 250, 475, 860
-};
+static const unsigned int data_rate_table[8] = {
+	128, 250, 490, 920, 1600, 2400, 3300, 3300 };
 
 #define ADS1015_DEFAULT_CHANNELS 0xff
 #define ADS1015_DEFAULT_PGA 2
 #define ADS1015_DEFAULT_DATA_RATE 4
 
-enum ads1015_chips {
-	ads1015,
-	ads1115,
-};
-
 struct ads1015_data {
 	struct device *hwmon_dev;
 	struct mutex update_lock; /* mutex protect updates */
 	struct ads1015_channel_data channel_data[ADS1015_CHANNELS];
-	enum ads1015_chips id;
 };
 
-static int ads1015_read_adc(struct i2c_client *client, unsigned int channel)
+static int ads1015_read_value(struct i2c_client *client, unsigned int channel,
+			      int *value)
 {
 	u16 config;
+	s16 conversion;
 	struct ads1015_data *data = i2c_get_clientdata(client);
 	unsigned int pga = data->channel_data[channel].pga;
+	int fullscale;
 	unsigned int data_rate = data->channel_data[channel].data_rate;
 	unsigned int conversion_time_ms;
-	const unsigned int * const rate_table = data->id == ads1115 ?
-		data_rate_table_1115 : data_rate_table_1015;
 	int res;
 
 	mutex_lock(&data->update_lock);
@@ -89,7 +78,8 @@ static int ads1015_read_adc(struct i2c_client *client, unsigned int channel)
 	if (res < 0)
 		goto err_unlock;
 	config = res;
-	conversion_time_ms = DIV_ROUND_UP(1000, rate_table[data_rate]);
+	fullscale = fullscale_table[pga];
+	conversion_time_ms = DIV_ROUND_UP(1000, data_rate_table[data_rate]);
 
 	/* setup and start single conversion */
 	config &= 0x001f;
@@ -115,21 +105,19 @@ static int ads1015_read_adc(struct i2c_client *client, unsigned int channel)
 	}
 
 	res = i2c_smbus_read_word_swapped(client, ADS1015_CONVERSION);
+	if (res < 0)
+		goto err_unlock;
+	conversion = res;
+
+	mutex_unlock(&data->update_lock);
+
+	*value = DIV_ROUND_CLOSEST(conversion * fullscale, 0x7ff0);
+
+	return 0;
 
 err_unlock:
 	mutex_unlock(&data->update_lock);
 	return res;
-}
-
-static int ads1015_reg_to_mv(struct i2c_client *client, unsigned int channel,
-			     s16 reg)
-{
-	struct ads1015_data *data = i2c_get_clientdata(client);
-	unsigned int pga = data->channel_data[channel].pga;
-	int fullscale = fullscale_table[pga];
-	const int mask = data->id == ads1115 ? 0x7fff : 0x7ff0;
-
-	return DIV_ROUND_CLOSEST(reg * fullscale, mask);
 }
 
 /* sysfs callback function */
@@ -138,14 +126,12 @@ static ssize_t show_in(struct device *dev, struct device_attribute *da,
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
 	struct i2c_client *client = to_i2c_client(dev);
+	int in;
 	int res;
-	int index = attr->index;
 
-	res = ads1015_read_adc(client, index);
-	if (res < 0)
-		return res;
+	res = ads1015_read_value(client, attr->index, &in);
 
-	return sprintf(buf, "%d\n", ads1015_reg_to_mv(client, index, res));
+	return (res < 0) ? res : sprintf(buf, "%d\n", in);
 }
 
 static const struct sensor_device_attribute ads1015_in[] = {
@@ -171,6 +157,7 @@ static int ads1015_remove(struct i2c_client *client)
 	hwmon_device_unregister(data->hwmon_dev);
 	for (k = 0; k < ADS1015_CHANNELS; ++k)
 		device_remove_file(&client->dev, &ads1015_in[k].dev_attr);
+	kfree(data);
 	return 0;
 }
 
@@ -185,39 +172,44 @@ static int ads1015_get_channels_config_of(struct i2c_client *client)
 		return -EINVAL;
 
 	for_each_child_of_node(client->dev.of_node, node) {
-		u32 pval;
+		const __be32 *property;
+		int len;
 		unsigned int channel;
 		unsigned int pga = ADS1015_DEFAULT_PGA;
 		unsigned int data_rate = ADS1015_DEFAULT_DATA_RATE;
 
-		if (of_property_read_u32(node, "reg", &pval)) {
-			dev_err(&client->dev, "invalid reg on %pOF\n", node);
+		property = of_get_property(node, "reg", &len);
+		if (!property || len != sizeof(int)) {
+			dev_err(&client->dev, "invalid reg on %s\n",
+				node->full_name);
 			continue;
 		}
 
-		channel = pval;
-		if (channel >= ADS1015_CHANNELS) {
+		channel = be32_to_cpup(property);
+		if (channel > ADS1015_CHANNELS) {
 			dev_err(&client->dev,
-				"invalid channel index %d on %pOF\n",
-				channel, node);
+				"invalid channel index %d on %s\n",
+				channel, node->full_name);
 			continue;
 		}
 
-		if (!of_property_read_u32(node, "ti,gain", &pval)) {
-			pga = pval;
+		property = of_get_property(node, "ti,gain", &len);
+		if (property && len == sizeof(int)) {
+			pga = be32_to_cpup(property);
 			if (pga > 6) {
-				dev_err(&client->dev, "invalid gain on %pOF\n",
-					node);
-				return -EINVAL;
+				dev_err(&client->dev,
+					"invalid gain on %s\n",
+					node->full_name);
 			}
 		}
 
-		if (!of_property_read_u32(node, "ti,datarate", &pval)) {
-			data_rate = pval;
+		property = of_get_property(node, "ti,datarate", &len);
+		if (property && len == sizeof(int)) {
+			data_rate = be32_to_cpup(property);
 			if (data_rate > 7) {
 				dev_err(&client->dev,
-					"invalid data_rate on %pOF\n", node);
-				return -EINVAL;
+					"invalid data_rate on %s\n",
+					node->full_name);
 			}
 		}
 
@@ -263,16 +255,12 @@ static int ads1015_probe(struct i2c_client *client,
 	int err;
 	unsigned int k;
 
-	data = devm_kzalloc(&client->dev, sizeof(struct ads1015_data),
-			    GFP_KERNEL);
-	if (!data)
-		return -ENOMEM;
+	data = kzalloc(sizeof(struct ads1015_data), GFP_KERNEL);
+	if (!data) {
+		err = -ENOMEM;
+		goto exit;
+	}
 
-	if (client->dev.of_node)
-		data->id = (enum ads1015_chips)
-			of_device_get_match_data(&client->dev);
-	else
-		data->id = id->driver_data;
 	i2c_set_clientdata(client, data);
 	mutex_init(&data->update_lock);
 
@@ -283,7 +271,7 @@ static int ads1015_probe(struct i2c_client *client,
 			continue;
 		err = device_create_file(&client->dev, &ads1015_in[k].dev_attr);
 		if (err)
-			goto exit_remove;
+			goto exit_free;
 	}
 
 	data->hwmon_dev = hwmon_device_register(&client->dev);
@@ -297,41 +285,40 @@ static int ads1015_probe(struct i2c_client *client,
 exit_remove:
 	for (k = 0; k < ADS1015_CHANNELS; ++k)
 		device_remove_file(&client->dev, &ads1015_in[k].dev_attr);
+exit_free:
+	kfree(data);
+exit:
 	return err;
 }
 
 static const struct i2c_device_id ads1015_id[] = {
-	{ "ads1015",  ads1015},
-	{ "ads1115",  ads1115},
+	{ "ads1015", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ads1015_id);
 
-static const struct of_device_id ads1015_of_match[] = {
-	{
-		.compatible = "ti,ads1015",
-		.data = (void *)ads1015
-	},
-	{
-		.compatible = "ti,ads1115",
-		.data = (void *)ads1115
-	},
-	{ },
-};
-MODULE_DEVICE_TABLE(of, ads1015_of_match);
-
 static struct i2c_driver ads1015_driver = {
 	.driver = {
 		.name = "ads1015",
-		.of_match_table = of_match_ptr(ads1015_of_match),
 	},
 	.probe = ads1015_probe,
 	.remove = ads1015_remove,
 	.id_table = ads1015_id,
 };
 
-module_i2c_driver(ads1015_driver);
+static int __init sensors_ads1015_init(void)
+{
+	return i2c_add_driver(&ads1015_driver);
+}
+
+static void __exit sensors_ads1015_exit(void)
+{
+	i2c_del_driver(&ads1015_driver);
+}
 
 MODULE_AUTHOR("Dirk Eibach <eibach@gdsys.de>");
 MODULE_DESCRIPTION("ADS1015 driver");
 MODULE_LICENSE("GPL");
+
+module_init(sensors_ads1015_init);
+module_exit(sensors_ads1015_exit);

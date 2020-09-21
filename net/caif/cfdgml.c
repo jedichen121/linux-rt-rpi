@@ -1,6 +1,6 @@
 /*
  * Copyright (C) ST-Ericsson AB 2010
- * Author:	Sjur Brendeland
+ * Author:	Sjur Brendeland/sjur.brandeland@stericsson.com
  * License terms: GNU General Public License (GPL) version 2
  */
 
@@ -86,17 +86,12 @@ static int cfdgml_transmit(struct cflayer *layr, struct cfpkt *pkt)
 	struct caif_payload_info *info;
 	struct cfsrvl *service = container_obj(layr);
 	int ret;
-
-	if (!cfsrvl_ready(service, &ret)) {
-		cfpkt_destroy(pkt);
+	if (!cfsrvl_ready(service, &ret))
 		return ret;
-	}
 
 	/* STE Modem cannot handle more than 1500 bytes datagrams */
-	if (cfpkt_getlen(pkt) > DGM_MTU) {
-		cfpkt_destroy(pkt);
+	if (cfpkt_getlen(pkt) > DGM_MTU)
 		return -EMSGSIZE;
-	}
 
 	cfpkt_add_head(pkt, &zero, 3);
 	packet_type = 0x08; /* B9 set - UNCLASSIFIED */

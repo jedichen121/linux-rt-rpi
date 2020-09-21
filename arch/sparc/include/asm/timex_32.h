@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * linux/include/asm/timex.h
  *
@@ -13,4 +12,5 @@
 typedef unsigned long cycles_t;
 #define get_cycles()	(0)
 
+extern u32 (*do_arch_gettimeoffset)(void);
 #endif

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * security/tomoyo/common.c
  *
@@ -851,9 +850,14 @@ static int tomoyo_update_manager_entry(const char *manager,
 		policy_list[TOMOYO_ID_MANAGER],
 	};
 	int error = is_delete ? -ENOENT : -ENOMEM;
-	if (!tomoyo_correct_domain(manager) &&
-	    !tomoyo_correct_word(manager))
-		return -EINVAL;
+	if (tomoyo_domain_def(manager)) {
+		if (!tomoyo_correct_domain(manager))
+			return -EINVAL;
+		e.is_domain = true;
+	} else {
+		if (!tomoyo_correct_path(manager))
+			return -EINVAL;
+	}
 	e.manager = tomoyo_get_name(manager);
 	if (e.manager) {
 		error = tomoyo_update_policy(&e.head, sizeof(e), &param,
@@ -926,18 +930,25 @@ static bool tomoyo_manager(void)
 
 	if (!tomoyo_policy_loaded)
 		return true;
-	if (!tomoyo_manage_by_non_root &&
-	    (!uid_eq(task->cred->uid,  GLOBAL_ROOT_UID) ||
-	     !uid_eq(task->cred->euid, GLOBAL_ROOT_UID)))
+	if (!tomoyo_manage_by_non_root && (task->cred->uid || task->cred->euid))
 		return false;
+	list_for_each_entry_rcu(ptr, &tomoyo_kernel_namespace.
+				policy_list[TOMOYO_ID_MANAGER], head.list) {
+		if (!ptr->head.is_deleted && ptr->is_domain
+		    && !tomoyo_pathcmp(domainname, ptr->manager)) {
+			found = true;
+			break;
+		}
+	}
+	if (found)
+		return true;
 	exe = tomoyo_get_exe();
 	if (!exe)
 		return false;
 	list_for_each_entry_rcu(ptr, &tomoyo_kernel_namespace.
 				policy_list[TOMOYO_ID_MANAGER], head.list) {
-		if (!ptr->head.is_deleted &&
-		    (!tomoyo_pathcmp(domainname, ptr->manager) ||
-		     !strcmp(exe, ptr->manager->name))) {
+		if (!ptr->head.is_deleted && !ptr->is_domain
+		    && !strcmp(exe, ptr->manager->name)) {
 			found = true;
 			break;
 		}
@@ -1058,7 +1069,7 @@ static int tomoyo_write_task(struct tomoyo_acl_param *param)
  *
  * @domainname: The name of domain.
  *
- * Returns 0 on success, negative value otherwise.
+ * Returns 0.
  *
  * Caller holds tomoyo_read_lock().
  */
@@ -1070,7 +1081,7 @@ static int tomoyo_delete_domain(char *domainname)
 	name.name = domainname;
 	tomoyo_fill_path_info(&name);
 	if (mutex_lock_interruptible(&tomoyo_policy_lock))
-		return -EINTR;
+		return 0;
 	/* Is there an active domain? */
 	list_for_each_entry_rcu(domain, &tomoyo_domain_list, list) {
 		/* Never delete tomoyo_kernel_domain */
@@ -1153,16 +1164,15 @@ static int tomoyo_write_domain(struct tomoyo_io_buffer *head)
 	bool is_select = !is_delete && tomoyo_str_starts(&data, "select ");
 	unsigned int profile;
 	if (*data == '<') {
-		int ret = 0;
 		domain = NULL;
 		if (is_delete)
-			ret = tomoyo_delete_domain(data);
+			tomoyo_delete_domain(data);
 		else if (is_select)
 			domain = tomoyo_find_domain(data);
 		else
 			domain = tomoyo_assign_domain(data, false);
 		head->w.domain = domain;
-		return ret;
+		return 0;
 	}
 	if (!domain)
 		return -EINVAL;
@@ -2101,7 +2111,7 @@ static struct tomoyo_domain_info *tomoyo_find_domain_by_qid
 	struct tomoyo_domain_info *domain = NULL;
 	spin_lock(&tomoyo_query_list_lock);
 	list_for_each_entry(ptr, &tomoyo_query_list, list) {
-		if (ptr->serial != serial)
+		if (ptr->serial != serial || ptr->answer)
 			continue;
 		domain = ptr->domain;
 		break;
@@ -2116,17 +2126,32 @@ static struct tomoyo_domain_info *tomoyo_find_domain_by_qid
  * @file: Pointer to "struct file".
  * @wait: Pointer to "poll_table".
  *
- * Returns EPOLLIN | EPOLLRDNORM when ready to read, 0 otherwise.
+ * Returns POLLIN | POLLRDNORM when ready to read, 0 otherwise.
  *
  * Waits for access requests which violated policy in enforcing mode.
  */
-static __poll_t tomoyo_poll_query(struct file *file, poll_table *wait)
+static int tomoyo_poll_query(struct file *file, poll_table *wait)
 {
-	if (!list_empty(&tomoyo_query_list))
-		return EPOLLIN | EPOLLRDNORM;
-	poll_wait(file, &tomoyo_query_wait, wait);
-	if (!list_empty(&tomoyo_query_list))
-		return EPOLLIN | EPOLLRDNORM;
+	struct list_head *tmp;
+	bool found = false;
+	u8 i;
+	for (i = 0; i < 2; i++) {
+		spin_lock(&tomoyo_query_list_lock);
+		list_for_each(tmp, &tomoyo_query_list) {
+			struct tomoyo_query *ptr =
+				list_entry(tmp, typeof(*ptr), list);
+			if (ptr->answer)
+				continue;
+			found = true;
+			break;
+		}
+		spin_unlock(&tomoyo_query_list_lock);
+		if (found)
+			return POLLIN | POLLRDNORM;
+		if (i)
+			break;
+		poll_wait(file, &tomoyo_query_wait, wait);
+	}
 	return 0;
 }
 
@@ -2150,6 +2175,8 @@ static void tomoyo_read_query(struct tomoyo_io_buffer *head)
 	spin_lock(&tomoyo_query_list_lock);
 	list_for_each(tmp, &tomoyo_query_list) {
 		struct tomoyo_query *ptr = list_entry(tmp, typeof(*ptr), list);
+		if (ptr->answer)
+			continue;
 		if (pos++ != head->r.query_index)
 			continue;
 		len = ptr->query_len;
@@ -2167,6 +2194,8 @@ static void tomoyo_read_query(struct tomoyo_io_buffer *head)
 	spin_lock(&tomoyo_query_list_lock);
 	list_for_each(tmp, &tomoyo_query_list) {
 		struct tomoyo_query *ptr = list_entry(tmp, typeof(*ptr), list);
+		if (ptr->answer)
+			continue;
 		if (pos++ != head->r.query_index)
 			continue;
 		/*
@@ -2214,10 +2243,8 @@ static int tomoyo_write_answer(struct tomoyo_io_buffer *head)
 		struct tomoyo_query *ptr = list_entry(tmp, typeof(*ptr), list);
 		if (ptr->serial != serial)
 			continue;
-		ptr->answer = answer;
-		/* Remove from tomoyo_query_list. */
-		if (ptr->answer)
-			list_del_init(&ptr->list);
+		if (!ptr->answer)
+			ptr->answer = answer;
 		break;
 	}
 	spin_unlock(&tomoyo_query_list_lock);
@@ -2257,7 +2284,7 @@ static const char * const tomoyo_memory_headers[TOMOYO_MAX_MEMORY_STAT] = {
 /* Timestamp counter for last updated. */
 static unsigned int tomoyo_stat_updated[TOMOYO_MAX_POLICY_STAT];
 /* Counter for number of updates. */
-static time64_t tomoyo_stat_modified[TOMOYO_MAX_POLICY_STAT];
+static unsigned int tomoyo_stat_modified[TOMOYO_MAX_POLICY_STAT];
 
 /**
  * tomoyo_update_stat - Update statistic counters.
@@ -2268,11 +2295,13 @@ static time64_t tomoyo_stat_modified[TOMOYO_MAX_POLICY_STAT];
  */
 void tomoyo_update_stat(const u8 index)
 {
+	struct timeval tv;
+	do_gettimeofday(&tv);
 	/*
 	 * I don't use atomic operations because race condition is not fatal.
 	 */
 	tomoyo_stat_updated[index]++;
-	tomoyo_stat_modified[index] = ktime_get_real_seconds();
+	tomoyo_stat_modified[index] = tv.tv_sec;
 }
 
 /**
@@ -2448,17 +2477,18 @@ int tomoyo_open_control(const u8 type, struct file *file)
  * tomoyo_poll_control - poll() for /sys/kernel/security/tomoyo/ interface.
  *
  * @file: Pointer to "struct file".
- * @wait: Pointer to "poll_table". Maybe NULL.
+ * @wait: Pointer to "poll_table".
  *
- * Returns EPOLLIN | EPOLLRDNORM | EPOLLOUT | EPOLLWRNORM if ready to read/write,
- * EPOLLOUT | EPOLLWRNORM otherwise.
+ * Waits for read readiness.
+ * /sys/kernel/security/tomoyo/query is handled by /usr/sbin/tomoyo-queryd and
+ * /sys/kernel/security/tomoyo/audit is handled by /usr/sbin/tomoyo-auditd.
  */
-__poll_t tomoyo_poll_control(struct file *file, poll_table *wait)
+int tomoyo_poll_control(struct file *file, poll_table *wait)
 {
 	struct tomoyo_io_buffer *head = file->private_data;
-	if (head->poll)
-		return head->poll(file, wait) | EPOLLOUT | EPOLLWRNORM;
-	return EPOLLIN | EPOLLRDNORM | EPOLLOUT | EPOLLWRNORM;
+	if (!head->poll)
+		return -ENOSYS;
+	return head->poll(file, wait);
 }
 
 /**
@@ -2680,8 +2710,10 @@ out:
  * tomoyo_close_control - close() for /sys/kernel/security/tomoyo/ interface.
  *
  * @head: Pointer to "struct tomoyo_io_buffer".
+ *
+ * Returns 0.
  */
-void tomoyo_close_control(struct tomoyo_io_buffer *head)
+int tomoyo_close_control(struct tomoyo_io_buffer *head)
 {
 	/*
 	 * If the file is /sys/kernel/security/tomoyo/query , decrement the
@@ -2691,6 +2723,7 @@ void tomoyo_close_control(struct tomoyo_io_buffer *head)
 	    atomic_dec_and_test(&tomoyo_query_observers))
 		wake_up_all(&tomoyo_answer_wait);
 	tomoyo_notify_gc(head, false);
+	return 0;
 }
 
 /**

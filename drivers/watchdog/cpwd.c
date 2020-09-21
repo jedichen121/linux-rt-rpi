@@ -14,13 +14,12 @@
  * Copyright (C) 2008 David S. Miller <davem@davemloft.net>
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/errno.h>
 #include <linux/major.h>
+#include <linux/init.h>
 #include <linux/miscdevice.h>
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
@@ -36,6 +35,7 @@
 #include <asm/watchdog.h>
 
 #define DRIVER_NAME	"cpwd"
+#define PFX		DRIVER_NAME ": "
 
 #define WD_OBPNAME	"watchdog"
 #define WD_BADMODEL	"SUNW,501-5336"
@@ -230,9 +230,9 @@ static void cpwd_resetbrokentimer(struct cpwd *p, int index)
  * interrupts within the PLD so me must continually
  * reset the timers ad infinitum.
  */
-static void cpwd_brokentimer(struct timer_list *unused)
+static void cpwd_brokentimer(unsigned long data)
 {
-	struct cpwd *p = cpwd_device;
+	struct cpwd *p = (struct cpwd *) data;
 	int id, tripped = 0;
 
 	/* kill a running timer instance, in case we
@@ -275,7 +275,7 @@ static void cpwd_stoptimer(struct cpwd *p, int index)
 
 		if (p->broken) {
 			p->devs[index].runstatus |= WD_STAT_BSTOP;
-			cpwd_brokentimer(NULL);
+			cpwd_brokentimer((unsigned long) p);
 		}
 	}
 }
@@ -385,7 +385,8 @@ static int cpwd_open(struct inode *inode, struct file *f)
 	if (!p->initialized) {
 		if (request_irq(p->irq, &cpwd_interrupt,
 				IRQF_SHARED, DRIVER_NAME, p)) {
-			pr_err("Cannot register IRQ %d\n", p->irq);
+			printk(KERN_ERR PFX "Cannot register IRQ %d\n",
+				p->irq);
 			mutex_unlock(&cpwd_mutex);
 			return -EBUSY;
 		}
@@ -410,7 +411,7 @@ static long cpwd_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		.identity		= DRIVER_NAME,
 	};
 	void __user *argp = (void __user *)arg;
-	struct inode *inode = file_inode(file);
+	struct inode *inode = file->f_path.dentry->d_inode;
 	int index = iminor(inode) - WD0_MINOR;
 	struct cpwd *p = cpwd_device;
 	int setopt = 0;
@@ -498,7 +499,7 @@ static long cpwd_compat_ioctl(struct file *file, unsigned int cmd,
 static ssize_t cpwd_write(struct file *file, const char __user *buf,
 			  size_t count, loff_t *ppos)
 {
-	struct inode *inode = file_inode(file);
+	struct inode *inode = file->f_path.dentry->d_inode;
 	struct cpwd *p = cpwd_device;
 	int index = iminor(inode);
 
@@ -527,7 +528,7 @@ static const struct file_operations cpwd_fops = {
 	.llseek =		no_llseek,
 };
 
-static int cpwd_probe(struct platform_device *op)
+static int __devinit cpwd_probe(struct platform_device *op)
 {
 	struct device_node *options;
 	const char *str_prop;
@@ -538,9 +539,12 @@ static int cpwd_probe(struct platform_device *op)
 	if (cpwd_device)
 		return -EINVAL;
 
-	p = devm_kzalloc(&op->dev, sizeof(*p), GFP_KERNEL);
-	if (!p)
-		return -ENOMEM;
+	p = kzalloc(sizeof(*p), GFP_KERNEL);
+	err = -ENOMEM;
+	if (!p) {
+		printk(KERN_ERR PFX "Unable to allocate struct cpwd.\n");
+		goto out;
+	}
 
 	p->irq = op->archdata.irqs[0];
 
@@ -549,14 +553,14 @@ static int cpwd_probe(struct platform_device *op)
 	p->regs = of_ioremap(&op->resource[0], 0,
 			     4 * WD_TIMER_REGSZ, DRIVER_NAME);
 	if (!p->regs) {
-		pr_err("Unable to map registers\n");
-		return -ENOMEM;
+		printk(KERN_ERR PFX "Unable to map registers.\n");
+		goto out_free;
 	}
 
 	options = of_find_node_by_path("/options");
+	err = -ENODEV;
 	if (!options) {
-		err = -ENODEV;
-		pr_err("Unable to find /options node\n");
+		printk(KERN_ERR PFX "Unable to find /options node.\n");
 		goto out_iounmap;
 	}
 
@@ -601,23 +605,28 @@ static int cpwd_probe(struct platform_device *op)
 
 		err = misc_register(&p->devs[i].misc);
 		if (err) {
-			pr_err("Could not register misc device for dev %d\n",
-			       i);
+			printk(KERN_ERR "Could not register misc device for "
+			       "dev %d\n", i);
 			goto out_unregister;
 		}
 	}
 
 	if (p->broken) {
-		timer_setup(&cpwd_timer, cpwd_brokentimer, 0);
+		init_timer(&cpwd_timer);
+		cpwd_timer.function	= cpwd_brokentimer;
+		cpwd_timer.data		= (unsigned long) p;
 		cpwd_timer.expires	= WD_BTIMEOUT;
 
-		pr_info("PLD defect workaround enabled for model %s\n",
-			WD_BADMODEL);
+		printk(KERN_INFO PFX "PLD defect workaround enabled for "
+		       "model " WD_BADMODEL ".\n");
 	}
 
-	platform_set_drvdata(op, p);
+	dev_set_drvdata(&op->dev, p);
 	cpwd_device = p;
-	return 0;
+	err = 0;
+
+out:
+	return err;
 
 out_unregister:
 	for (i--; i >= 0; i--)
@@ -626,12 +635,14 @@ out_unregister:
 out_iounmap:
 	of_iounmap(&op->resource[0], p->regs, 4 * WD_TIMER_REGSZ);
 
-	return err;
+out_free:
+	kfree(p);
+	goto out;
 }
 
-static int cpwd_remove(struct platform_device *op)
+static int __devexit cpwd_remove(struct platform_device *op)
 {
-	struct cpwd *p = platform_get_drvdata(op);
+	struct cpwd *p = dev_get_drvdata(&op->dev);
 	int i;
 
 	for (i = 0; i < WD_NUMDEVS; i++) {
@@ -651,6 +662,7 @@ static int cpwd_remove(struct platform_device *op)
 		free_irq(p->irq, p);
 
 	of_iounmap(&op->resource[0], p->regs, 4 * WD_TIMER_REGSZ);
+	kfree(p);
 
 	cpwd_device = NULL;
 
@@ -668,10 +680,22 @@ MODULE_DEVICE_TABLE(of, cpwd_match);
 static struct platform_driver cpwd_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
+		.owner = THIS_MODULE,
 		.of_match_table = cpwd_match,
 	},
 	.probe		= cpwd_probe,
-	.remove		= cpwd_remove,
+	.remove		= __devexit_p(cpwd_remove),
 };
 
-module_platform_driver(cpwd_driver);
+static int __init cpwd_init(void)
+{
+	return platform_driver_register(&cpwd_driver);
+}
+
+static void __exit cpwd_exit(void)
+{
+	platform_driver_unregister(&cpwd_driver);
+}
+
+module_init(cpwd_init);
+module_exit(cpwd_exit);

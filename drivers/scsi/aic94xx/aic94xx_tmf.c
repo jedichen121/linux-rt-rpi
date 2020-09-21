@@ -35,13 +35,14 @@
 static int asd_enqueue_internal(struct asd_ascb *ascb,
 		void (*tasklet_complete)(struct asd_ascb *,
 					 struct done_list_struct *),
-				void (*timed_out)(struct timer_list *t))
+				void (*timed_out)(unsigned long))
 {
 	int res;
 
 	ascb->tasklet_complete = tasklet_complete;
 	ascb->uldd_timer = 1;
 
+	ascb->timer.data = (unsigned long) ascb;
 	ascb->timer.function = timed_out;
 	ascb->timer.expires = jiffies + AIC94XX_SCB_TIMEOUT;
 
@@ -86,9 +87,9 @@ static void asd_clear_nexus_tasklet_complete(struct asd_ascb *ascb,
 	asd_ascb_free(ascb);
 }
 
-static void asd_clear_nexus_timedout(struct timer_list *t)
+static void asd_clear_nexus_timedout(unsigned long data)
 {
-	struct asd_ascb *ascb = from_timer(ascb, t, timer);
+	struct asd_ascb *ascb = (void *)data;
 	struct tasklet_completion_status *tcs = ascb->uldd_task;
 
 	ASD_DPRINTK("%s: here\n", __func__);
@@ -180,10 +181,10 @@ static int asd_clear_nexus_I_T(struct domain_device *dev,
 int asd_I_T_nexus_reset(struct domain_device *dev)
 {
 	int res, tmp_res, i;
-	struct sas_phy *phy = sas_get_local_phy(dev);
+	struct sas_phy *phy = sas_find_local_phy(dev);
 	/* Standard mandates link reset for ATA  (type 0) and
 	 * hard reset for SSP (type 1) */
-	int reset_type = (dev->dev_type == SAS_SATA_DEV ||
+	int reset_type = (dev->dev_type == SATA_DEV ||
 			  (dev->tproto & SAS_PROTOCOL_STP)) ? 0 : 1;
 
 	asd_clear_nexus_I_T(dev, NEXUS_PHASE_PRE);
@@ -191,7 +192,7 @@ int asd_I_T_nexus_reset(struct domain_device *dev)
 	ASD_DPRINTK("sending %s reset to %s\n",
 		    reset_type ? "hard" : "soft", dev_name(&phy->dev));
 	res = sas_phy_reset(phy, reset_type);
-	if (res == TMF_RESP_FUNC_COMPLETE || res == -ENODEV) {
+	if (res == TMF_RESP_FUNC_COMPLETE) {
 		/* wait for the maximum settle time */
 		msleep(500);
 		/* clear all outstanding commands (keep nexus suspended) */
@@ -200,7 +201,7 @@ int asd_I_T_nexus_reset(struct domain_device *dev)
 	for (i = 0 ; i < 3; i++) {
 		tmp_res = asd_clear_nexus_I_T(dev, NEXUS_PHASE_RESUME);
 		if (tmp_res == TC_RESUME)
-			goto out;
+			return res;
 		msleep(500);
 	}
 
@@ -210,10 +211,7 @@ int asd_I_T_nexus_reset(struct domain_device *dev)
 	dev_printk(KERN_ERR, &phy->dev,
 		   "Failed to resume nexus after reset 0x%x\n", tmp_res);
 
-	res = TMF_RESP_FUNC_FAILED;
- out:
-	sas_put_local_phy(phy);
-	return res;
+	return TMF_RESP_FUNC_FAILED;
 }
 
 static int asd_clear_nexus_I_T_L(struct domain_device *dev, u8 *lun)
@@ -260,9 +258,9 @@ static int asd_clear_nexus_index(struct sas_task *task)
 
 /* ---------- TMFs ---------- */
 
-static void asd_tmf_timedout(struct timer_list *t)
+static void asd_tmf_timedout(unsigned long data)
 {
-	struct asd_ascb *ascb = from_timer(ascb, t, timer);
+	struct asd_ascb *ascb = (void *) data;
 	struct tasklet_completion_status *tcs = ascb->uldd_task;
 
 	ASD_DPRINTK("tmf timed out\n");

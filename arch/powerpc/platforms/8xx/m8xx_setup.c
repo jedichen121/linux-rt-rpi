@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  Copyright (C) 1995  Linus Torvalds
  *  Adapted from 'alpha' version by Gary Thomas
@@ -19,14 +18,17 @@
 #include <linux/fsl_devices.h>
 
 #include <asm/io.h>
+#include <asm/mpc8xx.h>
 #include <asm/8xx_immap.h>
 #include <asm/prom.h>
 #include <asm/fs_pd.h>
 #include <mm/mmu_decl.h>
 
-#include "pic.h"
+#include <sysdev/mpc8xx_pic.h>
 
 #include "mpc8xx.h"
+
+struct mpc8xx_pcmcia_ops m8xx_pcmcia_ops;
 
 extern int cpm_pic_init(void);
 extern int cpm_get_irq(void);
@@ -41,7 +43,6 @@ static irqreturn_t timebase_interrupt(int irq, void *dev)
 
 static struct irqaction tbint_irqaction = {
 	.handler = timebase_interrupt,
-	.flags = IRQF_NO_THREAD,
 	.name = "tbint",
 };
 
@@ -169,14 +170,15 @@ int mpc8xx_set_rtc_time(struct rtc_time *tm)
 {
 	sitk8xx_t __iomem *sys_tmr1;
 	sit8xx_t __iomem *sys_tmr2;
-	time64_t time;
+	int time;
 
 	sys_tmr1 = immr_map(im_sitk);
 	sys_tmr2 = immr_map(im_sit);
-	time = rtc_tm_to_time64(tm);
+	time = mktime(tm->tm_year+1900, tm->tm_mon+1, tm->tm_mday,
+	              tm->tm_hour, tm->tm_min, tm->tm_sec);
 
 	out_be32(&sys_tmr1->sitk_rtck, KAPWR_KEY);
-	out_be32(&sys_tmr2->sit_rtc, (u32)time);
+	out_be32(&sys_tmr2->sit_rtc, time);
 	out_be32(&sys_tmr1->sitk_rtck, ~KAPWR_KEY);
 
 	immr_unmap(sys_tmr2);
@@ -191,12 +193,14 @@ void mpc8xx_get_rtc_time(struct rtc_time *tm)
 
 	/* Get time from the RTC. */
 	data = in_be32(&sys_tmr->sit_rtc);
-	rtc_time64_to_tm(data, tm);
+	to_tm(data, tm);
+	tm->tm_year -= 1900;
+	tm->tm_mon -= 1;
 	immr_unmap(sys_tmr);
 	return;
 }
 
-void __noreturn mpc8xx_restart(char *cmd)
+void mpc8xx_restart(char *cmd)
 {
 	car8xx_t __iomem *clk_r = immr_map(im_clkrst);
 
@@ -212,9 +216,22 @@ void __noreturn mpc8xx_restart(char *cmd)
 	panic("Restart failed\n");
 }
 
-static void cpm_cascade(struct irq_desc *desc)
+static void cpm_cascade(unsigned int irq, struct irq_desc *desc)
 {
-	generic_handle_irq(cpm_get_irq());
+	struct irq_chip *chip;
+	int cascade_irq;
+
+	if ((cascade_irq = cpm_get_irq()) >= 0) {
+		struct irq_desc *cdesc = irq_to_desc(cascade_irq);
+
+		generic_handle_irq(cascade_irq);
+
+		chip = irq_desc_get_chip(cdesc);
+		chip->irq_eoi(&cdesc->irq_data);
+	}
+
+	chip = irq_desc_get_chip(desc);
+	chip->irq_eoi(&desc->irq_data);
 }
 
 /* Initialize the internal interrupt controllers.  The number of
@@ -233,6 +250,6 @@ void __init mpc8xx_pics_init(void)
 	}
 
 	irq = cpm_pic_init();
-	if (irq)
+	if (irq != NO_IRQ)
 		irq_set_chained_handler(irq, cpm_cascade);
 }

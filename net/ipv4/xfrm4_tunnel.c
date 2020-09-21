@@ -3,8 +3,6 @@
  * Copyright (C) 2003 David S. Miller (davem@redhat.com)
  */
 
-#define pr_fmt(fmt) "IPsec: " fmt
-
 #include <linux/skbuff.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -63,7 +61,7 @@ static int xfrm_tunnel_err(struct sk_buff *skb, u32 info)
 static struct xfrm_tunnel xfrm_tunnel_handler __read_mostly = {
 	.handler	=	xfrm_tunnel_rcv,
 	.err_handler	=	xfrm_tunnel_err,
-	.priority	=	3,
+	.priority	=	2,
 };
 
 #if IS_ENABLED(CONFIG_IPV6)
@@ -77,18 +75,18 @@ static struct xfrm_tunnel xfrm64_tunnel_handler __read_mostly = {
 static int __init ipip_init(void)
 {
 	if (xfrm_register_type(&ipip_type, AF_INET) < 0) {
-		pr_info("%s: can't add xfrm type\n", __func__);
+		printk(KERN_INFO "ipip init: can't add xfrm type\n");
 		return -EAGAIN;
 	}
 
 	if (xfrm4_tunnel_register(&xfrm_tunnel_handler, AF_INET)) {
-		pr_info("%s: can't add xfrm handler for AF_INET\n", __func__);
+		printk(KERN_INFO "ipip init: can't add xfrm handler for AF_INET\n");
 		xfrm_unregister_type(&ipip_type, AF_INET);
 		return -EAGAIN;
 	}
 #if IS_ENABLED(CONFIG_IPV6)
 	if (xfrm4_tunnel_register(&xfrm64_tunnel_handler, AF_INET6)) {
-		pr_info("%s: can't add xfrm handler for AF_INET6\n", __func__);
+		printk(KERN_INFO "ipip init: can't add xfrm handler for AF_INET6\n");
 		xfrm4_tunnel_deregister(&xfrm_tunnel_handler, AF_INET);
 		xfrm_unregister_type(&ipip_type, AF_INET);
 		return -EAGAIN;
@@ -101,14 +99,12 @@ static void __exit ipip_fini(void)
 {
 #if IS_ENABLED(CONFIG_IPV6)
 	if (xfrm4_tunnel_deregister(&xfrm64_tunnel_handler, AF_INET6))
-		pr_info("%s: can't remove xfrm handler for AF_INET6\n",
-			__func__);
+		printk(KERN_INFO "ipip close: can't remove xfrm handler for AF_INET6\n");
 #endif
 	if (xfrm4_tunnel_deregister(&xfrm_tunnel_handler, AF_INET))
-		pr_info("%s: can't remove xfrm handler for AF_INET\n",
-			__func__);
+		printk(KERN_INFO "ipip close: can't remove xfrm handler for AF_INET\n");
 	if (xfrm_unregister_type(&ipip_type, AF_INET) < 0)
-		pr_info("%s: can't remove xfrm type\n", __func__);
+		printk(KERN_INFO "ipip close: can't remove xfrm type\n");
 }
 
 module_init(ipip_init);

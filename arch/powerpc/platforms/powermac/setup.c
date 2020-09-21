@@ -52,10 +52,12 @@
 #include <linux/suspend.h>
 #include <linux/of_device.h>
 #include <linux/of_platform.h>
+#include <linux/memblock.h>
 
 #include <asm/reg.h>
 #include <asm/sections.h>
 #include <asm/prom.h>
+#include <asm/system.h>
 #include <asm/pgtable.h>
 #include <asm/io.h>
 #include <asm/pci-bridge.h>
@@ -95,6 +97,11 @@ int sccdbg;
 
 sys_ctrler_t sys_ctrler = SYS_CTRLER_UNKNOWN;
 EXPORT_SYMBOL(sys_ctrler);
+
+#ifdef CONFIG_PMAC_SMU
+unsigned long smu_cmdbuf_abs;
+EXPORT_SYMBOL(smu_cmdbuf_abs);
+#endif
 
 static void pmac_show_cpuinfo(struct seq_file *m)
 {
@@ -152,7 +159,7 @@ static void pmac_show_cpuinfo(struct seq_file *m)
 			of_get_property(np, "d-cache-size", NULL);
 		seq_printf(m, "L2 cache\t:");
 		has_l2cache = 1;
-		if (of_get_property(np, "cache-unified", NULL) && dc) {
+		if (of_get_property(np, "cache-unified", NULL) != 0 && dc) {
 			seq_printf(m, " %dK unified", *dc / 1024);
 		} else {
 			if (ic)
@@ -244,12 +251,12 @@ static void __init l2cr_init(void)
 	/* Checks "l2cr-value" property in the registry */
 	if (cpu_has_feature(CPU_FTR_L2CR)) {
 		struct device_node *np = of_find_node_by_name(NULL, "cpus");
-		if (!np)
+		if (np == 0)
 			np = of_find_node_by_type(NULL, "cpu");
-		if (np) {
+		if (np != 0) {
 			const unsigned int *l2cr =
 				of_get_property(np, "l2cr-value", NULL);
-			if (l2cr) {
+			if (l2cr != 0) {
 				ppc_override_l2cr = 1;
 				ppc_override_l2cr_value = *l2cr;
 				_set_L2CR(0);
@@ -319,6 +326,7 @@ static void __init pmac_setup_arch(void)
     defined(CONFIG_PPC64)
 	pmac_nvram_init();
 #endif
+
 #ifdef CONFIG_PPC32
 #ifdef CONFIG_BLK_DEV_INITRD
 	if (initrd_start)
@@ -329,7 +337,7 @@ static void __init pmac_setup_arch(void)
 #endif
 
 #ifdef CONFIG_ADB
-	if (strstr(boot_command_line, "adb_sync")) {
+	if (strstr(cmd_line, "adb_sync")) {
 		extern int __adb_probe_sync;
 		__adb_probe_sync = 1;
 	}
@@ -352,14 +360,13 @@ static int pmac_late_init(void)
 }
 machine_late_initcall(powermac, pmac_late_init);
 
-void note_bootable_part(dev_t dev, int part, int goodness);
 /*
- * This is __ref because we check for "initializing" before
+ * This is __init_refok because we check for "initializing" before
  * touching any of the __init sensitive things and "initializing"
  * will be false after __init time. This can't be __init because it
  * can be called whenever a disk is first accessed.
  */
-void __ref note_bootable_part(dev_t dev, int part, int goodness)
+void __init_refok note_bootable_part(dev_t dev, int part, int goodness)
 {
 	char *p;
 
@@ -377,7 +384,7 @@ void __ref note_bootable_part(dev_t dev, int part, int goodness)
 }
 
 #ifdef CONFIG_ADB_CUDA
-static void __noreturn cuda_restart(void)
+static void cuda_restart(void)
 {
 	struct adb_request req;
 
@@ -386,7 +393,7 @@ static void __noreturn cuda_restart(void)
 		cuda_poll();
 }
 
-static void __noreturn cuda_shutdown(void)
+static void cuda_shutdown(void)
 {
 	struct adb_request req;
 
@@ -410,7 +417,7 @@ static void __noreturn cuda_shutdown(void)
 #define smu_shutdown()
 #endif
 
-static void __noreturn pmac_restart(char *cmd)
+static void pmac_restart(char *cmd)
 {
 	switch (sys_ctrler) {
 	case SYS_CTRLER_CUDA:
@@ -424,10 +431,9 @@ static void __noreturn pmac_restart(char *cmd)
 		break;
 	default: ;
 	}
-	while (1) ;
 }
 
-static void __noreturn pmac_power_off(void)
+static void pmac_power_off(void)
 {
 	switch (sys_ctrler) {
 	case SYS_CTRLER_CUDA:
@@ -441,10 +447,9 @@ static void __noreturn pmac_power_off(void)
 		break;
 	default: ;
 	}
-	while (1) ;
 }
 
-static void __noreturn
+static void
 pmac_halt(void)
 {
 	pmac_power_off();
@@ -453,10 +458,10 @@ pmac_halt(void)
 /* 
  * Early initialization.
  */
-static void __init pmac_init(void)
+static void __init pmac_init_early(void)
 {
 	/* Enable early btext debug if requested */
-	if (strstr(boot_command_line, "btextdbg")) {
+	if (strstr(cmd_line, "btextdbg")) {
 		udbg_adb_init_early();
 		register_early_udbg_console();
 	}
@@ -465,11 +470,11 @@ static void __init pmac_init(void)
 	pmac_feature_init();
 
 	/* Initialize debug stuff */
-	udbg_scc_init(!!strstr(boot_command_line, "sccdbg"));
-	udbg_adb_init(!!strstr(boot_command_line, "btextdbg"));
+	udbg_scc_init(!!strstr(cmd_line, "sccdbg"));
+	udbg_adb_init(!!strstr(cmd_line, "btextdbg"));
 
 #ifdef CONFIG_PPC64
-	iommu_init_early_dart(&pmac_pci_controller_ops);
+	iommu_init_early_dart();
 #endif
 
 	/* SMP Init has to be done early as we need to patch up
@@ -484,6 +489,9 @@ static void __init pmac_init(void)
 static int __init pmac_declare_of_platform_devices(void)
 {
 	struct device_node *np;
+
+	if (machine_is(chrp))
+		return -1;
 
 	np = of_find_node_by_name(NULL, "valkyrie");
 	if (np) {
@@ -557,7 +565,7 @@ static int __init check_pmac_serial_console(void)
 		pr_debug(" can't find stdout package %s !\n", name);
 		return -ENODEV;
 	}
-	pr_debug("stdout is %pOF\n", prom_stdout);
+	pr_debug("stdout is %s\n", prom_stdout->full_name);
 
 	name = of_get_property(prom_stdout, "name", NULL);
 	if (!name) {
@@ -591,9 +599,23 @@ console_initcall(check_pmac_serial_console);
  */
 static int __init pmac_probe(void)
 {
-	if (!of_machine_is_compatible("Power Macintosh") &&
-	    !of_machine_is_compatible("MacRISC"))
+	unsigned long root = of_get_flat_dt_root();
+
+	if (!of_flat_dt_is_compatible(root, "Power Macintosh") &&
+	    !of_flat_dt_is_compatible(root, "MacRISC"))
 		return 0;
+
+#ifdef CONFIG_PPC64
+	/*
+	 * On U3, the DART (iommu) must be allocated now since it
+	 * has an impact on htab_initialize (due to the large page it
+	 * occupies having to be broken up so the DART itself is not
+	 * part of the cacheable linar mapping
+	 */
+	alloc_dart_table();
+
+	hpte_init_native();
+#endif
 
 #ifdef CONFIG_PPC32
 	/* isa_io_base gets set in pmac_pci_init */
@@ -602,22 +624,47 @@ static int __init pmac_probe(void)
 	DMA_MODE_WRITE = 2;
 #endif /* CONFIG_PPC32 */
 
-	pm_power_off = pmac_power_off;
-
-	pmac_init();
+#ifdef CONFIG_PMAC_SMU
+	/*
+	 * SMU based G5s need some memory below 2Gb, at least the current
+	 * driver needs that. We have to allocate it now. We allocate 4k
+	 * (1 small page) for now.
+	 */
+	smu_cmdbuf_abs = memblock_alloc_base(4096, 4096, 0x80000000UL);
+#endif /* CONFIG_PMAC_SMU */
 
 	return 1;
 }
+
+#ifdef CONFIG_PPC64
+/* Move that to pci.c */
+static int pmac_pci_probe_mode(struct pci_bus *bus)
+{
+	struct device_node *node = pci_bus_to_OF_node(bus);
+
+	/* We need to use normal PCI probing for the AGP bus,
+	 * since the device for the AGP bridge isn't in the tree.
+	 * Same for the PCIe host on U4 and the HT host bridge.
+	 */
+	if (bus->self == NULL && (of_device_is_compatible(node, "u3-agp") ||
+				  of_device_is_compatible(node, "u4-pcie") ||
+				  of_device_is_compatible(node, "u3-ht")))
+		return PCI_PROBE_NORMAL;
+	return PCI_PROBE_DEVTREE;
+}
+#endif /* CONFIG_PPC64 */
 
 define_machine(powermac) {
 	.name			= "PowerMac",
 	.probe			= pmac_probe,
 	.setup_arch		= pmac_setup_arch,
+	.init_early		= pmac_init_early,
 	.show_cpuinfo		= pmac_show_cpuinfo,
 	.init_IRQ		= pmac_pic_init,
 	.get_irq		= NULL,	/* changed later */
 	.pci_irq_fixup		= pmac_pci_irq_fixup,
 	.restart		= pmac_restart,
+	.power_off		= pmac_power_off,
 	.halt			= pmac_halt,
 	.time_init		= pmac_time_init,
 	.get_boot_time		= pmac_get_boot_time,
@@ -627,10 +674,12 @@ define_machine(powermac) {
 	.feature_call		= pmac_do_feature_call,
 	.progress		= udbg_progress,
 #ifdef CONFIG_PPC64
+	.pci_probe_mode		= pmac_pci_probe_mode,
 	.power_save		= power4_idle,
 	.enable_pmcs		= power4_enable_pmcs,
 #endif /* CONFIG_PPC64 */
 #ifdef CONFIG_PPC32
+	.pcibios_enable_device_hook = pmac_pci_enable_device_hook,
 	.pcibios_after_init	= pmac_pcibios_after_init,
 	.phys_mem_access_prot	= pci_phys_mem_access_prot,
 #endif

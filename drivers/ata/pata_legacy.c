@@ -246,12 +246,12 @@ static const struct ata_port_operations legacy_base_port_ops = {
 
 static struct ata_port_operations simple_port_ops = {
 	.inherits	= &legacy_base_port_ops,
-	.sff_data_xfer	= ata_sff_data_xfer32,
+	.sff_data_xfer	= ata_sff_data_xfer_noirq,
 };
 
 static struct ata_port_operations legacy_port_ops = {
 	.inherits	= &legacy_base_port_ops,
-	.sff_data_xfer	= ata_sff_data_xfer32,
+	.sff_data_xfer	= ata_sff_data_xfer_noirq,
 	.set_mode	= legacy_set_mode,
 };
 
@@ -303,12 +303,11 @@ static void pdc20230_set_piomode(struct ata_port *ap, struct ata_device *adev)
 
 }
 
-static unsigned int pdc_data_xfer_vlb(struct ata_queued_cmd *qc,
+static unsigned int pdc_data_xfer_vlb(struct ata_device *dev,
 			unsigned char *buf, unsigned int buflen, int rw)
 {
-	struct ata_device *dev = qc->dev;
-	struct ata_port *ap = dev->link->ap;
 	int slop = buflen & 3;
+	struct ata_port *ap = dev->link->ap;
 
 	/* 32bit I/O capable *and* we need to write a whole number of dwords */
 	if (ata_id_has_dword_io(dev->id) && (slop == 0 || slop == 3)
@@ -341,7 +340,7 @@ static unsigned int pdc_data_xfer_vlb(struct ata_queued_cmd *qc,
 		}
 		local_irq_restore(flags);
 	} else
-		buflen = ata_sff_data_xfer32(qc, buf, buflen, rw);
+		buflen = ata_sff_data_xfer_noirq(dev, buf, buflen, rw);
 
 	return buflen;
 }
@@ -402,7 +401,8 @@ static void ht6560b_set_piomode(struct ata_port *ap, struct ata_device *adev)
 	ata_timing_compute(adev, adev->pio_mode, &t, 20000, 1000);
 
 	active = clamp_val(t.active, 2, 15);
-	recover = clamp_val(t.recover, 2, 16) & 0x0F;
+	recover = clamp_val(t.recover, 2, 16);
+	recover &= 0x15;
 
 	inb(0x3E6);
 	inb(0x3E6);
@@ -543,7 +543,7 @@ static void opti82c46x_set_piomode(struct ata_port *ap, struct ata_device *adev)
 	u8 sysclk;
 
 	/* Get the clock */
-	sysclk = (opti_syscfg(0xAC) & 0xC0) >> 6;	/* BIOS set */
+	sysclk = opti_syscfg(0xAC) & 0xC0;	/* BIOS set */
 
 	/* Enter configuration mode */
 	ioread16(ap->ioaddr.error_addr);
@@ -703,11 +703,9 @@ static unsigned int qdi_qc_issue(struct ata_queued_cmd *qc)
 	return ata_sff_qc_issue(qc);
 }
 
-static unsigned int vlb32_data_xfer(struct ata_queued_cmd *qc,
-				    unsigned char *buf,
-				    unsigned int buflen, int rw)
+static unsigned int vlb32_data_xfer(struct ata_device *adev, unsigned char *buf,
+					unsigned int buflen, int rw)
 {
-	struct ata_device *adev = qc->dev;
 	struct ata_port *ap = adev->link->ap;
 	int slop = buflen & 3;
 
@@ -730,7 +728,7 @@ static unsigned int vlb32_data_xfer(struct ata_queued_cmd *qc,
 		}
 		return (buflen + 3) & ~3;
 	} else
-		return ata_sff_data_xfer(qc, buf, buflen, rw);
+		return ata_sff_data_xfer(adev, buf, buflen, rw);
 }
 
 static int qdi_port(struct platform_device *dev,
@@ -919,6 +917,7 @@ static __init int probe_chip_type(struct legacy_probe *probe)
 			local_irq_restore(flags);
 			return BIOS;
 		}
+		local_irq_restore(flags);
 	}
 
 	if (ht6560a & mask)

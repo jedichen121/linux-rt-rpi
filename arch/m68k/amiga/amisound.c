@@ -14,6 +14,7 @@
 #include <linux/string.h>
 #include <linux/module.h>
 
+#include <asm/system.h>
 #include <asm/amigahw.h>
 
 static unsigned short *snd_data;
@@ -51,7 +52,7 @@ void __init amiga_init_sound(void)
 
 	snd_data = amiga_chip_alloc_res(sizeof(sine_data), &beep_res);
 	if (!snd_data) {
-		pr_crit("amiga init_sound: failed to allocate chipmem\n");
+		printk (KERN_CRIT "amiga init_sound: failed to allocate chipmem\n");
 		return;
 	}
 	memcpy (snd_data, sine_data, sizeof(sine_data));
@@ -65,8 +66,8 @@ void __init amiga_init_sound(void)
 #endif
 }
 
-static void nosound(struct timer_list *unused);
-static DEFINE_TIMER(sound_timer, nosound);
+static void nosound( unsigned long ignored );
+static DEFINE_TIMER(sound_timer, nosound, 0, 0);
 
 void amiga_mksound( unsigned int hz, unsigned int ticks )
 {
@@ -107,7 +108,7 @@ void amiga_mksound( unsigned int hz, unsigned int ticks )
 }
 
 
-static void nosound(struct timer_list *unused)
+static void nosound( unsigned long ignored )
 {
 	/* turn off DMA for audio channel 2 */
 	custom.dmacon = DMAF_AUD2;

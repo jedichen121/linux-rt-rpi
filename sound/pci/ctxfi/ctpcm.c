@@ -21,7 +21,7 @@
 #include <sound/pcm.h>
 
 /* Hardware descriptions for playback */
-static const struct snd_pcm_hardware ct_pcm_playback_hw = {
+static struct snd_pcm_hardware ct_pcm_playback_hw = {
 	.info			= (SNDRV_PCM_INFO_MMAP |
 				   SNDRV_PCM_INFO_INTERLEAVED |
 				   SNDRV_PCM_INFO_BLOCK_TRANSFER |
@@ -46,7 +46,7 @@ static const struct snd_pcm_hardware ct_pcm_playback_hw = {
 	.fifo_size		= 0,
 };
 
-static const struct snd_pcm_hardware ct_spdif_passthru_playback_hw = {
+static struct snd_pcm_hardware ct_spdif_passthru_playback_hw = {
 	.info			= (SNDRV_PCM_INFO_MMAP |
 				   SNDRV_PCM_INFO_INTERLEAVED |
 				   SNDRV_PCM_INFO_BLOCK_TRANSFER |
@@ -69,7 +69,7 @@ static const struct snd_pcm_hardware ct_spdif_passthru_playback_hw = {
 };
 
 /* Hardware descriptions for capture */
-static const struct snd_pcm_hardware ct_pcm_capture_hw = {
+static struct snd_pcm_hardware ct_pcm_capture_hw = {
 	.info			= (SNDRV_PCM_INFO_MMAP |
 				   SNDRV_PCM_INFO_INTERLEAVED |
 				   SNDRV_PCM_INFO_BLOCK_TRANSFER |
@@ -140,28 +140,27 @@ static int ct_pcm_playback_open(struct snd_pcm_substream *substream)
 
 	err = snd_pcm_hw_constraint_integer(runtime,
 					    SNDRV_PCM_HW_PARAM_PERIODS);
-	if (err < 0)
-		goto free_pcm;
-
+	if (err < 0) {
+		kfree(apcm);
+		return err;
+	}
 	err = snd_pcm_hw_constraint_minmax(runtime,
 					   SNDRV_PCM_HW_PARAM_BUFFER_BYTES,
 					   1024, UINT_MAX);
-	if (err < 0)
-		goto free_pcm;
+	if (err < 0) {
+		kfree(apcm);
+		return err;
+	}
 
 	apcm->timer = ct_timer_instance_new(atc->timer, apcm);
 	if (!apcm->timer) {
-		err = -ENOMEM;
-		goto free_pcm;
+		kfree(apcm);
+		return -ENOMEM;
 	}
 	runtime->private_data = apcm;
 	runtime->private_free = ct_atc_pcm_free_substream;
 
 	return 0;
-
-free_pcm:
-	kfree(apcm);
-	return err;
 }
 
 static int ct_pcm_playback_close(struct snd_pcm_substream *substream)
@@ -218,8 +217,7 @@ static int ct_pcm_playback_prepare(struct snd_pcm_substream *substream)
 		err = atc->pcm_playback_prepare(atc, apcm);
 
 	if (err < 0) {
-		dev_err(atc->card->dev,
-			"Preparing pcm playback failed!!!\n");
+		printk(KERN_ERR "ctxfi: Preparing pcm playback failed!!!\n");
 		return err;
 	}
 
@@ -287,28 +285,27 @@ static int ct_pcm_capture_open(struct snd_pcm_substream *substream)
 
 	err = snd_pcm_hw_constraint_integer(runtime,
 					    SNDRV_PCM_HW_PARAM_PERIODS);
-	if (err < 0)
-		goto free_pcm;
-
+	if (err < 0) {
+		kfree(apcm);
+		return err;
+	}
 	err = snd_pcm_hw_constraint_minmax(runtime,
 					   SNDRV_PCM_HW_PARAM_BUFFER_BYTES,
 					   1024, UINT_MAX);
-	if (err < 0)
-		goto free_pcm;
+	if (err < 0) {
+		kfree(apcm);
+		return err;
+	}
 
 	apcm->timer = ct_timer_instance_new(atc->timer, apcm);
 	if (!apcm->timer) {
-		err = -ENOMEM;
-		goto free_pcm;
+		kfree(apcm);
+		return -ENOMEM;
 	}
 	runtime->private_data = apcm;
 	runtime->private_free = ct_atc_pcm_free_substream;
 
 	return 0;
-
-free_pcm:
-	kfree(apcm);
-	return err;
 }
 
 static int ct_pcm_capture_close(struct snd_pcm_substream *substream)
@@ -327,8 +324,7 @@ static int ct_pcm_capture_prepare(struct snd_pcm_substream *substream)
 
 	err = atc->pcm_capture_prepare(atc, apcm);
 	if (err < 0) {
-		dev_err(atc->card->dev,
-			"Preparing pcm capture failed!!!\n");
+		printk(KERN_ERR "ctxfi: Preparing pcm capture failed!!!\n");
 		return err;
 	}
 
@@ -374,7 +370,7 @@ ct_pcm_capture_pointer(struct snd_pcm_substream *substream)
 }
 
 /* PCM operators for playback */
-static const struct snd_pcm_ops ct_pcm_playback_ops = {
+static struct snd_pcm_ops ct_pcm_playback_ops = {
 	.open	 	= ct_pcm_playback_open,
 	.close		= ct_pcm_playback_close,
 	.ioctl		= snd_pcm_lib_ioctl,
@@ -387,7 +383,7 @@ static const struct snd_pcm_ops ct_pcm_playback_ops = {
 };
 
 /* PCM operators for capture */
-static const struct snd_pcm_ops ct_pcm_capture_ops = {
+static struct snd_pcm_ops ct_pcm_capture_ops = {
 	.open	 	= ct_pcm_capture_open,
 	.close		= ct_pcm_capture_close,
 	.ioctl		= snd_pcm_lib_ioctl,
@@ -399,38 +395,12 @@ static const struct snd_pcm_ops ct_pcm_capture_ops = {
 	.page		= snd_pcm_sgbuf_ops_page,
 };
 
-static const struct snd_pcm_chmap_elem surround_map[] = {
-	{ .channels = 1,
-	  .map = { SNDRV_CHMAP_MONO } },
-	{ .channels = 2,
-	  .map = { SNDRV_CHMAP_RL, SNDRV_CHMAP_RR } },
-	{ }
-};
-
-static const struct snd_pcm_chmap_elem clfe_map[] = {
-	{ .channels = 1,
-	  .map = { SNDRV_CHMAP_MONO } },
-	{ .channels = 2,
-	  .map = { SNDRV_CHMAP_FC, SNDRV_CHMAP_LFE } },
-	{ }
-};
-
-static const struct snd_pcm_chmap_elem side_map[] = {
-	{ .channels = 1,
-	  .map = { SNDRV_CHMAP_MONO } },
-	{ .channels = 2,
-	  .map = { SNDRV_CHMAP_SL, SNDRV_CHMAP_SR } },
-	{ }
-};
-
 /* Create ALSA pcm device */
 int ct_alsa_pcm_create(struct ct_atc *atc,
 		       enum CTALSADEVS device,
 		       const char *device_name)
 {
 	struct snd_pcm *pcm;
-	const struct snd_pcm_chmap_elem *map;
-	int chs;
 	int err;
 	int playback_count, capture_count;
 
@@ -439,8 +409,7 @@ int ct_alsa_pcm_create(struct ct_atc *atc,
 	err = snd_pcm_new(atc->card, "ctxfi", device,
 			  playback_count, capture_count, &pcm);
 	if (err < 0) {
-		dev_err(atc->card->dev, "snd_pcm_new failed!! Err=%d\n",
-			err);
+		printk(KERN_ERR "ctxfi: snd_pcm_new failed!! Err=%d\n", err);
 		return err;
 	}
 
@@ -458,31 +427,7 @@ int ct_alsa_pcm_create(struct ct_atc *atc,
 	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_DEV_SG,
 			snd_dma_pci_data(atc->pci), 128*1024, 128*1024);
 
-	chs = 2;
-	switch (device) {
-	case FRONT:
-		chs = 8;
-		map = snd_pcm_std_chmaps;
-		break;
-	case SURROUND:
-		map = surround_map;
-		break;
-	case CLFE:
-		map = clfe_map;
-		break;
-	case SIDE:
-		map = side_map;
-		break;
-	default:
-		map = snd_pcm_std_chmaps;
-		break;
-	}
-	err = snd_pcm_add_chmap_ctls(pcm, SNDRV_PCM_STREAM_PLAYBACK, map, chs,
-				     0, NULL);
-	if (err < 0)
-		return err;
-
-#ifdef CONFIG_PM_SLEEP
+#ifdef CONFIG_PM
 	atc->pcms[device] = pcm;
 #endif
 

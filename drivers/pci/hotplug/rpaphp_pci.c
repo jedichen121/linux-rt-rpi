@@ -1,9 +1,23 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * PCI Hot Plug Controller Driver for RPA-compliant PPC64 platform.
  * Copyright (C) 2003 Linda Xie <lxie@us.ibm.com>
  *
  * All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or (at
+ * your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
+ * NON INFRINGEMENT.  See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * Send feedback to <lxie@us.ibm.com>
  *
@@ -30,7 +44,7 @@ int rpaphp_get_sensor_state(struct slot *slot, int *state)
 			dbg("%s: slot must be power up to get sensor-state\n",
 			    __func__);
 
-			/* some slots have to be powered up
+			/* some slots have to be powered up 
 			 * before get-sensor will succeed.
 			 */
 			rc = rtas_set_power_level(slot->power_domain, POWER_ON,
@@ -79,9 +93,9 @@ int rpaphp_enable_slot(struct slot *slot)
 	if (rc)
 		return rc;
 
-	bus = pci_find_bus_by_node(slot->dn);
+	bus = pcibios_find_pci_bus(slot->dn);
 	if (!bus) {
-		err("%s: no pci_bus for dn %pOF\n", __func__, slot->dn);
+		err("%s: no pci_bus for dn %s\n", __func__, slot->dn->full_name);
 		return -EINVAL;
 	}
 
@@ -102,7 +116,7 @@ int rpaphp_enable_slot(struct slot *slot)
 		}
 
 		if (list_empty(&bus->devices))
-			pci_hp_add_devices(bus);
+			pcibios_add_pci_devices(bus);
 
 		if (!list_empty(&bus->devices)) {
 			info->adapter_status = CONFIGURED;
@@ -111,11 +125,12 @@ int rpaphp_enable_slot(struct slot *slot)
 
 		if (rpaphp_debug) {
 			struct pci_dev *dev;
-			dbg("%s: pci_devs of slot[%pOF]\n", __func__, slot->dn);
-			list_for_each_entry(dev, &bus->devices, bus_list)
+			dbg("%s: pci_devs of slot[%s]\n", __func__, slot->dn->full_name);
+			list_for_each_entry (dev, &bus->devices, bus_list)
 				dbg("\t%s\n", pci_name(dev));
 		}
 	}
 
 	return 0;
 }
+

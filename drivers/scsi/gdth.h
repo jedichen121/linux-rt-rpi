@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _GDTH_H
 #define _GDTH_H
 
@@ -49,6 +48,15 @@
 #define GDT3B_ID        0x0330941c              /* GDT3000B/3010A */
 /* GDT_ISA */
 #define GDT2_ID         0x0120941c              /* GDT2000/2020 */
+
+/* vendor ID, device IDs (PCI) */
+/* these defines should already exist in <linux/pci.h> */
+#ifndef PCI_VENDOR_ID_VORTEX
+#define PCI_VENDOR_ID_VORTEX            0x1119  /* PCI controller vendor ID */
+#endif
+#ifndef PCI_VENDOR_ID_INTEL
+#define PCI_VENDOR_ID_INTEL             0x8086  
+#endif
 
 #ifndef PCI_DEVICE_ID_VORTEX_GDT60x0
 /* GDT_PCI */
@@ -162,9 +170,9 @@
 #define BIGSECS         63                      /* mapping 255*63 */
 
 /* special command ptr. */
-#define UNUSED_CMND     ((struct scsi_cmnd *)-1)
-#define INTERNAL_CMND   ((struct scsi_cmnd *)-2)
-#define SCREEN_CMND     ((struct scsi_cmnd *)-3)
+#define UNUSED_CMND     ((Scsi_Cmnd *)-1)
+#define INTERNAL_CMND   ((Scsi_Cmnd *)-2)
+#define SCREEN_CMND     ((Scsi_Cmnd *)-3)
 #define SPECIAL_SCP(p)  (p==UNUSED_CMND || p==INTERNAL_CMND || p==SCREEN_CMND)
 
 /* controller services */
@@ -177,6 +185,9 @@
 #define MSGLEN          16                      /* size of message text */
 #define MSG_SIZE        34                      /* size of message structure */
 #define MSG_REQUEST     0                       /* async. event: message */
+
+/* cacheservice defines */
+#define SECTOR_SIZE     0x200                   /* always 512 bytes per sec. */
 
 /* DPMEM constants */
 #define DPMEM_MAGIC     0xC0FFEE11
@@ -348,7 +359,7 @@ typedef struct {
     u32     cmd_buff_addr2;     /* physical address of cmd buffer 1 */   
     u32     cmd_buff_u_addr2;   /* reserved for 64 bit addressing */
     u32     cmd_buff_indx2;     /* cmd buf addr1 unique identifier */
-    u32     cmd_buff_size;      /* size of each cmd buffer in bytes */
+    u32     cmd_buff_size;      /* size of each cmd bufer in bytes */
     u32     reserved1;
     u32     reserved2;
 } __attribute__((packed)) gdth_perf_modes;
@@ -867,7 +878,7 @@ typedef struct {
     u16              service;                /* service/firmware ver./.. */
     u32             info;
     u32             info2;                  /* additional info */
-    struct scsi_cmnd           *req_first;             /* top of request queue */
+    Scsi_Cmnd           *req_first;             /* top of request queue */
     struct {
         u8          present;                /* Flag: host drive present? */
         u8          is_logdrv;              /* Flag: log. drive (master)? */
@@ -896,7 +907,7 @@ typedef struct {
         u32         id_list[MAXID];         /* IDs of the phys. devices */
     } raw[MAXBUS];                              /* SCSI channels */
     struct {
-        struct scsi_cmnd       *cmnd;                  /* pending request */
+        Scsi_Cmnd       *cmnd;                  /* pending request */
         u16          service;                /* service */
     } cmd_tab[GDTH_MAXCMDS];                    /* table of pend. requests */
     struct gdth_cmndinfo {                      /* per-command private info */
@@ -1005,7 +1016,6 @@ typedef struct {
 
 /* function prototyping */
 
-int gdth_show_info(struct seq_file *, struct Scsi_Host *);
-int gdth_set_info(struct Scsi_Host *, char *, int);
+int gdth_proc_info(struct Scsi_Host *, char *,char **,off_t,int,int);
 
 #endif

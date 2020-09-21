@@ -10,9 +10,10 @@
 #include <linux/gpio.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/mbus.h>
 #include <linux/io.h>
 #include <plat/mpp.h>
-#include "mv78xx0.h"
+#include <mach/hardware.h>
 #include "common.h"
 #include "mpp.h"
 

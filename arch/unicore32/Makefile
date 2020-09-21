@@ -33,6 +33,7 @@ endif
 CHECKFLAGS		+= -D__unicore32__
 
 head-y			:= arch/unicore32/kernel/head.o
+head-y			+= arch/unicore32/kernel/init_task.o
 
 core-y			+= arch/unicore32/kernel/
 core-y			+= arch/unicore32/mm/
@@ -43,9 +44,9 @@ boot			:= arch/unicore32/boot
 
 # Default defconfig and target when executing plain make
 KBUILD_DEFCONFIG	:= $(ARCH)_defconfig
-KBUILD_IMAGE		:= $(boot)/zImage
+KBUILD_IMAGE		:= zImage
 
-all:	zImage
+all:	$(KBUILD_IMAGE)
 
 zImage Image uImage: vmlinux
 	$(Q)$(MAKE) $(build)=$(boot) $(boot)/$@

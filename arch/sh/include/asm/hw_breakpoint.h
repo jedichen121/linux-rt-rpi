@@ -1,15 +1,14 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_HW_BREAKPOINT_H
 #define __ASM_SH_HW_BREAKPOINT_H
 
-#include <uapi/asm/hw_breakpoint.h>
-
+#ifdef __KERNEL__
 #define __ARCH_HW_BREAKPOINT_H
 
 #include <linux/kdebug.h>
 #include <linux/types.h>
 
 struct arch_hw_breakpoint {
+	char		*name; /* Contains name of the symbol to set bkpt */
 	unsigned long	address;
 	u16		len;
 	u16		type;
@@ -40,7 +39,6 @@ struct sh_ubc {
 	struct clk	*clk;	/* optional interface clock / MSTP bit */
 };
 
-struct perf_event_attr;
 struct perf_event;
 struct task_struct;
 struct pmu;
@@ -54,10 +52,8 @@ static inline int hw_breakpoint_slots(int type)
 }
 
 /* arch/sh/kernel/hw_breakpoint.c */
-extern int arch_check_bp_in_kernelspace(struct arch_hw_breakpoint *hw);
-extern int hw_breakpoint_arch_parse(struct perf_event *bp,
-				    const struct perf_event_attr *attr,
-				    struct arch_hw_breakpoint *hw);
+extern int arch_check_bp_in_kernelspace(struct perf_event *bp);
+extern int arch_validate_hwbkpt_settings(struct perf_event *bp);
 extern int hw_breakpoint_exceptions_notify(struct notifier_block *unused,
 					   unsigned long val, void *data);
 
@@ -70,4 +66,5 @@ extern int register_sh_ubc(struct sh_ubc *);
 
 extern struct pmu perf_ops_bp;
 
+#endif /* __KERNEL__ */
 #endif /* __ASM_SH_HW_BREAKPOINT_H */

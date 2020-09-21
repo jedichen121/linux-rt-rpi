@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_POWERPC_TIMEX_H
 #define _ASM_POWERPC_TIMEX_H
 
@@ -30,11 +29,7 @@ static inline cycles_t get_cycles(void)
 	ret = 0;
 
 	__asm__ __volatile__(
-#ifdef CONFIG_PPC_8xx
 		"97:	mftb %0\n"
-#else
-		"97:	mfspr %0, %2\n"
-#endif
 		"99:\n"
 		".section __ftr_fixup,\"a\"\n"
 		".align 2\n"
@@ -46,7 +41,7 @@ static inline cycles_t get_cycles(void)
 		"	.long 0\n"
 		"	.long 0\n"
 		".previous"
-		: "=r" (ret) : "i" (CPU_FTR_601), "i" (SPRN_TBRL));
+		: "=r" (ret) : "i" (CPU_FTR_601));
 	return ret;
 #endif
 }

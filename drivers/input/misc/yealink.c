@@ -47,6 +47,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/rwsem.h>
@@ -56,6 +57,8 @@
 #include "yealink.h"
 
 #define DRIVER_VERSION "yld-20051230"
+#define DRIVER_AUTHOR "Henk Vergonet"
+#define DRIVER_DESC "Yealink phone driver"
 
 #define YEALINK_POLLING_FREQUENCY	10	/* in [Hz] */
 
@@ -98,7 +101,6 @@ static const struct lcd_segment_map {
 struct yealink_dev {
 	struct input_dev *idev;		/* input device */
 	struct usb_device *udev;	/* usb device */
-	struct usb_interface *intf;	/* usb interface */
 
 	/* irq input channel */
 	struct yld_ctl_packet	*irq_data;
@@ -426,8 +428,7 @@ static void urb_irq_callback(struct urb *urb)
 	int ret, status = urb->status;
 
 	if (status)
-		dev_err(&yld->intf->dev, "%s - urb status %d\n",
-			__func__, status);
+		err("%s - urb status %d", __func__, status);
 
 	switch (yld->irq_data->cmd) {
 	case CMD_KEYPRESS:
@@ -436,15 +437,13 @@ static void urb_irq_callback(struct urb *urb)
 		break;
 
 	case CMD_SCANCODE:
-		dev_dbg(&yld->intf->dev, "get scancode %x\n",
-			yld->irq_data->data[0]);
+		dbg("get scancode %x", yld->irq_data->data[0]);
 
 		report_key(yld, map_p1k_to_key(yld->irq_data->data[0]));
 		break;
 
 	default:
-		dev_err(&yld->intf->dev, "unexpected response %x\n",
-			yld->irq_data->cmd);
+		err("unexpected response %x", yld->irq_data->cmd);
 	}
 
 	yealink_do_idle_tasks(yld);
@@ -452,9 +451,7 @@ static void urb_irq_callback(struct urb *urb)
 	if (!yld->shutdown) {
 		ret = usb_submit_urb(yld->urb_ctl, GFP_ATOMIC);
 		if (ret && ret != -EPERM)
-			dev_err(&yld->intf->dev,
-				"%s - usb_submit_urb failed %d\n",
-				__func__, ret);
+			err("%s - usb_submit_urb failed %d", __func__, ret);
 	}
 }
 
@@ -464,8 +461,7 @@ static void urb_ctl_callback(struct urb *urb)
 	int ret = 0, status = urb->status;
 
 	if (status)
-		dev_err(&yld->intf->dev, "%s - urb status %d\n",
-			__func__, status);
+		err("%s - urb status %d", __func__, status);
 
 	switch (yld->ctl_data->cmd) {
 	case CMD_KEYPRESS:
@@ -483,8 +479,7 @@ static void urb_ctl_callback(struct urb *urb)
 	}
 
 	if (ret && ret != -EPERM)
-		dev_err(&yld->intf->dev, "%s - usb_submit_urb failed %d\n",
-			__func__, ret);
+		err("%s - usb_submit_urb failed %d", __func__, ret);
 }
 
 /*******************************************************************************
@@ -516,7 +511,7 @@ static int input_open(struct input_dev *dev)
 	struct yealink_dev *yld = input_get_drvdata(dev);
 	int i, ret;
 
-	dev_dbg(&yld->intf->dev, "%s\n", __func__);
+	dbg("%s", __func__);
 
 	/* force updates to device */
 	for (i = 0; i<sizeof(yld->master); i++)
@@ -531,9 +526,8 @@ static int input_open(struct input_dev *dev)
 	yld->ctl_data->size	= 10;
 	yld->ctl_data->sum	= 0x100-CMD_INIT-10;
 	if ((ret = usb_submit_urb(yld->urb_ctl, GFP_KERNEL)) != 0) {
-		dev_dbg(&yld->intf->dev,
-			"%s - usb_submit_urb failed with result %d\n",
-			__func__, ret);
+		dbg("%s - usb_submit_urb failed with result %d",
+		     __func__, ret);
 		return ret;
 	}
 	return 0;
@@ -796,7 +790,7 @@ static struct attribute *yld_attributes[] = {
 	NULL
 };
 
-static const struct attribute_group yld_attr_group = {
+static struct attribute_group yld_attr_group = {
 	.attrs = yld_attributes
 };
 
@@ -873,10 +867,6 @@ static int usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	int ret, pipe, i;
 
 	interface = intf->cur_altsetting;
-
-	if (interface->desc.bNumEndpoints < 1)
-		return -ENODEV;
-
 	endpoint = &interface->endpoint[0].desc;
 	if (!usb_endpoint_is_int_in(endpoint))
 		return -ENODEV;
@@ -886,7 +876,6 @@ static int usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 		return -ENOMEM;
 
 	yld->udev = udev;
-	yld->intf = intf;
 
 	yld->idev = input_dev = input_allocate_device();
 	if (!input_dev)
@@ -894,12 +883,12 @@ static int usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 
 	/* allocate usb buffers */
 	yld->irq_data = usb_alloc_coherent(udev, USB_PKT_LEN,
-					   GFP_KERNEL, &yld->irq_dma);
+					   GFP_ATOMIC, &yld->irq_dma);
 	if (yld->irq_data == NULL)
 		return usb_cleanup(yld, -ENOMEM);
 
 	yld->ctl_data = usb_alloc_coherent(udev, USB_PKT_LEN,
-					   GFP_KERNEL, &yld->ctl_dma);
+					   GFP_ATOMIC, &yld->ctl_dma);
 	if (!yld->ctl_data)
 		return usb_cleanup(yld, -ENOMEM);
 
@@ -920,8 +909,7 @@ static int usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	pipe = usb_rcvintpipe(udev, endpoint->bEndpointAddress);
 	ret = usb_maxpacket(udev, pipe, usb_pipeout(pipe));
 	if (ret != USB_PKT_LEN)
-		dev_err(&intf->dev, "invalid payload size %d, expected %zd\n",
-			ret, USB_PKT_LEN);
+		err("invalid payload size %d, expected %zd", ret, USB_PKT_LEN);
 
 	/* initialise irq urb */
 	usb_fill_int_urb(yld->urb_irq, udev, pipe, yld->irq_data,
@@ -1004,6 +992,6 @@ module_usb_driver(yealink_driver);
 
 MODULE_DEVICE_TABLE (usb, usb_table);
 
-MODULE_AUTHOR("Henk Vergonet");
-MODULE_DESCRIPTION("Yealink phone driver");
+MODULE_AUTHOR(DRIVER_AUTHOR);
+MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL");

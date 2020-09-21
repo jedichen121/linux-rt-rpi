@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * unaligned.c: Unaligned load/store trap handling with special
  *              cases for the kernel to do them more quickly.
@@ -9,17 +8,14 @@
 
 
 #include <linux/kernel.h>
-#include <linux/sched/signal.h>
+#include <linux/sched.h>
 #include <linux/mm.h>
 #include <asm/ptrace.h>
 #include <asm/processor.h>
-#include <linux/uaccess.h>
+#include <asm/system.h>
+#include <asm/uaccess.h>
 #include <linux/smp.h>
 #include <linux/perf_event.h>
-
-#include <asm/setup.h>
-
-#include "kernel.h"
 
 enum direction {
 	load,    /* ld, ldd, ldh, ldsh */
@@ -167,7 +163,7 @@ unsigned long safe_compute_effective_address(struct pt_regs *regs,
 /* This is just to make gcc think panic does return... */
 static void unaligned_panic(char *str)
 {
-	panic("%s", str);
+	panic(str);
 }
 
 /* una_asm.S */
@@ -311,9 +307,14 @@ static inline int ok_for_user(struct pt_regs *regs, unsigned int insn,
 
 static void user_mna_trap_fault(struct pt_regs *regs, unsigned int insn)
 {
-	send_sig_fault(SIGBUS, BUS_ADRALN,
-		       (void __user *)safe_compute_effective_address(regs, insn),
-		       0, current);
+	siginfo_t info;
+
+	info.si_signo = SIGBUS;
+	info.si_errno = 0;
+	info.si_code = BUS_ADRALN;
+	info.si_addr = (void __user *)safe_compute_effective_address(regs, insn);
+	info.si_trapno = 0;
+	send_sig_info(SIGBUS, &info, current);
 }
 
 asmlinkage void user_unaligned_trap(struct pt_regs *regs, unsigned int insn)

@@ -27,10 +27,16 @@
 #include <linux/input.h>
 #include <linux/module.h>
 #include <linux/slab.h>
+#include <linux/usb.h>
 
 #include "hid-ids.h"
 
 #ifdef CONFIG_HOLTEK_FF
+#include "usbhid/usbhid.h"
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Anssi Hannula <anssi.hannula@iki.fi>");
+MODULE_DESCRIPTION("Force feedback support for Holtek On Line Grip based devices");
 
 /*
  * These commands and parameters are currently known:
@@ -94,9 +100,10 @@ static void holtekff_send(struct holtekff_device *holtekff,
 		holtekff->field->value[i] = data[i];
 	}
 
-	dbg_hid("sending %7ph\n", data);
+	dbg_hid("sending %02x %02x %02x %02x %02x %02x %02x\n", data[0],
+		data[1], data[2], data[3], data[4], data[5], data[6]);
 
-	hid_hw_request(hid, holtekff->field->report, HID_REQ_SET_REPORT);
+	usbhid_submit_report(hid, holtekff->field->report, USB_DIR_OUT);
 }
 
 static int holtekff_play(struct input_dev *dev, void *data,
@@ -136,18 +143,12 @@ static int holtekff_init(struct hid_device *hid)
 {
 	struct holtekff_device *holtekff;
 	struct hid_report *report;
-	struct hid_input *hidinput;
+	struct hid_input *hidinput = list_entry(hid->inputs.next,
+						struct hid_input, list);
 	struct list_head *report_list =
 			&hid->report_enum[HID_OUTPUT_REPORT].report_list;
-	struct input_dev *dev;
+	struct input_dev *dev = hidinput->input;
 	int error;
-
-	if (list_empty(&hid->inputs)) {
-		hid_err(hid, "no inputs found\n");
-		return -ENODEV;
-	}
-	hidinput = list_entry(hid->inputs.next, struct hid_input, list);
-	dev = hidinput->input;
 
 	if (list_empty(report_list)) {
 		hid_err(hid, "no output report found\n");
@@ -224,8 +225,17 @@ static struct hid_driver holtek_driver = {
 	.id_table = holtek_devices,
 	.probe = holtek_probe,
 };
-module_hid_driver(holtek_driver);
 
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Anssi Hannula <anssi.hannula@iki.fi>");
-MODULE_DESCRIPTION("Force feedback support for Holtek On Line Grip based devices");
+static int __init holtek_init(void)
+{
+	return hid_register_driver(&holtek_driver);
+}
+
+static void __exit holtek_exit(void)
+{
+	hid_unregister_driver(&holtek_driver);
+}
+
+module_init(holtek_init);
+module_exit(holtek_exit);
+

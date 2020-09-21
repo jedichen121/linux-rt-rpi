@@ -24,7 +24,8 @@
  * the GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program;  if not, see <http://www.gnu.org/licenses/>.
+ * along with this program;  if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  *
  */
 
@@ -87,7 +88,7 @@ static inline struct netlbl_af4list *__af4list_valid_rcu(struct list_head *s,
 	struct list_head *i = s;
 	struct netlbl_af4list *n = __af4list_entry(s);
 	while (i != h && !n->valid) {
-		i = rcu_dereference(list_next_rcu(i));
+		i = rcu_dereference(i->next);
 		n = __af4list_entry(i);
 	}
 	return n;
@@ -154,7 +155,7 @@ static inline struct netlbl_af6list *__af6list_valid_rcu(struct list_head *s,
 	struct list_head *i = s;
 	struct netlbl_af6list *n = __af6list_entry(s);
 	while (i != h && !n->valid) {
-		i = rcu_dereference(list_next_rcu(i));
+		i = rcu_dereference(i->next);
 		n = __af6list_entry(i);
 	}
 	return n;

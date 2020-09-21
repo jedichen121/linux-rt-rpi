@@ -1,5 +1,6 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
+ * linux/kernel/irq/resend.c
+ *
  * Copyright (C) 1992, 1998-2006 Linus Torvalds, Ingo Molnar
  * Copyright (C) 2005-2006, Thomas Gleixner
  *
@@ -36,10 +37,8 @@ static void resend_irqs(unsigned long arg)
 		irq = find_first_bit(irqs_resend, nr_irqs);
 		clear_bit(irq, irqs_resend);
 		desc = irq_to_desc(irq);
-		if (!desc)
-			continue;
 		local_irq_disable();
-		desc->handle_irq(desc);
+		desc->handle_irq(irq, desc);
 		local_irq_enable();
 	}
 }
@@ -54,18 +53,15 @@ static DECLARE_TASKLET(resend_tasklet, resend_irqs, 0);
  *
  * Is called with interrupts disabled and desc->lock held.
  */
-void check_irq_resend(struct irq_desc *desc)
+void check_irq_resend(struct irq_desc *desc, unsigned int irq)
 {
 	/*
 	 * We do not resend level type interrupts. Level type
 	 * interrupts are resent by hardware when they are still
-	 * active. Clear the pending bit so suspend/resume does not
-	 * get confused.
+	 * active.
 	 */
-	if (irq_settings_is_level(desc)) {
-		desc->istate &= ~IRQS_PENDING;
+	if (irq_settings_is_level(desc))
 		return;
-	}
 	if (desc->istate & IRQS_REPLAY)
 		return;
 	if (desc->istate & IRQS_PENDING) {
@@ -75,24 +71,6 @@ void check_irq_resend(struct irq_desc *desc)
 		if (!desc->irq_data.chip->irq_retrigger ||
 		    !desc->irq_data.chip->irq_retrigger(&desc->irq_data)) {
 #ifdef CONFIG_HARDIRQS_SW_RESEND
-			unsigned int irq = irq_desc_get_irq(desc);
-
-			/*
-			 * If the interrupt is running in the thread
-			 * context of the parent irq we need to be
-			 * careful, because we cannot trigger it
-			 * directly.
-			 */
-			if (irq_settings_is_nested_thread(desc)) {
-				/*
-				 * If the parent_irq is valid, we
-				 * retrigger the parent, otherwise we
-				 * do nothing.
-				 */
-				if (!desc->parent_irq)
-					return;
-				irq = desc->parent_irq;
-			}
 			/* Set it pending and activate the softirq: */
 			set_bit(irq, irqs_resend);
 			tasklet_schedule(&resend_tasklet);

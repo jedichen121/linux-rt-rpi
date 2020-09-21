@@ -23,7 +23,7 @@
 #include <linux/pci.h>
 #include <linux/kdev_t.h>
 #include <linux/console.h>
-#include <linux/extable.h>
+#include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/irq.h>
 #include <linux/seq_file.h>
@@ -32,6 +32,7 @@
 #include <linux/tty.h>
 #include <linux/serial_core.h>
 
+#include <asm/system.h>
 #include <asm/time.h>
 #include <asm/machdep.h>
 #include <asm/prom.h>
@@ -107,9 +108,11 @@ static void __init mpc7448_hpc2_init_IRQ(void)
 	struct device_node *cascade_node = NULL;
 #endif
 
-	mpic = mpic_alloc(NULL, 0, MPIC_BIG_ENDIAN |
+	mpic = mpic_alloc(NULL, 0,
+			MPIC_BIG_ENDIAN | MPIC_WANTS_RESET |
 			MPIC_SPV_EOI | MPIC_NO_PTHROU_DIS | MPIC_REGSET_TSI108,
-			24, 0,
+			24,
+			NR_IRQS-4, /* num_sources used */
 			"Tsi108_PIC");
 
 	BUG_ON(mpic == NULL);
@@ -146,7 +149,7 @@ void mpc7448_hpc2_show_cpuinfo(struct seq_file *m)
 	seq_printf(m, "vendor\t\t: Freescale Semiconductor\n");
 }
 
-static void __noreturn mpc7448_hpc2_restart(char *cmd)
+void mpc7448_hpc2_restart(char *cmd)
 {
 	local_irq_disable();
 
@@ -156,12 +159,25 @@ static void __noreturn mpc7448_hpc2_restart(char *cmd)
 	for (;;) ;		/* Spin until reset happens */
 }
 
+void mpc7448_hpc2_power_off(void)
+{
+	local_irq_disable();
+	for (;;) ;		/* No way to shut power off with software */
+}
+
+void mpc7448_hpc2_halt(void)
+{
+	mpc7448_hpc2_power_off();
+}
+
 /*
  * Called very early, device-tree isn't unflattened
  */
 static int __init mpc7448_hpc2_probe(void)
 {
-	if (!of_machine_is_compatible("mpc74xx"))
+	unsigned long root = of_get_flat_dt_root();
+
+	if (!of_flat_dt_is_compatible(root, "mpc74xx"))
 		return 0;
 	return 1;
 }
@@ -174,7 +190,7 @@ static int mpc7448_machine_check_exception(struct pt_regs *regs)
 	if ((entry = search_exception_tables(regs->nip)) != NULL) {
 		tsi108_clear_pci_cfg_error();
 		regs->msr |= MSR_RI;
-		regs->nip = extable_fixup(entry);
+		regs->nip = entry->fixup;
 		return 1;
 	}
 	return 0;

@@ -24,6 +24,9 @@
 #error FIX ME
 #endif
 
+#define from_address	(0xffff8000)
+#define to_address	(0xffffc000)
+
 static DEFINE_RAW_SPINLOCK(v6_lock);
 
 /*
@@ -35,11 +38,11 @@ static void v6_copy_user_highpage_nonaliasing(struct page *to,
 {
 	void *kto, *kfrom;
 
-	kfrom = kmap_atomic(from);
-	kto = kmap_atomic(to);
+	kfrom = kmap_atomic(from, KM_USER0);
+	kto = kmap_atomic(to, KM_USER1);
 	copy_page(kto, kfrom);
-	kunmap_atomic(kto);
-	kunmap_atomic(kfrom);
+	kunmap_atomic(kto, KM_USER1);
+	kunmap_atomic(kfrom, KM_USER0);
 }
 
 /*
@@ -48,9 +51,9 @@ static void v6_copy_user_highpage_nonaliasing(struct page *to,
  */
 static void v6_clear_user_highpage_nonaliasing(struct page *page, unsigned long vaddr)
 {
-	void *kaddr = kmap_atomic(page);
+	void *kaddr = kmap_atomic(page, KM_USER0);
 	clear_page(kaddr);
-	kunmap_atomic(kaddr);
+	kunmap_atomic(kaddr, KM_USER0);
 }
 
 /*
@@ -62,7 +65,7 @@ static void discard_old_kernel_data(void *kto)
 	__asm__("mcrr	p15, 0, %1, %0, c6	@ 0xec401f06"
 	   :
 	   : "r" (kto),
-	     "r" ((unsigned long)kto + PAGE_SIZE - 1)
+	     "r" ((unsigned long)kto + PAGE_SIZE - L1_CACHE_BYTES)
 	   : "cc");
 }
 
@@ -76,7 +79,7 @@ static void v6_copy_user_highpage_aliasing(struct page *to,
 	unsigned long kfrom, kto;
 
 	if (!test_and_set_bit(PG_dcache_clean, &from->flags))
-		__flush_dcache_page(page_mapping_file(from), from);
+		__flush_dcache_page(page_mapping(from), from);
 
 	/* FIXME: not highmem safe */
 	discard_old_kernel_data(page_address(to));
@@ -87,11 +90,14 @@ static void v6_copy_user_highpage_aliasing(struct page *to,
 	 */
 	raw_spin_lock(&v6_lock);
 
-	kfrom = COPYPAGE_V6_FROM + (offset << PAGE_SHIFT);
-	kto   = COPYPAGE_V6_TO + (offset << PAGE_SHIFT);
+	set_pte_ext(TOP_PTE(from_address) + offset, pfn_pte(page_to_pfn(from), PAGE_KERNEL), 0);
+	set_pte_ext(TOP_PTE(to_address) + offset, pfn_pte(page_to_pfn(to), PAGE_KERNEL), 0);
 
-	set_top_pte(kfrom, mk_pte(from, PAGE_KERNEL));
-	set_top_pte(kto, mk_pte(to, PAGE_KERNEL));
+	kfrom = from_address + (offset << PAGE_SHIFT);
+	kto   = to_address + (offset << PAGE_SHIFT);
+
+	flush_tlb_kernel_page(kfrom);
+	flush_tlb_kernel_page(kto);
 
 	copy_page((void *)kto, (void *)kfrom);
 
@@ -105,7 +111,8 @@ static void v6_copy_user_highpage_aliasing(struct page *to,
  */
 static void v6_clear_user_highpage_aliasing(struct page *page, unsigned long vaddr)
 {
-	unsigned long to = COPYPAGE_V6_TO + (CACHE_COLOUR(vaddr) << PAGE_SHIFT);
+	unsigned int offset = CACHE_COLOUR(vaddr);
+	unsigned long to = to_address + (offset << PAGE_SHIFT);
 
 	/* FIXME: not highmem safe */
 	discard_old_kernel_data(page_address(page));
@@ -116,7 +123,8 @@ static void v6_clear_user_highpage_aliasing(struct page *page, unsigned long vad
 	 */
 	raw_spin_lock(&v6_lock);
 
-	set_top_pte(to, mk_pte(page, PAGE_KERNEL));
+	set_pte_ext(TOP_PTE(to_address) + offset, pfn_pte(page_to_pfn(page), PAGE_KERNEL), 0);
+	flush_tlb_kernel_page(to);
 	clear_page((void *)to);
 
 	raw_spin_unlock(&v6_lock);

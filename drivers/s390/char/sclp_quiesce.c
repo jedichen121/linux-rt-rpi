@@ -1,12 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
+ *  drivers/s390/char/sclp_quiesce.c
  *     signal quiesce handler
  *
- *  Copyright IBM Corp. 1999, 2004
+ *  (C) Copyright IBM Corp. 1999,2004
  *  Author(s): Martin Schwidefsky <schwidefsky@de.ibm.com>
  *             Peter Oberparleiter <peter.oberparleiter@de.ibm.com>
  */
 
+#include <linux/module.h>
 #include <linux/types.h>
 #include <linux/cpumask.h>
 #include <linux/smp.h>
@@ -14,6 +15,7 @@
 #include <linux/reboot.h>
 #include <linux/atomic.h>
 #include <asm/ptrace.h>
+#include <asm/sigp.h>
 #include <asm/smp.h>
 
 #include "sclp.h"
@@ -80,4 +82,5 @@ static int __init sclp_quiesce_init(void)
 {
 	return sclp_register(&sclp_quiesce_event);
 }
-device_initcall(sclp_quiesce_init);
+
+module_init(sclp_quiesce_init);

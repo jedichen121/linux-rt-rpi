@@ -1,8 +1,7 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * rational fractions
  *
- * Copyright (C) 2009 emlix GmbH, Oskar Schirmer <oskar@scara.com>
+ * Copyright (C) 2009 emlix GmbH, Oskar Schirmer <os@emlix.com>
  *
  * helper functions when coping with rational numbers,
  * e.g. when calculating optimum numerator/denominator pairs for

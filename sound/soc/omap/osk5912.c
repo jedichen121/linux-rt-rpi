@@ -28,11 +28,13 @@
 #include <sound/soc.h>
 
 #include <asm/mach-types.h>
+#include <mach/hardware.h>
 #include <linux/gpio.h>
 #include <linux/module.h>
-#include <linux/platform_data/asoc-ti-mcbsp.h>
+#include <plat/mcbsp.h>
 
 #include "omap-mcbsp.h"
+#include "omap-pcm.h"
 #include "../codecs/tlv320aic23.h"
 
 #define CODEC_CLOCK 	12000000
@@ -68,7 +70,7 @@ static int osk_hw_params(struct snd_pcm_substream *substream,
 	return err;
 }
 
-static const struct snd_soc_ops osk_ops = {
+static struct snd_soc_ops osk_ops = {
 	.startup = osk_startup,
 	.hw_params = osk_hw_params,
 	.shutdown = osk_shutdown,
@@ -94,9 +96,9 @@ static const struct snd_soc_dapm_route audio_map[] = {
 static struct snd_soc_dai_link osk_dai = {
 	.name = "TLV320AIC23",
 	.stream_name = "AIC23",
-	.cpu_dai_name = "omap-mcbsp.1",
+	.cpu_dai_name = "omap-mcbsp-dai.0",
 	.codec_dai_name = "tlv320aic23-hifi",
-	.platform_name = "omap-mcbsp.1",
+	.platform_name = "omap-pcm-audio",
 	.codec_name = "tlv320aic23-codec",
 	.dai_fmt = SND_SOC_DAIFMT_DSP_B | SND_SOC_DAIFMT_NB_NF |
 		   SND_SOC_DAIFMT_CBM_CFM,
@@ -106,7 +108,6 @@ static struct snd_soc_dai_link osk_dai = {
 /* Audio machine driver */
 static struct snd_soc_card snd_soc_card_osk = {
 	.name = "OSK5912",
-	.owner = THIS_MODULE,
 	.dai_link = &osk_dai,
 	.num_links = 1,
 

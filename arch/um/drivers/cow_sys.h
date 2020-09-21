@@ -1,10 +1,9 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __COW_SYS_H__
 #define __COW_SYS_H__
 
-#include <kern_util.h>
-#include <os.h>
-#include <um_malloc.h>
+#include "kern_util.h"
+#include "os.h"
+#include "um_malloc.h"
 
 static inline void *cow_malloc(int size)
 {

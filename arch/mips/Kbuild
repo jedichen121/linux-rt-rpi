@@ -1,9 +1,7 @@
 # Fail on warnings - also for files referenced in subdirs
 # -Werror can be disabled for specific files using:
 # CFLAGS_<file.o> := -Wno-error
-ifeq ($(W),)
 subdir-ccflags-y := -Werror
-endif
 
 # platform specific definitions
 include arch/mips/Kbuild.platforms
@@ -18,9 +16,4 @@ obj- := $(platform-)
 
 obj-y += kernel/
 obj-y += mm/
-obj-y += net/
-obj-y += vdso/
-
-ifdef CONFIG_KVM
-obj-y += kvm/
-endif
+obj-y += math-emu/

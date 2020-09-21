@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * usblp.c
  *
@@ -32,17 +31,33 @@
  *      none  - Maintained in Linux kernel after v0.13
  */
 
+/*
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ */
+
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/sched/signal.h>
+#include <linux/sched.h>
 #include <linux/signal.h>
 #include <linux/poll.h>
+#include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/lp.h>
 #include <linux/mutex.h>
 #undef DEBUG
 #include <linux/usb.h>
-#include <linux/usb/ch9.h>
 #include <linux/ratelimit.h>
 
 /*
@@ -65,20 +80,12 @@
 #define IOCNR_SOFT_RESET		7
 /* Get device_id string: */
 #define LPIOC_GET_DEVICE_ID(len) _IOC(_IOC_READ, 'P', IOCNR_GET_DEVICE_ID, len)
-/* The following ioctls were added for http://hpoj.sourceforge.net:
- * Get two-int array:
- * [0]=current protocol
- *     (1=USB_CLASS_PRINTER/1/1, 2=USB_CLASS_PRINTER/1/2,
- *         3=USB_CLASS_PRINTER/1/3),
- * [1]=supported protocol mask (mask&(1<<n)!=0 means
- *     USB_CLASS_PRINTER/1/n supported):
- */
+/* The following ioctls were added for http://hpoj.sourceforge.net: */
+/* Get two-int array:
+ * [0]=current protocol (1=7/1/1, 2=7/1/2, 3=7/1/3),
+ * [1]=supported protocol mask (mask&(1<<n)!=0 means 7/1/n supported): */
 #define LPIOC_GET_PROTOCOLS(len) _IOC(_IOC_READ, 'P', IOCNR_GET_PROTOCOLS, len)
-/*
- * Set protocol
- *     (arg: 1=USB_CLASS_PRINTER/1/1, 2=USB_CLASS_PRINTER/1/2,
- *         3=USB_CLASS_PRINTER/1/3):
- */
+/* Set protocol (arg: 1=7/1/1, 2=7/1/2, 3=7/1/3): */
 #define LPIOC_SET_PROTOCOL _IOC(_IOC_WRITE, 'P', IOCNR_SET_PROTOCOL, 0)
 /* Set channel number (HP Vendor-specific command): */
 #define LPIOC_HP_SET_CHANNEL _IOC(_IOC_WRITE, 'P', IOCNR_HP_SET_CHANNEL, 0)
@@ -140,10 +147,8 @@ struct usblp {
 	int			readcount;		/* Counter for reads */
 	int			ifnum;			/* Interface number */
 	struct usb_interface	*intf;			/* The interface */
-	/*
-	 * Alternate-setting numbers and endpoints for each protocol
-	 * (USB_CLASS_PRINTER/1/{index=1,2,3}) that the device supports:
-	 */
+	/* Alternate-setting numbers and endpoints for each protocol
+	 * (7/1/{index=1,2,3}) that the device supports: */
 	struct {
 		int				alt_setting;
 		struct usb_endpoint_descriptor	*epwrite;
@@ -167,31 +172,27 @@ struct usblp {
 #ifdef DEBUG
 static void usblp_dump(struct usblp *usblp)
 {
-	struct device *dev = &usblp->intf->dev;
 	int p;
 
-	dev_dbg(dev, "usblp=0x%p\n", usblp);
-	dev_dbg(dev, "dev=0x%p\n", usblp->dev);
-	dev_dbg(dev, "present=%d\n", usblp->present);
-	dev_dbg(dev, "readbuf=0x%p\n", usblp->readbuf);
-	dev_dbg(dev, "readcount=%d\n", usblp->readcount);
-	dev_dbg(dev, "ifnum=%d\n", usblp->ifnum);
-	for (p = USBLP_FIRST_PROTOCOL; p <= USBLP_LAST_PROTOCOL; p++) {
-		dev_dbg(dev, "protocol[%d].alt_setting=%d\n", p,
-			usblp->protocol[p].alt_setting);
-		dev_dbg(dev, "protocol[%d].epwrite=%p\n", p,
-			usblp->protocol[p].epwrite);
-		dev_dbg(dev, "protocol[%d].epread=%p\n", p,
-			usblp->protocol[p].epread);
-	}
-	dev_dbg(dev, "current_protocol=%d\n", usblp->current_protocol);
-	dev_dbg(dev, "minor=%d\n", usblp->minor);
-	dev_dbg(dev, "wstatus=%d\n", usblp->wstatus);
-	dev_dbg(dev, "rstatus=%d\n", usblp->rstatus);
-	dev_dbg(dev, "quirks=%d\n", usblp->quirks);
-	dev_dbg(dev, "used=%d\n", usblp->used);
-	dev_dbg(dev, "bidir=%d\n", usblp->bidir);
-	dev_dbg(dev, "device_id_string=\"%s\"\n",
+	dbg("usblp=0x%p", usblp);
+	dbg("dev=0x%p", usblp->dev);
+	dbg("present=%d", usblp->present);
+	dbg("readbuf=0x%p", usblp->readbuf);
+	dbg("readcount=%d", usblp->readcount);
+	dbg("ifnum=%d", usblp->ifnum);
+    for (p = USBLP_FIRST_PROTOCOL; p <= USBLP_LAST_PROTOCOL; p++) {
+	dbg("protocol[%d].alt_setting=%d", p, usblp->protocol[p].alt_setting);
+	dbg("protocol[%d].epwrite=%p", p, usblp->protocol[p].epwrite);
+	dbg("protocol[%d].epread=%p", p, usblp->protocol[p].epread);
+    }
+	dbg("current_protocol=%d", usblp->current_protocol);
+	dbg("minor=%d", usblp->minor);
+	dbg("wstatus=%d", usblp->wstatus);
+	dbg("rstatus=%d", usblp->rstatus);
+	dbg("quirks=%d", usblp->quirks);
+	dbg("used=%d", usblp->used);
+	dbg("bidir=%d", usblp->bidir);
+	dbg("device_id_string=\"%s\"",
 		usblp->device_id_string ?
 			usblp->device_id_string + 2 :
 			(unsigned char *)"(null)");
@@ -261,8 +262,7 @@ static int usblp_ctrl_msg(struct usblp *usblp, int request, int type, int dir, i
 	retval = usb_control_msg(usblp->dev,
 		dir ? usb_rcvctrlpipe(usblp->dev, 0) : usb_sndctrlpipe(usblp->dev, 0),
 		request, type | dir | recip, value, index, buf, len, USBLP_CTL_TIMEOUT);
-	dev_dbg(&usblp->intf->dev,
-		"usblp_control_msg: rq: 0x%02x dir: %d recip: %d value: %d idx: %d len: %#x result: %d\n",
+	dbg("usblp_control_msg: rq: 0x%02x dir: %d recip: %d value: %d idx: %d len: %#x result: %d",
 		request, !!dir, recip, value, index, len, retval);
 	return retval < 0 ? retval : 0;
 }
@@ -279,7 +279,7 @@ static int usblp_ctrl_msg(struct usblp *usblp, int request, int type, int dir, i
 
 /*
  * See the description for usblp_select_alts() below for the usage
- * explanation.  Look into your /sys/kernel/debug/usb/devices and dmesg in
+ * explanation.  Look into your /proc/bus/usb/devices and dmesg in
  * case of any trouble.
  */
 static int proto_bias = -1;
@@ -292,7 +292,6 @@ static void usblp_bulk_read(struct urb *urb)
 {
 	struct usblp *usblp = urb->context;
 	int status = urb->status;
-	unsigned long flags;
 
 	if (usblp->present && usblp->used) {
 		if (status)
@@ -300,14 +299,14 @@ static void usblp_bulk_read(struct urb *urb)
 			    "nonzero read bulk status received: %d\n",
 			    usblp->minor, status);
 	}
-	spin_lock_irqsave(&usblp->lock, flags);
+	spin_lock(&usblp->lock);
 	if (status < 0)
 		usblp->rstatus = status;
 	else
 		usblp->rstatus = urb->actual_length;
 	usblp->rcomplete = 1;
 	wake_up(&usblp->rwait);
-	spin_unlock_irqrestore(&usblp->lock, flags);
+	spin_unlock(&usblp->lock);
 
 	usb_free_urb(urb);
 }
@@ -316,7 +315,6 @@ static void usblp_bulk_write(struct urb *urb)
 {
 	struct usblp *usblp = urb->context;
 	int status = urb->status;
-	unsigned long flags;
 
 	if (usblp->present && usblp->used) {
 		if (status)
@@ -324,7 +322,7 @@ static void usblp_bulk_write(struct urb *urb)
 			    "nonzero write bulk status received: %d\n",
 			    usblp->minor, status);
 	}
-	spin_lock_irqsave(&usblp->lock, flags);
+	spin_lock(&usblp->lock);
 	if (status < 0)
 		usblp->wstatus = status;
 	else
@@ -332,7 +330,7 @@ static void usblp_bulk_write(struct urb *urb)
 	usblp->no_paper = 0;
 	usblp->wcomplete = 1;
 	wake_up(&usblp->wwait);
-	spin_unlock_irqrestore(&usblp->lock, flags);
+	spin_unlock(&usblp->lock);
 
 	usb_free_urb(urb);
 }
@@ -445,7 +443,6 @@ static void usblp_cleanup(struct usblp *usblp)
 	kfree(usblp->readbuf);
 	kfree(usblp->device_id_string);
 	kfree(usblp->statusbuf);
-	usb_put_intf(usblp->intf);
 	kfree(usblp);
 }
 
@@ -462,21 +459,19 @@ static int usblp_release(struct inode *inode, struct file *file)
 
 	mutex_lock(&usblp_mutex);
 	usblp->used = 0;
-	if (usblp->present)
+	if (usblp->present) {
 		usblp_unlink_urbs(usblp);
-
-	usb_autopm_put_interface(usblp->intf);
-
-	if (!usblp->present)		/* finish cleanup from disconnect */
+		usb_autopm_put_interface(usblp->intf);
+	} else		/* finish cleanup from disconnect */
 		usblp_cleanup(usblp);
 	mutex_unlock(&usblp_mutex);
 	return 0;
 }
 
 /* No kernel lock - fine */
-static __poll_t usblp_poll(struct file *file, struct poll_table_struct *wait)
+static unsigned int usblp_poll(struct file *file, struct poll_table_struct *wait)
 {
-	__poll_t ret;
+	int ret;
 	unsigned long flags;
 
 	struct usblp *usblp = file->private_data;
@@ -484,8 +479,8 @@ static __poll_t usblp_poll(struct file *file, struct poll_table_struct *wait)
 	poll_wait(file, &usblp->rwait, wait);
 	poll_wait(file, &usblp->wwait, wait);
 	spin_lock_irqsave(&usblp->lock, flags);
-	ret = ((usblp->bidir && usblp->rcomplete) ? EPOLLIN  | EPOLLRDNORM : 0) |
-	   ((usblp->no_paper || usblp->wcomplete) ? EPOLLOUT | EPOLLWRNORM : 0);
+	ret = ((usblp->bidir && usblp->rcomplete) ? POLLIN  | POLLRDNORM : 0) |
+	   ((usblp->no_paper || usblp->wcomplete) ? POLLOUT | POLLWRNORM : 0);
 	spin_unlock_irqrestore(&usblp->lock, flags);
 	return ret;
 }
@@ -505,9 +500,8 @@ static long usblp_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		goto done;
 	}
 
-	dev_dbg(&usblp->intf->dev,
-		"usblp_ioctl: cmd=0x%x (%c nr=%d len=%d dir=%d)\n", cmd,
-		_IOC_TYPE(cmd), _IOC_NR(cmd), _IOC_SIZE(cmd), _IOC_DIR(cmd));
+	dbg("usblp_ioctl: cmd=0x%x (%c nr=%d len=%d dir=%d)", cmd, _IOC_TYPE(cmd),
+		_IOC_NR(cmd), _IOC_SIZE(cmd), _IOC_DIR(cmd));
 
 	if (_IOC_TYPE(cmd) == 'P')	/* new-style ioctl number */
 
@@ -600,8 +594,7 @@ static long usblp_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 				goto done;
 			}
 
-			dev_dbg(&usblp->intf->dev,
-				"usblp%d requested/got HP channel %ld/%d\n",
+			dbg("usblp%d requested/got HP channel %ld/%d",
 				usblp->minor, arg, newChannel);
 			break;
 
@@ -621,8 +614,7 @@ static long usblp_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 				goto done;
 			}
 
-			dev_dbg(&usblp->intf->dev,
-				"usblp%d is bus=%d, device=%d\n",
+			dbg("usblp%d is bus=%d, device=%d",
 				usblp->minor, twoints[0], twoints[1]);
 			break;
 
@@ -642,8 +634,7 @@ static long usblp_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 				goto done;
 			}
 
-			dev_dbg(&usblp->intf->dev,
-				"usblp%d is VID=0x%4.4X, PID=0x%4.4X\n",
+			dbg("usblp%d is VID=0x%4.4X, PID=0x%4.4X",
 				usblp->minor, twoints[0], twoints[1]);
 			break;
 
@@ -661,8 +652,7 @@ static long usblp_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		switch (cmd) {
 
 		case LPGETSTATUS:
-			retval = usblp_read_status(usblp, usblp->statusbuf);
-			if (retval) {
+			if ((retval = usblp_read_status(usblp, usblp->statusbuf))) {
 				printk_ratelimited(KERN_ERR "usblp%d:"
 					    "failed reading printer status (%d)\n",
 					    usblp->minor, retval);
@@ -695,11 +685,9 @@ static struct urb *usblp_new_writeurb(struct usblp *usblp, int transfer_length)
 	struct urb *urb;
 	char *writebuf;
 
-	writebuf = kmalloc(transfer_length, GFP_KERNEL);
-	if (writebuf == NULL)
+	if ((writebuf = kmalloc(transfer_length, GFP_KERNEL)) == NULL)
 		return NULL;
-	urb = usb_alloc_urb(0, GFP_KERNEL);
-	if (urb == NULL) {
+	if ((urb = usb_alloc_urb(0, GFP_KERNEL)) == NULL) {
 		kfree(writebuf);
 		return NULL;
 	}
@@ -736,8 +724,7 @@ static ssize_t usblp_write(struct file *file, const char __user *buffer, size_t 
 			transfer_length = USBLP_BUF_SIZE;
 
 		rv = -ENOMEM;
-		writeurb = usblp_new_writeurb(usblp, transfer_length);
-		if (writeurb == NULL)
+		if ((writeurb = usblp_new_writeurb(usblp, transfer_length)) == NULL)
 			goto raise_urb;
 		usb_anchor_urb(writeurb, &usblp->urbs);
 
@@ -874,11 +861,11 @@ static int usblp_wwait(struct usblp *usblp, int nonblock)
 
 	add_wait_queue(&usblp->wwait, &waita);
 	for (;;) {
+		set_current_state(TASK_INTERRUPTIBLE);
 		if (mutex_lock_interruptible(&usblp->mut)) {
 			rc = -EINTR;
 			break;
 		}
-		set_current_state(TASK_INTERRUPTIBLE);
 		rc = usblp_wtest(usblp, nonblock);
 		mutex_unlock(&usblp->mut);
 		if (rc <= 0)
@@ -985,8 +972,7 @@ static int usblp_submit_read(struct usblp *usblp)
 	int rc;
 
 	rc = -ENOMEM;
-	urb = usb_alloc_urb(0, GFP_KERNEL);
-	if (urb == NULL)
+	if ((urb = usb_alloc_urb(0, GFP_KERNEL)) == NULL)
 		goto raise_urb;
 
 	usb_fill_bulk_urb(urb, usblp->dev,
@@ -1001,7 +987,7 @@ static int usblp_submit_read(struct usblp *usblp)
 	usblp->rcomplete = 0;
 	spin_unlock_irqrestore(&usblp->lock, flags);
 	if ((rc = usb_submit_urb(urb, GFP_KERNEL)) < 0) {
-		dev_dbg(&usblp->intf->dev, "error submitting urb (%d)\n", rc);
+		dbg("error submitting urb (%d)", rc);
 		spin_lock_irqsave(&usblp->lock, flags);
 		usblp->rstatus = rc;
 		usblp->rcomplete = 1;
@@ -1059,7 +1045,7 @@ static const struct file_operations usblp_fops = {
 	.llseek =	noop_llseek,
 };
 
-static char *usblp_devnode(struct device *dev, umode_t *mode)
+static char *usblp_devnode(struct device *dev, mode_t *mode)
 {
 	return kasprintf(GFP_KERNEL, "usb/%s", dev_name(dev));
 }
@@ -1071,7 +1057,7 @@ static struct usb_class_driver usblp_class = {
 	.minor_base =	USBLP_MINOR_BASE,
 };
 
-static ssize_t ieee1284_id_show(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t usblp_show_ieee1284_id(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct usb_interface *intf = to_usb_interface(dev);
 	struct usblp *usblp = usb_get_intfdata(intf);
@@ -1083,7 +1069,7 @@ static ssize_t ieee1284_id_show(struct device *dev, struct device_attribute *att
 	return sprintf(buf, "%s", usblp->device_id_string+2);
 }
 
-static DEVICE_ATTR_RO(ieee1284_id);
+static DEVICE_ATTR(ieee1284_id, S_IRUGO, usblp_show_ieee1284_id, NULL);
 
 static int usblp_probe(struct usb_interface *intf,
 		       const struct usb_device_id *id)
@@ -1108,7 +1094,7 @@ static int usblp_probe(struct usb_interface *intf,
 	init_waitqueue_head(&usblp->wwait);
 	init_usb_anchor(&usblp->urbs);
 	usblp->ifnum = intf->cur_altsetting->desc.bInterfaceNumber;
-	usblp->intf = usb_get_intf(intf);
+	usblp->intf = intf;
 
 	/* Malloc device ID string buffer to the largest expected length,
 	 * since we can re-query it on an ioctl and a dynamic string
@@ -1143,8 +1129,7 @@ static int usblp_probe(struct usb_interface *intf,
 	/* Analyze and pick initial alternate settings and endpoints. */
 	protocol = usblp_select_alts(usblp);
 	if (protocol < 0) {
-		dev_dbg(&intf->dev,
-			"incompatible printer-class device 0x%4.4X/0x%4.4X\n",
+		dbg("incompatible printer-class device 0x%4.4X/0x%4.4X",
 			le16_to_cpu(dev->descriptor.idVendor),
 			le16_to_cpu(dev->descriptor.idProduct));
 		retval = -ENODEV;
@@ -1173,14 +1158,14 @@ static int usblp_probe(struct usb_interface *intf,
 
 	retval = usb_register_dev(intf, &usblp_class);
 	if (retval) {
-		dev_err(&intf->dev,
-			"usblp: Not able to get a minor (base %u, slice default): %d\n",
-			USBLP_MINOR_BASE, retval);
+		printk(KERN_ERR "usblp: Not able to get a minor"
+		    " (base %u, slice default): %d\n",
+		    USBLP_MINOR_BASE, retval);
 		goto abort_intfdata;
 	}
 	usblp->minor = intf->minor;
-	dev_info(&intf->dev,
-		"usblp%d: USB %sdirectional printer dev %d if %d alt %d proto %d vid 0x%4.4X pid 0x%4.4X\n",
+	printk(KERN_INFO "usblp%d: USB %sdirectional printer dev %d "
+		"if %d alt %d proto %d vid 0x%4.4X pid 0x%4.4X\n",
 		usblp->minor, usblp->bidir ? "Bi" : "Uni", dev->devnum,
 		usblp->ifnum,
 		usblp->protocol[usblp->current_protocol].alt_setting,
@@ -1197,7 +1182,6 @@ abort:
 	kfree(usblp->readbuf);
 	kfree(usblp->statusbuf);
 	kfree(usblp->device_id_string);
-	usb_put_intf(usblp->intf);
 	kfree(usblp);
 abort_ret:
 	return retval;
@@ -1208,31 +1192,26 @@ abort_ret:
  * but our requirements are too intricate for simple match to handle.
  *
  * The "proto_bias" option may be used to specify the preferred protocol
- * for all USB printers (1=USB_CLASS_PRINTER/1/1, 2=USB_CLASS_PRINTER/1/2,
- * 3=USB_CLASS_PRINTER/1/3).  If the device supports the preferred protocol,
- * then we bind to it.
+ * for all USB printers (1=7/1/1, 2=7/1/2, 3=7/1/3).  If the device
+ * supports the preferred protocol, then we bind to it.
  *
- * The best interface for us is USB_CLASS_PRINTER/1/2, because it
- * is compatible with a stream of characters. If we find it, we bind to it.
+ * The best interface for us is 7/1/2, because it is compatible
+ * with a stream of characters. If we find it, we bind to it.
  *
  * Note that the people from hpoj.sourceforge.net need to be able to
- * bind to USB_CLASS_PRINTER/1/3 (MLC/1284.4), so we provide them ioctls
- * for this purpose.
+ * bind to 7/1/3 (MLC/1284.4), so we provide them ioctls for this purpose.
  *
- * Failing USB_CLASS_PRINTER/1/2, we look for USB_CLASS_PRINTER/1/3,
- * even though it's probably not stream-compatible, because this matches
- * the behaviour of the old code.
+ * Failing 7/1/2, we look for 7/1/3, even though it's probably not
+ * stream-compatible, because this matches the behaviour of the old code.
  *
- * If nothing else, we bind to USB_CLASS_PRINTER/1/1
- * - the unidirectional interface.
+ * If nothing else, we bind to 7/1/1 - the unidirectional interface.
  */
 static int usblp_select_alts(struct usblp *usblp)
 {
 	struct usb_interface *if_alt;
 	struct usb_host_interface *ifd;
-	struct usb_endpoint_descriptor *epwrite, *epread;
-	int p, i;
-	int res;
+	struct usb_endpoint_descriptor *epd, *epwrite, *epread;
+	int p, i, e;
 
 	if_alt = usblp->intf;
 
@@ -1243,8 +1222,7 @@ static int usblp_select_alts(struct usblp *usblp)
 	for (i = 0; i < if_alt->num_altsetting; i++) {
 		ifd = &if_alt->altsetting[i];
 
-		if (ifd->desc.bInterfaceClass != USB_CLASS_PRINTER ||
-		    ifd->desc.bInterfaceSubClass != 1)
+		if (ifd->desc.bInterfaceClass != 7 || ifd->desc.bInterfaceSubClass != 1)
 			if (!(usblp->quirks & USBLP_QUIRK_BAD_CLASS))
 				continue;
 
@@ -1252,21 +1230,29 @@ static int usblp_select_alts(struct usblp *usblp)
 		    ifd->desc.bInterfaceProtocol > USBLP_LAST_PROTOCOL)
 			continue;
 
-		/* Look for the expected bulk endpoints. */
-		if (ifd->desc.bInterfaceProtocol > 1) {
-			res = usb_find_common_endpoints(ifd,
-					&epread, &epwrite, NULL, NULL);
-		} else {
-			epread = NULL;
-			res = usb_find_bulk_out_endpoint(ifd, &epwrite);
+		/* Look for bulk OUT and IN endpoints. */
+		epwrite = epread = NULL;
+		for (e = 0; e < ifd->desc.bNumEndpoints; e++) {
+			epd = &ifd->endpoint[e].desc;
+
+			if (usb_endpoint_is_bulk_out(epd))
+				if (!epwrite)
+					epwrite = epd;
+
+			if (usb_endpoint_is_bulk_in(epd))
+				if (!epread)
+					epread = epd;
 		}
 
 		/* Ignore buggy hardware without the right endpoints. */
-		if (res)
+		if (!epwrite || (ifd->desc.bInterfaceProtocol > 1 && !epread))
 			continue;
 
-		/* Turn off reads for buggy bidirectional printers. */
-		if (usblp->quirks & USBLP_QUIRK_BIDIR) {
+		/* Turn off reads for 7/1/1 (unidirectional) interfaces
+		 * and buggy bidirectional printers. */
+		if (ifd->desc.bInterfaceProtocol == 1) {
+			epread = NULL;
+		} else if (usblp->quirks & USBLP_QUIRK_BIDIR) {
 			printk(KERN_INFO "usblp%d: Disabling reads from "
 			    "problematic bidirectional printer\n",
 			    usblp->minor);
@@ -1316,8 +1302,7 @@ static int usblp_set_protocol(struct usblp *usblp, int protocol)
 
 	usblp->bidir = (usblp->protocol[protocol].epread != NULL);
 	usblp->current_protocol = protocol;
-	dev_dbg(&usblp->intf->dev, "usblp%d set protocol %d\n",
-		usblp->minor, protocol);
+	dbg("usblp%d set protocol %d", usblp->minor, protocol);
 	return 0;
 }
 
@@ -1330,8 +1315,7 @@ static int usblp_cache_device_id_string(struct usblp *usblp)
 
 	err = usblp_get_id(usblp, 0, usblp->device_id_string, USBLP_DEVICE_ID_SIZE - 1);
 	if (err < 0) {
-		dev_dbg(&usblp->intf->dev,
-			"usblp%d: error = %d reading IEEE-1284 Device ID string\n",
+		dbg("usblp%d: error = %d reading IEEE-1284 Device ID string",
 			usblp->minor, err);
 		usblp->device_id_string[0] = usblp->device_id_string[1] = '\0';
 		return -EIO;
@@ -1347,7 +1331,7 @@ static int usblp_cache_device_id_string(struct usblp *usblp)
 		length = USBLP_DEVICE_ID_SIZE - 1;
 	usblp->device_id_string[length] = '\0';
 
-	dev_dbg(&usblp->intf->dev, "usblp%d Device ID string [len=%d]=\"%s\"\n",
+	dbg("usblp%d Device ID string [len=%d]=\"%s\"",
 		usblp->minor, length, &usblp->device_id_string[2]);
 
 	return length;
@@ -1406,12 +1390,12 @@ static int usblp_resume(struct usb_interface *intf)
 }
 
 static const struct usb_device_id usblp_ids[] = {
-	{ USB_DEVICE_INFO(USB_CLASS_PRINTER, 1, 1) },
-	{ USB_DEVICE_INFO(USB_CLASS_PRINTER, 1, 2) },
-	{ USB_DEVICE_INFO(USB_CLASS_PRINTER, 1, 3) },
-	{ USB_INTERFACE_INFO(USB_CLASS_PRINTER, 1, 1) },
-	{ USB_INTERFACE_INFO(USB_CLASS_PRINTER, 1, 2) },
-	{ USB_INTERFACE_INFO(USB_CLASS_PRINTER, 1, 3) },
+	{ USB_DEVICE_INFO(7, 1, 1) },
+	{ USB_DEVICE_INFO(7, 1, 2) },
+	{ USB_DEVICE_INFO(7, 1, 3) },
+	{ USB_INTERFACE_INFO(7, 1, 1) },
+	{ USB_INTERFACE_INFO(7, 1, 2) },
+	{ USB_INTERFACE_INFO(7, 1, 3) },
 	{ USB_DEVICE(0x04b8, 0x0202) },	/* Seiko Epson Receipt Printer M129C */
 	{ }						/* Terminating entry */
 };

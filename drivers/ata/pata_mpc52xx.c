@@ -26,9 +26,9 @@
 #include <asm/prom.h>
 #include <asm/mpc52xx.h>
 
-#include <linux/fsl/bestcomm/bestcomm.h>
-#include <linux/fsl/bestcomm/bestcomm_priv.h>
-#include <linux/fsl/bestcomm/ata.h>
+#include <sysdev/bestcomm/bestcomm.h>
+#include <sysdev/bestcomm/bestcomm_priv.h>
+#include <sysdev/bestcomm/ata.h>
 
 #define DRV_NAME	"mpc52xx_ata"
 
@@ -621,10 +621,9 @@ static struct ata_port_operations mpc52xx_ata_port_ops = {
 	.qc_prep		= ata_noop_qc_prep,
 };
 
-static int mpc52xx_ata_init_one(struct device *dev,
-				struct mpc52xx_ata_priv *priv,
-				unsigned long raw_ata_regs,
-				int mwdma_mask, int udma_mask)
+static int __devinit
+mpc52xx_ata_init_one(struct device *dev, struct mpc52xx_ata_priv *priv,
+		     unsigned long raw_ata_regs, int mwdma_mask, int udma_mask)
 {
 	struct ata_host *host;
 	struct ata_port *ap;
@@ -664,22 +663,35 @@ static int mpc52xx_ata_init_one(struct device *dev,
 				 &mpc52xx_ata_sht);
 }
 
+static struct mpc52xx_ata_priv *
+mpc52xx_ata_remove_one(struct device *dev)
+{
+	struct ata_host *host = dev_get_drvdata(dev);
+	struct mpc52xx_ata_priv *priv = host->private_data;
+
+	ata_host_detach(host);
+
+	return priv;
+}
+
+
 /* ======================================================================== */
 /* OF Platform driver                                                       */
 /* ======================================================================== */
 
-static int mpc52xx_ata_probe(struct platform_device *op)
+static int __devinit
+mpc52xx_ata_probe(struct platform_device *op)
 {
 	unsigned int ipb_freq;
 	struct resource res_mem;
 	int ata_irq = 0;
 	struct mpc52xx_ata __iomem *ata_regs;
 	struct mpc52xx_ata_priv *priv = NULL;
-	int rv, task_irq;
+	int rv, ret, task_irq = 0;
 	int mwdma_mask = 0, udma_mask = 0;
 	const __be32 *prop;
 	int proplen;
-	struct bcom_task *dmatsk;
+	struct bcom_task *dmatsk = NULL;
 
 	/* Get ipb frequency */
 	ipb_freq = mpc5xxx_get_bus_frequency(op->dev.of_node);
@@ -705,7 +717,8 @@ static int mpc52xx_ata_probe(struct platform_device *op)
 	ata_regs = devm_ioremap(&op->dev, res_mem.start, sizeof(*ata_regs));
 	if (!ata_regs) {
 		dev_err(&op->dev, "error mapping device registers\n");
-		return -ENOMEM;
+		rv = -ENOMEM;
+		goto err;
 	}
 
 	/*
@@ -738,8 +751,9 @@ static int mpc52xx_ata_probe(struct platform_device *op)
 	/* Prepare our private structure */
 	priv = devm_kzalloc(&op->dev, sizeof(*priv), GFP_ATOMIC);
 	if (!priv) {
+		dev_err(&op->dev, "error allocating private structure\n");
 		rv = -ENOMEM;
-		goto err1;
+		goto err;
 	}
 
 	priv->ipb_period = 1000000000 / (ipb_freq / 1000);
@@ -762,15 +776,15 @@ static int mpc52xx_ata_probe(struct platform_device *op)
 	if (!dmatsk) {
 		dev_err(&op->dev, "bestcomm initialization failed\n");
 		rv = -ENOMEM;
-		goto err1;
+		goto err;
 	}
 
 	task_irq = bcom_get_task_irq(dmatsk);
-	rv = devm_request_irq(&op->dev, task_irq, &mpc52xx_ata_task_irq, 0,
+	ret = request_irq(task_irq, &mpc52xx_ata_task_irq, 0,
 				"ATA task", priv);
-	if (rv) {
+	if (ret) {
 		dev_err(&op->dev, "error requesting DMA IRQ\n");
-		goto err2;
+		goto err;
 	}
 	priv->dmatsk = dmatsk;
 
@@ -778,7 +792,7 @@ static int mpc52xx_ata_probe(struct platform_device *op)
 	rv = mpc52xx_ata_hw_init(priv);
 	if (rv) {
 		dev_err(&op->dev, "error initializing hardware\n");
-		goto err2;
+		goto err;
 	}
 
 	/* Register ourselves to libata */
@@ -786,28 +800,34 @@ static int mpc52xx_ata_probe(struct platform_device *op)
 				  mwdma_mask, udma_mask);
 	if (rv) {
 		dev_err(&op->dev, "error registering with ATA layer\n");
-		goto err2;
+		goto err;
 	}
 
 	return 0;
 
- err2:
-	irq_dispose_mapping(task_irq);
-	bcom_ata_release(dmatsk);
- err1:
-	irq_dispose_mapping(ata_irq);
+ err:
+	devm_release_mem_region(&op->dev, res_mem.start, sizeof(*ata_regs));
+	if (ata_irq)
+		irq_dispose_mapping(ata_irq);
+	if (task_irq)
+		irq_dispose_mapping(task_irq);
+	if (dmatsk)
+		bcom_ata_release(dmatsk);
+	if (ata_regs)
+		devm_iounmap(&op->dev, ata_regs);
+	if (priv)
+		devm_kfree(&op->dev, priv);
 	return rv;
 }
 
 static int
 mpc52xx_ata_remove(struct platform_device *op)
 {
-	struct ata_host *host = platform_get_drvdata(op);
-	struct mpc52xx_ata_priv *priv = host->private_data;
+	struct mpc52xx_ata_priv *priv;
 	int task_irq;
 
 	/* Deregister the ATA interface */
-	ata_platform_remove_one(op);
+	priv = mpc52xx_ata_remove_one(&op->dev);
 
 	/* Clean up DMA */
 	task_irq = bcom_get_task_irq(priv->dmatsk);
@@ -815,14 +835,22 @@ mpc52xx_ata_remove(struct platform_device *op)
 	bcom_ata_release(priv->dmatsk);
 	irq_dispose_mapping(priv->ata_irq);
 
+	/* Clear up IO allocations */
+	devm_iounmap(&op->dev, priv->ata_regs);
+	devm_release_mem_region(&op->dev, priv->ata_regs_pa,
+				sizeof(*priv->ata_regs));
+	devm_kfree(&op->dev, priv);
+
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
+
+#ifdef CONFIG_PM
+
 static int
 mpc52xx_ata_suspend(struct platform_device *op, pm_message_t state)
 {
-	struct ata_host *host = platform_get_drvdata(op);
+	struct ata_host *host = dev_get_drvdata(&op->dev);
 
 	return ata_host_suspend(host, state);
 }
@@ -830,7 +858,7 @@ mpc52xx_ata_suspend(struct platform_device *op, pm_message_t state)
 static int
 mpc52xx_ata_resume(struct platform_device *op)
 {
-	struct ata_host *host = platform_get_drvdata(op);
+	struct ata_host *host = dev_get_drvdata(&op->dev);
 	struct mpc52xx_ata_priv *priv = host->private_data;
 	int rv;
 
@@ -844,9 +872,11 @@ mpc52xx_ata_resume(struct platform_device *op)
 
 	return 0;
 }
+
 #endif
 
-static const struct of_device_id mpc52xx_ata_of_match[] = {
+
+static struct of_device_id mpc52xx_ata_of_match[] = {
 	{ .compatible = "fsl,mpc5200-ata", },
 	{ .compatible = "mpc5200-ata", },
 	{},
@@ -856,17 +886,37 @@ static const struct of_device_id mpc52xx_ata_of_match[] = {
 static struct platform_driver mpc52xx_ata_of_platform_driver = {
 	.probe		= mpc52xx_ata_probe,
 	.remove		= mpc52xx_ata_remove,
-#ifdef CONFIG_PM_SLEEP
+#ifdef CONFIG_PM
 	.suspend	= mpc52xx_ata_suspend,
 	.resume		= mpc52xx_ata_resume,
 #endif
 	.driver		= {
 		.name	= DRV_NAME,
+		.owner	= THIS_MODULE,
 		.of_match_table = mpc52xx_ata_of_match,
 	},
 };
 
-module_platform_driver(mpc52xx_ata_of_platform_driver);
+
+/* ======================================================================== */
+/* Module                                                                   */
+/* ======================================================================== */
+
+static int __init
+mpc52xx_ata_init(void)
+{
+	printk(KERN_INFO "ata: MPC52xx IDE/ATA libata driver\n");
+	return platform_driver_register(&mpc52xx_ata_of_platform_driver);
+}
+
+static void __exit
+mpc52xx_ata_exit(void)
+{
+	platform_driver_unregister(&mpc52xx_ata_of_platform_driver);
+}
+
+module_init(mpc52xx_ata_init);
+module_exit(mpc52xx_ata_exit);
 
 MODULE_AUTHOR("Sylvain Munaut <tnt@246tNt.com>");
 MODULE_DESCRIPTION("Freescale MPC52xx IDE/ATA libata driver");

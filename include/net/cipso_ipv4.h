@@ -26,7 +26,8 @@
  * the GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program;  if not, see <http://www.gnu.org/licenses/>.
+ * along with this program;  if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  *
  */
 
@@ -41,8 +42,6 @@
 #include <net/netlabel.h>
 #include <net/request_sock.h>
 #include <linux/atomic.h>
-#include <linux/refcount.h>
-#include <asm/unaligned.h>
 
 /* known doi values */
 #define CIPSO_V4_DOI_UNKNOWN          0x00000000
@@ -86,7 +85,7 @@ struct cipso_v4_doi {
 	} map;
 	u8 tags[CIPSO_V4_TAG_MAXCNT];
 
-	refcount_t refcount;
+	atomic_t refcount;
 	struct list_head list;
 	struct rcu_head rcu;
 };
@@ -120,6 +119,13 @@ extern int cipso_v4_cache_bucketsize;
 extern int cipso_v4_rbm_optfmt;
 extern int cipso_v4_rbm_strictvalid;
 #endif
+
+/*
+ * Helper Functions
+ */
+
+#define CIPSO_V4_OPTEXIST(x) (IPCB(x)->opt.cipso != 0)
+#define CIPSO_V4_OPTPTR(x) (skb_network_header(x) + IPCB(x)->opt.cipso)
 
 /*
  * DOI List Functions
@@ -184,7 +190,7 @@ static inline int cipso_v4_doi_domhsh_remove(struct cipso_v4_doi *doi_def,
 
 #ifdef CONFIG_NETLABEL
 void cipso_v4_cache_invalidate(void);
-int cipso_v4_cache_add(const unsigned char *cipso_ptr,
+int cipso_v4_cache_add(const struct sk_buff *skb,
 		       const struct netlbl_lsm_secattr *secattr);
 #else
 static inline void cipso_v4_cache_invalidate(void)
@@ -192,7 +198,7 @@ static inline void cipso_v4_cache_invalidate(void)
 	return;
 }
 
-static inline int cipso_v4_cache_add(const unsigned char *cipso_ptr,
+static inline int cipso_v4_cache_add(const struct sk_buff *skb,
 				     const struct netlbl_lsm_secattr *secattr)
 {
 	return 0;
@@ -205,8 +211,6 @@ static inline int cipso_v4_cache_add(const unsigned char *cipso_ptr,
 
 #ifdef CONFIG_NETLABEL
 void cipso_v4_error(struct sk_buff *skb, int error, u32 gateway);
-int cipso_v4_getattr(const unsigned char *cipso,
-		     struct netlbl_lsm_secattr *secattr);
 int cipso_v4_sock_setattr(struct sock *sk,
 			  const struct cipso_v4_doi *doi_def,
 			  const struct netlbl_lsm_secattr *secattr);
@@ -222,7 +226,6 @@ int cipso_v4_skbuff_setattr(struct sk_buff *skb,
 int cipso_v4_skbuff_delattr(struct sk_buff *skb);
 int cipso_v4_skbuff_getattr(const struct sk_buff *skb,
 			    struct netlbl_lsm_secattr *secattr);
-unsigned char *cipso_v4_optptr(const struct sk_buff *skb);
 int cipso_v4_validate(const struct sk_buff *skb, unsigned char **option);
 #else
 static inline void cipso_v4_error(struct sk_buff *skb,
@@ -230,12 +233,6 @@ static inline void cipso_v4_error(struct sk_buff *skb,
 				  u32 gateway)
 {
 	return;
-}
-
-static inline int cipso_v4_getattr(const unsigned char *cipso,
-				   struct netlbl_lsm_secattr *secattr)
-{
-	return -ENOSYS;
 }
 
 static inline int cipso_v4_sock_setattr(struct sock *sk,
@@ -285,47 +282,10 @@ static inline int cipso_v4_skbuff_getattr(const struct sk_buff *skb,
 	return -ENOSYS;
 }
 
-static inline unsigned char *cipso_v4_optptr(const struct sk_buff *skb)
-{
-	return NULL;
-}
-
 static inline int cipso_v4_validate(const struct sk_buff *skb,
 				    unsigned char **option)
 {
-	unsigned char *opt = *option;
-	unsigned char err_offset = 0;
-	u8 opt_len = opt[1];
-	u8 opt_iter;
-	u8 tag_len;
-
-	if (opt_len < 8) {
-		err_offset = 1;
-		goto out;
-	}
-
-	if (get_unaligned_be32(&opt[2]) == 0) {
-		err_offset = 2;
-		goto out;
-	}
-
-	for (opt_iter = 6; opt_iter < opt_len;) {
-		if (opt_iter + 1 == opt_len) {
-			err_offset = opt_iter;
-			goto out;
-		}
-		tag_len = opt[opt_iter + 1];
-		if ((tag_len == 0) || (tag_len > (opt_len - opt_iter))) {
-			err_offset = opt_iter + 1;
-			goto out;
-		}
-		opt_iter += tag_len;
-	}
-
-out:
-	*option = opt + err_offset;
-	return err_offset;
-
+	return -ENOSYS;
 }
 #endif /* CONFIG_NETLABEL */
 

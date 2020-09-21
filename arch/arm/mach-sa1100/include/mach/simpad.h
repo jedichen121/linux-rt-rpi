@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * arch/arm/mach-sa1100/include/mach/simpad.h
  *
@@ -40,8 +39,10 @@
 
 
 /*---  PCMCIA  ---*/
-#define GPIO_CF_CD              24
-#define GPIO_CF_IRQ             1
+#define GPIO_CF_CD              GPIO_GPIO24
+#define GPIO_CF_IRQ             GPIO_GPIO1
+#define IRQ_GPIO_CF_IRQ         IRQ_GPIO1
+#define IRQ_GPIO_CF_CD          IRQ_GPIO24
 
 /*--- SmartCard ---*/
 #define GPIO_SMART_CARD		GPIO_GPIO10
@@ -88,7 +89,7 @@
 #define SIMPAD_CS3_PCMCIA_SHORT		(SIMPAD_CS3_GPIO_BASE + 22)
 #define SIMPAD_CS3_GPIO_23		(SIMPAD_CS3_GPIO_BASE + 23)
 
-#define CS3_BASE        IOMEM(0xf1000000)
+#define CS3_BASE        0xf1000000
 
 long simpad_get_cs3_ro(void);
 long simpad_get_cs3_shadow(void);

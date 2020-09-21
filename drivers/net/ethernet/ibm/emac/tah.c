@@ -1,5 +1,5 @@
 /*
- * drivers/net/ethernet/ibm/emac/tah.c
+ * drivers/net/ibm_newemac/tah.c
  *
  * Driver for PowerPC 4xx on-chip ethernet controller, TAH support.
  *
@@ -18,15 +18,14 @@
  * Free Software Foundation;  either version 2 of the  License, or (at your
  * option) any later version.
  */
-#include <linux/of_address.h>
 #include <asm/io.h>
 
 #include "emac.h"
 #include "core.h"
 
-int tah_attach(struct platform_device *ofdev, int channel)
+int __devinit tah_attach(struct platform_device *ofdev, int channel)
 {
-	struct tah_instance *dev = platform_get_drvdata(ofdev);
+	struct tah_instance *dev = dev_get_drvdata(&ofdev->dev);
 
 	mutex_lock(&dev->lock);
 	/* Reset has been done at probe() time... nothing else to do for now */
@@ -38,7 +37,7 @@ int tah_attach(struct platform_device *ofdev, int channel)
 
 void tah_detach(struct platform_device *ofdev, int channel)
 {
-	struct tah_instance *dev = platform_get_drvdata(ofdev);
+	struct tah_instance *dev = dev_get_drvdata(&ofdev->dev);
 
 	mutex_lock(&dev->lock);
 	--dev->users;
@@ -47,7 +46,7 @@ void tah_detach(struct platform_device *ofdev, int channel)
 
 void tah_reset(struct platform_device *ofdev)
 {
-	struct tah_instance *dev = platform_get_drvdata(ofdev);
+	struct tah_instance *dev = dev_get_drvdata(&ofdev->dev);
 	struct tah_regs __iomem *p = dev->base;
 	int n;
 
@@ -58,7 +57,8 @@ void tah_reset(struct platform_device *ofdev)
 		--n;
 
 	if (unlikely(!n))
-		printk(KERN_ERR "%pOF: reset timeout\n", ofdev->dev.of_node);
+		printk(KERN_ERR "%s: reset timeout\n",
+			ofdev->dev.of_node->full_name);
 
 	/* 10KB TAH TX FIFO accommodates the max MTU of 9000 */
 	out_be32(&p->mr,
@@ -74,7 +74,7 @@ int tah_get_regs_len(struct platform_device *ofdev)
 
 void *tah_dump_regs(struct platform_device *ofdev, void *buf)
 {
-	struct tah_instance *dev = platform_get_drvdata(ofdev);
+	struct tah_instance *dev = dev_get_drvdata(&ofdev->dev);
 	struct emac_ethtool_regs_subhdr *hdr = buf;
 	struct tah_regs *regs = (struct tah_regs *)(hdr + 1);
 
@@ -87,7 +87,7 @@ void *tah_dump_regs(struct platform_device *ofdev, void *buf)
 	return regs + 1;
 }
 
-static int tah_probe(struct platform_device *ofdev)
+static int __devinit tah_probe(struct platform_device *ofdev)
 {
 	struct device_node *np = ofdev->dev.of_node;
 	struct tah_instance *dev;
@@ -96,15 +96,19 @@ static int tah_probe(struct platform_device *ofdev)
 
 	rc = -ENOMEM;
 	dev = kzalloc(sizeof(struct tah_instance), GFP_KERNEL);
-	if (dev == NULL)
+	if (dev == NULL) {
+		printk(KERN_ERR "%s: could not allocate TAH device!\n",
+		       np->full_name);
 		goto err_gone;
+	}
 
 	mutex_init(&dev->lock);
 	dev->ofdev = ofdev;
 
 	rc = -ENXIO;
 	if (of_address_to_resource(np, 0, &regs)) {
-		printk(KERN_ERR "%pOF: Can't get registers address\n", np);
+		printk(KERN_ERR "%s: Can't get registers address\n",
+		       np->full_name);
 		goto err_free;
 	}
 
@@ -112,16 +116,18 @@ static int tah_probe(struct platform_device *ofdev)
 	dev->base = (struct tah_regs __iomem *)ioremap(regs.start,
 					       sizeof(struct tah_regs));
 	if (dev->base == NULL) {
-		printk(KERN_ERR "%pOF: Can't map device registers!\n", np);
+		printk(KERN_ERR "%s: Can't map device registers!\n",
+		       np->full_name);
 		goto err_free;
 	}
 
-	platform_set_drvdata(ofdev, dev);
+	dev_set_drvdata(&ofdev->dev, dev);
 
 	/* Initialize TAH and enable IPv4 checksum verification, no TSO yet */
 	tah_reset(ofdev);
 
-	printk(KERN_INFO "TAH %pOF initialized\n", ofdev->dev.of_node);
+	printk(KERN_INFO
+	       "TAH %s initialized\n", ofdev->dev.of_node->full_name);
 	wmb();
 
 	return 0;
@@ -132,9 +138,11 @@ static int tah_probe(struct platform_device *ofdev)
 	return rc;
 }
 
-static int tah_remove(struct platform_device *ofdev)
+static int __devexit tah_remove(struct platform_device *ofdev)
 {
-	struct tah_instance *dev = platform_get_drvdata(ofdev);
+	struct tah_instance *dev = dev_get_drvdata(&ofdev->dev);
+
+	dev_set_drvdata(&ofdev->dev, NULL);
 
 	WARN_ON(dev->users != 0);
 
@@ -144,7 +152,7 @@ static int tah_remove(struct platform_device *ofdev)
 	return 0;
 }
 
-static const struct of_device_id tah_match[] =
+static struct of_device_id tah_match[] =
 {
 	{
 		.compatible	= "ibm,tah",
@@ -159,6 +167,7 @@ static const struct of_device_id tah_match[] =
 static struct platform_driver tah_driver = {
 	.driver = {
 		.name = "emac-tah",
+		.owner = THIS_MODULE,
 		.of_match_table = tah_match,
 	},
 	.probe = tah_probe,

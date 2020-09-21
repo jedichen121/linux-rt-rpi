@@ -23,6 +23,7 @@
 #include <linux/spinlock.h>
 #include <asm/sections.h>
 #include <asm/io.h>
+#include <asm/system.h>
 #include <asm/prom.h>
 #include <asm/machdep.h>
 #include <asm/nvram.h>
@@ -278,7 +279,7 @@ static u32 core99_check(u8* datas)
 
 static int sm_erase_bank(int bank)
 {
-	int stat;
+	int stat, i;
 	unsigned long timeout;
 
 	u8 __iomem *base = (u8 __iomem *)nvram_data + core99_bank*NVRAM_SIZE;
@@ -300,10 +301,11 @@ static int sm_erase_bank(int bank)
 	out_8(base, SM_FLASH_CMD_CLEAR_STATUS);
 	out_8(base, SM_FLASH_CMD_RESET);
 
-	if (memchr_inv(base, 0xff, NVRAM_SIZE)) {
-		printk(KERN_ERR "nvram: Sharp/Micron flash erase failed !\n");
-		return -ENXIO;
-	}
+	for (i=0; i<NVRAM_SIZE; i++)
+		if (base[i] != 0xff) {
+			printk(KERN_ERR "nvram: Sharp/Micron flash erase failed !\n");
+			return -ENXIO;
+		}
 	return 0;
 }
 
@@ -334,16 +336,17 @@ static int sm_write_bank(int bank, u8* datas)
 	}
 	out_8(base, SM_FLASH_CMD_CLEAR_STATUS);
 	out_8(base, SM_FLASH_CMD_RESET);
-	if (memcmp(base, datas, NVRAM_SIZE)) {
-		printk(KERN_ERR "nvram: Sharp/Micron flash write failed !\n");
-		return -ENXIO;
-	}
+	for (i=0; i<NVRAM_SIZE; i++)
+		if (base[i] != datas[i]) {
+			printk(KERN_ERR "nvram: Sharp/Micron flash write failed !\n");
+			return -ENXIO;
+		}
 	return 0;
 }
 
 static int amd_erase_bank(int bank)
 {
-	int stat = 0;
+	int i, stat = 0;
 	unsigned long timeout;
 
 	u8 __iomem *base = (u8 __iomem *)nvram_data + core99_bank*NVRAM_SIZE;
@@ -379,11 +382,12 @@ static int amd_erase_bank(int bank)
 	/* Reset */
 	out_8(base, 0xf0);
 	udelay(1);
-
-	if (memchr_inv(base, 0xff, NVRAM_SIZE)) {
-		printk(KERN_ERR "nvram: AMD flash erase failed !\n");
-		return -ENXIO;
-	}
+	
+	for (i=0; i<NVRAM_SIZE; i++)
+		if (base[i] != 0xff) {
+			printk(KERN_ERR "nvram: AMD flash erase failed !\n");
+			return -ENXIO;
+		}
 	return 0;
 }
 
@@ -425,10 +429,11 @@ static int amd_write_bank(int bank, u8* datas)
 	out_8(base, 0xf0);
 	udelay(1);
 
-	if (memcmp(base, datas, NVRAM_SIZE)) {
-		printk(KERN_ERR "nvram: AMD flash write failed !\n");
-		return -ENXIO;
-	}
+	for (i=0; i<NVRAM_SIZE; i++)
+		if (base[i] != datas[i]) {
+			printk(KERN_ERR "nvram: AMD flash write failed !\n");
+			return -ENXIO;
+		}
 	return 0;
 }
 
@@ -513,7 +518,11 @@ static int __init core99_nvram_setup(struct device_node *dp, unsigned long addr)
 		printk(KERN_ERR "nvram: no address\n");
 		return -EINVAL;
 	}
-	nvram_image = memblock_virt_alloc(NVRAM_SIZE, 0);
+	nvram_image = alloc_bootmem(NVRAM_SIZE);
+	if (nvram_image == NULL) {
+		printk(KERN_ERR "nvram: can't allocate ram image\n");
+		return -ENOMEM;
+	}
 	nvram_data = ioremap(addr, NVRAM_SIZE*2);
 	nvram_naddrs = 1; /* Make sure we get the correct case */
 

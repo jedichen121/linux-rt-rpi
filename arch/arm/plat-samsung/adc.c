@@ -1,14 +1,18 @@
-// SPDX-License-Identifier: GPL-1.0+
-//
-// Copyright (c) 2008 Simtec Electronics
-//	http://armlinux.simtec.co.uk/
-//	Ben Dooks <ben@simtec.co.uk>, <ben-linux@fluff.org>
-//
-// Samsung ADC device core
+/* arch/arm/plat-samsung/adc.c
+ *
+ * Copyright (c) 2008 Simtec Electronics
+ *	http://armlinux.simtec.co.uk/
+ *	Ben Dooks <ben@simtec.co.uk>, <ben-linux@fluff.org>
+ *
+ * Samsung ADC device core
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License.
+*/
 
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/sched.h>
 #include <linux/list.h>
@@ -39,7 +43,7 @@ enum s3c_cpu_type {
 	TYPE_ADCV1, /* S3C24XX */
 	TYPE_ADCV11, /* S3C2443 */
 	TYPE_ADCV12, /* S3C2416, S3C2450 */
-	TYPE_ADCV2, /* S3C64XX */
+	TYPE_ADCV2, /* S3C64XX, S5P64X0, S5PC100 */
 	TYPE_ADCV3, /* S5PV210, S5PC110, EXYNOS4210 */
 };
 
@@ -153,12 +157,10 @@ int s3c_adc_start(struct s3c_adc_client *client,
 		return -EINVAL;
 	}
 
-	spin_lock_irqsave(&adc->lock, flags);
-
-	if (client->is_ts && adc->ts_pend) {
-		spin_unlock_irqrestore(&adc->lock, flags);
+	if (client->is_ts && adc->ts_pend)
 		return -EAGAIN;
-	}
+
+	spin_lock_irqsave(&adc->lock, flags);
 
 	client->channel = channel;
 	client->nr_samples = nr_samples;
@@ -234,9 +236,11 @@ struct s3c_adc_client *s3c_adc_register(struct platform_device *pdev,
 	if (!pdev)
 		return ERR_PTR(-EINVAL);
 
-	client = kzalloc(sizeof(*client), GFP_KERNEL);
-	if (!client)
+	client = kzalloc(sizeof(struct s3c_adc_client), GFP_KERNEL);
+	if (!client) {
+		dev_err(&pdev->dev, "no memory for adc client\n");
 		return ERR_PTR(-ENOMEM);
+	}
 
 	client->pdev = pdev;
 	client->is_ts = is_ts;
@@ -338,50 +342,63 @@ static int s3c_adc_probe(struct platform_device *pdev)
 	int ret;
 	unsigned tmp;
 
-	adc = devm_kzalloc(dev, sizeof(*adc), GFP_KERNEL);
-	if (!adc)
+	adc = kzalloc(sizeof(struct adc_device), GFP_KERNEL);
+	if (adc == NULL) {
+		dev_err(dev, "failed to allocate adc_device\n");
 		return -ENOMEM;
+	}
 
 	spin_lock_init(&adc->lock);
 
 	adc->pdev = pdev;
 	adc->prescale = S3C2410_ADCCON_PRSCVL(49);
 
-	adc->vdd = devm_regulator_get(dev, "vdd");
+	adc->vdd = regulator_get(dev, "vdd");
 	if (IS_ERR(adc->vdd)) {
 		dev_err(dev, "operating without regulator \"vdd\" .\n");
-		return PTR_ERR(adc->vdd);
+		ret = PTR_ERR(adc->vdd);
+		goto err_alloc;
 	}
 
 	adc->irq = platform_get_irq(pdev, 1);
 	if (adc->irq <= 0) {
 		dev_err(dev, "failed to get adc irq\n");
-		return -ENOENT;
+		ret = -ENOENT;
+		goto err_reg;
 	}
 
-	ret = devm_request_irq(dev, adc->irq, s3c_adc_irq, 0, dev_name(dev),
-				adc);
+	ret = request_irq(adc->irq, s3c_adc_irq, 0, dev_name(dev), adc);
 	if (ret < 0) {
 		dev_err(dev, "failed to attach adc irq\n");
-		return ret;
+		goto err_reg;
 	}
 
-	adc->clk = devm_clk_get(dev, "adc");
+	adc->clk = clk_get(dev, "adc");
 	if (IS_ERR(adc->clk)) {
 		dev_err(dev, "failed to get adc clock\n");
-		return PTR_ERR(adc->clk);
+		ret = PTR_ERR(adc->clk);
+		goto err_irq;
 	}
 
 	regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	adc->regs = devm_ioremap_resource(dev, regs);
-	if (IS_ERR(adc->regs))
-		return PTR_ERR(adc->regs);
+	if (!regs) {
+		dev_err(dev, "failed to find registers\n");
+		ret = -ENXIO;
+		goto err_clk;
+	}
+
+	adc->regs = ioremap(regs->start, resource_size(regs));
+	if (!adc->regs) {
+		dev_err(dev, "failed to map registers\n");
+		ret = -ENXIO;
+		goto err_clk;
+	}
 
 	ret = regulator_enable(adc->vdd);
 	if (ret)
-		return ret;
+		goto err_ioremap;
 
-	clk_prepare_enable(adc->clk);
+	clk_enable(adc->clk);
 
 	tmp = adc->prescale | S3C2410_ADCCON_PRSCEN;
 
@@ -399,14 +416,32 @@ static int s3c_adc_probe(struct platform_device *pdev)
 	adc_dev = adc;
 
 	return 0;
+
+ err_ioremap:
+	iounmap(adc->regs);
+ err_clk:
+	clk_put(adc->clk);
+
+ err_irq:
+	free_irq(adc->irq, adc);
+ err_reg:
+	regulator_put(adc->vdd);
+ err_alloc:
+	kfree(adc);
+	return ret;
 }
 
-static int s3c_adc_remove(struct platform_device *pdev)
+static int __devexit s3c_adc_remove(struct platform_device *pdev)
 {
 	struct adc_device *adc = platform_get_drvdata(pdev);
 
-	clk_disable_unprepare(adc->clk);
+	iounmap(adc->regs);
+	free_irq(adc->irq, adc);
+	clk_disable(adc->clk);
 	regulator_disable(adc->vdd);
+	regulator_put(adc->vdd);
+	clk_put(adc->clk);
+	kfree(adc);
 
 	return 0;
 }
@@ -414,7 +449,9 @@ static int s3c_adc_remove(struct platform_device *pdev)
 #ifdef CONFIG_PM
 static int s3c_adc_suspend(struct device *dev)
 {
-	struct adc_device *adc = dev_get_drvdata(dev);
+	struct platform_device *pdev = container_of(dev,
+			struct platform_device, dev);
+	struct adc_device *adc = platform_get_drvdata(pdev);
 	unsigned long flags;
 	u32 con;
 
@@ -434,7 +471,8 @@ static int s3c_adc_suspend(struct device *dev)
 
 static int s3c_adc_resume(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
+	struct platform_device *pdev = container_of(dev,
+			struct platform_device, dev);
 	struct adc_device *adc = platform_get_drvdata(pdev);
 	enum s3c_cpu_type cpu = platform_get_device_id(pdev)->driver_data;
 	int ret;
@@ -464,7 +502,7 @@ static int s3c_adc_resume(struct device *dev)
 #define s3c_adc_resume NULL
 #endif
 
-static const struct platform_device_id s3c_adc_driver_ids[] = {
+static struct platform_device_id s3c_adc_driver_ids[] = {
 	{
 		.name           = "s3c24xx-adc",
 		.driver_data    = TYPE_ADCV1,
@@ -494,10 +532,11 @@ static struct platform_driver s3c_adc_driver = {
 	.id_table	= s3c_adc_driver_ids,
 	.driver		= {
 		.name	= "s3c-adc",
+		.owner	= THIS_MODULE,
 		.pm	= &adc_pm_ops,
 	},
 	.probe		= s3c_adc_probe,
-	.remove		= s3c_adc_remove,
+	.remove		= __devexit_p(s3c_adc_remove),
 };
 
 static int __init adc_init(void)

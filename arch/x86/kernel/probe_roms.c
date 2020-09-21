@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/sched.h>
 #include <linux/mm.h>
 #include <linux/uaccess.h>
@@ -13,9 +12,8 @@
 #include <linux/pci.h>
 #include <linux/export.h>
 
-#include <asm/probe_roms.h>
 #include <asm/pci-direct.h>
-#include <asm/e820/api.h>
+#include <asm/e820.h>
 #include <asm/mmzone.h>
 #include <asm/setup.h>
 #include <asm/sections.h>
@@ -151,7 +149,7 @@ static struct resource *find_oprom(struct pci_dev *pdev)
 	return oprom;
 }
 
-void __iomem *pci_map_biosrom(struct pci_dev *pdev)
+void *pci_map_biosrom(struct pci_dev *pdev)
 {
 	struct resource *oprom = find_oprom(pdev);
 

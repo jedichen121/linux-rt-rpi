@@ -25,6 +25,7 @@
 #include <net/protocol.h>
 #include <net/tcp.h>
 #include <net/udp.h>
+#include <asm/system.h>
 #include <linux/stat.h>
 #include <linux/proc_fs.h>
 
@@ -42,18 +43,13 @@
 
 static struct ip_vs_protocol *ip_vs_proto_table[IP_VS_PROTO_TAB_SIZE];
 
-/* States for conn templates: NONE or words separated with ",", max 15 chars */
-static const char *ip_vs_ctpl_state_name_table[IP_VS_CTPL_S_LAST] = {
-	[IP_VS_CTPL_S_NONE]			= "NONE",
-	[IP_VS_CTPL_S_ASSURED]			= "ASSURED",
-};
 
 /*
  *	register an ipvs protocol
  */
 static int __used __init register_ip_vs_protocol(struct ip_vs_protocol *pp)
 {
-	unsigned int hash = IP_VS_PROTO_HASH(pp->protocol);
+	unsigned hash = IP_VS_PROTO_HASH(pp->protocol);
 
 	pp->next = ip_vs_proto_table[hash];
 	ip_vs_proto_table[hash] = pp;
@@ -64,15 +60,19 @@ static int __used __init register_ip_vs_protocol(struct ip_vs_protocol *pp)
 	return 0;
 }
 
+#if defined(CONFIG_IP_VS_PROTO_TCP) || defined(CONFIG_IP_VS_PROTO_UDP) || \
+    defined(CONFIG_IP_VS_PROTO_SCTP) || defined(CONFIG_IP_VS_PROTO_AH) || \
+    defined(CONFIG_IP_VS_PROTO_ESP)
 /*
  *	register an ipvs protocols netns related data
  */
 static int
-register_ip_vs_proto_netns(struct netns_ipvs *ipvs, struct ip_vs_protocol *pp)
+register_ip_vs_proto_netns(struct net *net, struct ip_vs_protocol *pp)
 {
-	unsigned int hash = IP_VS_PROTO_HASH(pp->protocol);
+	struct netns_ipvs *ipvs = net_ipvs(net);
+	unsigned hash = IP_VS_PROTO_HASH(pp->protocol);
 	struct ip_vs_proto_data *pd =
-			kzalloc(sizeof(struct ip_vs_proto_data), GFP_KERNEL);
+			kzalloc(sizeof(struct ip_vs_proto_data), GFP_ATOMIC);
 
 	if (!pd)
 		return -ENOMEM;
@@ -82,18 +82,12 @@ register_ip_vs_proto_netns(struct netns_ipvs *ipvs, struct ip_vs_protocol *pp)
 	ipvs->proto_data_table[hash] = pd;
 	atomic_set(&pd->appcnt, 0);	/* Init app counter */
 
-	if (pp->init_netns != NULL) {
-		int ret = pp->init_netns(ipvs, pd);
-		if (ret) {
-			/* unlink an free proto data */
-			ipvs->proto_data_table[hash] = pd->next;
-			kfree(pd);
-			return ret;
-		}
-	}
+	if (pp->init_netns != NULL)
+		pp->init_netns(net, pd);
 
 	return 0;
 }
+#endif
 
 /*
  *	unregister an ipvs protocol
@@ -101,7 +95,7 @@ register_ip_vs_proto_netns(struct netns_ipvs *ipvs, struct ip_vs_protocol *pp)
 static int unregister_ip_vs_protocol(struct ip_vs_protocol *pp)
 {
 	struct ip_vs_protocol **pp_p;
-	unsigned int hash = IP_VS_PROTO_HASH(pp->protocol);
+	unsigned hash = IP_VS_PROTO_HASH(pp->protocol);
 
 	pp_p = &ip_vs_proto_table[hash];
 	for (; *pp_p; pp_p = &(*pp_p)->next) {
@@ -120,17 +114,18 @@ static int unregister_ip_vs_protocol(struct ip_vs_protocol *pp)
  *	unregister an ipvs protocols netns data
  */
 static int
-unregister_ip_vs_proto_netns(struct netns_ipvs *ipvs, struct ip_vs_proto_data *pd)
+unregister_ip_vs_proto_netns(struct net *net, struct ip_vs_proto_data *pd)
 {
+	struct netns_ipvs *ipvs = net_ipvs(net);
 	struct ip_vs_proto_data **pd_p;
-	unsigned int hash = IP_VS_PROTO_HASH(pd->pp->protocol);
+	unsigned hash = IP_VS_PROTO_HASH(pd->pp->protocol);
 
 	pd_p = &ipvs->proto_data_table[hash];
 	for (; *pd_p; pd_p = &(*pd_p)->next) {
 		if (*pd_p == pd) {
 			*pd_p = pd->next;
 			if (pd->pp->exit_netns != NULL)
-				pd->pp->exit_netns(ipvs, pd);
+				pd->pp->exit_netns(net, pd);
 			kfree(pd);
 			return 0;
 		}
@@ -145,7 +140,7 @@ unregister_ip_vs_proto_netns(struct netns_ipvs *ipvs, struct ip_vs_proto_data *p
 struct ip_vs_protocol * ip_vs_proto_get(unsigned short proto)
 {
 	struct ip_vs_protocol *pp;
-	unsigned int hash = IP_VS_PROTO_HASH(proto);
+	unsigned hash = IP_VS_PROTO_HASH(proto);
 
 	for (pp = ip_vs_proto_table[hash]; pp; pp = pp->next) {
 		if (pp->protocol == proto)
@@ -160,10 +155,10 @@ EXPORT_SYMBOL(ip_vs_proto_get);
  *	get ip_vs_protocol object data by netns and proto
  */
 struct ip_vs_proto_data *
-ip_vs_proto_data_get(struct netns_ipvs *ipvs, unsigned short proto)
+__ipvs_proto_data_get(struct netns_ipvs *ipvs, unsigned short proto)
 {
 	struct ip_vs_proto_data *pd;
-	unsigned int hash = IP_VS_PROTO_HASH(proto);
+	unsigned hash = IP_VS_PROTO_HASH(proto);
 
 	for (pd = ipvs->proto_data_table[hash]; pd; pd = pd->next) {
 		if (pd->pp->protocol == proto)
@@ -171,6 +166,14 @@ ip_vs_proto_data_get(struct netns_ipvs *ipvs, unsigned short proto)
 	}
 
 	return NULL;
+}
+
+struct ip_vs_proto_data *
+ip_vs_proto_data_get(struct net *net, unsigned short proto)
+{
+	struct netns_ipvs *ipvs = net_ipvs(net);
+
+	return __ipvs_proto_data_get(ipvs, proto);
 }
 EXPORT_SYMBOL(ip_vs_proto_data_get);
 
@@ -194,24 +197,38 @@ void ip_vs_protocol_timeout_change(struct netns_ipvs *ipvs, int flags)
 int *
 ip_vs_create_timeout_table(int *table, int size)
 {
-	return kmemdup(table, size, GFP_KERNEL);
+	return kmemdup(table, size, GFP_ATOMIC);
 }
 
 
-const char *ip_vs_state_name(const struct ip_vs_conn *cp)
+/*
+ *	Set timeout value for state specified by name
+ */
+int
+ip_vs_set_state_timeout(int *table, int num, const char *const *names,
+			const char *name, int to)
 {
-	unsigned int state = cp->state;
-	struct ip_vs_protocol *pp;
+	int i;
 
-	if (cp->flags & IP_VS_CONN_F_TEMPLATE) {
+	if (!table || !name || !to)
+		return -EINVAL;
 
-		if (state >= IP_VS_CTPL_S_LAST)
-			return "ERR!";
-		return ip_vs_ctpl_state_name_table[state] ? : "?";
+	for (i = 0; i < num; i++) {
+		if (strcmp(names[i], name))
+			continue;
+		table[i] = to * HZ;
+		return 0;
 	}
-	pp = ip_vs_proto_get(cp->protocol);
+	return -ENOENT;
+}
+
+
+const char * ip_vs_state_name(__u16 proto, int state)
+{
+	struct ip_vs_protocol *pp = ip_vs_proto_get(proto);
+
 	if (pp == NULL || pp->state_name == NULL)
-		return (cp->protocol == IPPROTO_IP) ? "NONE" : "ERR!";
+		return (IPPROTO_IP == proto) ? "NONE" : "ERR!";
 	return pp->state_name(state);
 }
 
@@ -261,17 +278,17 @@ ip_vs_tcpudp_debug_packet_v6(struct ip_vs_protocol *pp,
 	if (ih == NULL)
 		sprintf(buf, "TRUNCATED");
 	else if (ih->nexthdr == IPPROTO_FRAGMENT)
-		sprintf(buf, "%pI6c->%pI6c frag", &ih->saddr, &ih->daddr);
+		sprintf(buf, "%pI6->%pI6 frag",	&ih->saddr, &ih->daddr);
 	else {
 		__be16 _ports[2], *pptr;
 
 		pptr = skb_header_pointer(skb, offset + sizeof(struct ipv6hdr),
 					  sizeof(_ports), _ports);
 		if (pptr == NULL)
-			sprintf(buf, "TRUNCATED %pI6c->%pI6c",
+			sprintf(buf, "TRUNCATED %pI6->%pI6",
 				&ih->saddr, &ih->daddr);
 		else
-			sprintf(buf, "%pI6c:%u->%pI6c:%u",
+			sprintf(buf, "%pI6:%u->%pI6:%u",
 				&ih->saddr, ntohs(pptr[0]),
 				&ih->daddr, ntohs(pptr[1]));
 	}
@@ -298,48 +315,36 @@ ip_vs_tcpudp_debug_packet(int af, struct ip_vs_protocol *pp,
 /*
  * per network name-space init
  */
-int __net_init ip_vs_protocol_net_init(struct netns_ipvs *ipvs)
+int __net_init ip_vs_protocol_net_init(struct net *net)
 {
-	int i, ret;
-	static struct ip_vs_protocol *protos[] = {
 #ifdef CONFIG_IP_VS_PROTO_TCP
-        &ip_vs_protocol_tcp,
+	register_ip_vs_proto_netns(net, &ip_vs_protocol_tcp);
 #endif
 #ifdef CONFIG_IP_VS_PROTO_UDP
-	&ip_vs_protocol_udp,
+	register_ip_vs_proto_netns(net, &ip_vs_protocol_udp);
 #endif
 #ifdef CONFIG_IP_VS_PROTO_SCTP
-	&ip_vs_protocol_sctp,
+	register_ip_vs_proto_netns(net, &ip_vs_protocol_sctp);
 #endif
 #ifdef CONFIG_IP_VS_PROTO_AH
-	&ip_vs_protocol_ah,
+	register_ip_vs_proto_netns(net, &ip_vs_protocol_ah);
 #endif
 #ifdef CONFIG_IP_VS_PROTO_ESP
-	&ip_vs_protocol_esp,
+	register_ip_vs_proto_netns(net, &ip_vs_protocol_esp);
 #endif
-	};
-
-	for (i = 0; i < ARRAY_SIZE(protos); i++) {
-		ret = register_ip_vs_proto_netns(ipvs, protos[i]);
-		if (ret < 0)
-			goto cleanup;
-	}
 	return 0;
-
-cleanup:
-	ip_vs_protocol_net_cleanup(ipvs);
-	return ret;
 }
 
-void __net_exit ip_vs_protocol_net_cleanup(struct netns_ipvs *ipvs)
+void __net_exit ip_vs_protocol_net_cleanup(struct net *net)
 {
+	struct netns_ipvs *ipvs = net_ipvs(net);
 	struct ip_vs_proto_data *pd;
 	int i;
 
 	/* unregister all the ipvs proto data for this netns */
 	for (i = 0; i < IP_VS_PROTO_TAB_SIZE; i++) {
 		while ((pd = ipvs->proto_data_table[i]) != NULL)
-			unregister_ip_vs_proto_netns(ipvs, pd);
+			unregister_ip_vs_proto_netns(net, pd);
 	}
 }
 

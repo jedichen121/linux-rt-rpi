@@ -71,6 +71,7 @@
 #include <linux/slab.h>
 #include <linux/hil.h>
 #include <asm/io.h>
+#include <asm/system.h>
 
 /* Machine-specific abstraction */
 
@@ -79,7 +80,7 @@
 # define sdc_readb(p)		gsc_readb(p)
 # define sdc_writeb(v,p)	gsc_writeb((v),(p))
 #elif defined(__mc68000__)
-#include <linux/uaccess.h>
+# include <asm/uaccess.h>
 # define sdc_readb(p)		in_8(p)
 # define sdc_writeb(v,p)	out_8((p),(v))
 #else
@@ -104,7 +105,7 @@ EXPORT_SYMBOL(__hp_sdc_enqueue_transaction);
 EXPORT_SYMBOL(hp_sdc_enqueue_transaction);
 EXPORT_SYMBOL(hp_sdc_dequeue_transaction);
 
-static bool hp_sdc_disabled;
+static unsigned int hp_sdc_disabled;
 module_param_named(no_hpsdc, hp_sdc_disabled, bool, 0);
 MODULE_PARM_DESC(no_hpsdc, "Do not enable HP SDC driver.");
 
@@ -193,7 +194,7 @@ static void hp_sdc_take(int irq, void *dev_id, uint8_t status, uint8_t data)
 	curr->seq[curr->idx++] = status;
 	curr->seq[curr->idx++] = data;
 	hp_sdc.rqty -= 2;
-	hp_sdc.rtime = ktime_get();
+	do_gettimeofday(&hp_sdc.rtv);
 
 	if (hp_sdc.rqty <= 0) {
 		/* All data has been gathered. */
@@ -306,10 +307,13 @@ static void hp_sdc_tasklet(unsigned long foo)
 	write_lock_irq(&hp_sdc.rtq_lock);
 
 	if (hp_sdc.rcurr >= 0) {
-		ktime_t now = ktime_get();
+		struct timeval tv;
 
-		if (ktime_after(now, ktime_add_us(hp_sdc.rtime,
-						  HP_SDC_MAX_REG_DELAY))) {
+		do_gettimeofday(&tv);
+		if (tv.tv_sec > hp_sdc.rtv.tv_sec)
+			tv.tv_usec += USEC_PER_SEC;
+
+		if (tv.tv_usec - hp_sdc.rtv.tv_usec > HP_SDC_MAX_REG_DELAY) {
 			hp_sdc_transaction *curr;
 			uint8_t tmp;
 
@@ -318,8 +322,8 @@ static void hp_sdc_tasklet(unsigned long foo)
 			 * we'll need to figure out a way to communicate
 			 * it back to the application. and be less verbose.
 			 */
-			printk(KERN_WARNING PREFIX "read timeout (%lldus)!\n",
-			       ktime_us_delta(now, hp_sdc.rtime));
+			printk(KERN_WARNING PREFIX "read timeout (%ius)!\n",
+			       (int)(tv.tv_usec - hp_sdc.rtv.tv_usec));
 			curr->idx += hp_sdc.rqty;
 			hp_sdc.rqty = 0;
 			tmp = curr->seq[curr->actidx];
@@ -548,7 +552,7 @@ unsigned long hp_sdc_put(void)
 
 			/* Start a new read */
 			hp_sdc.rqty = curr->seq[curr->idx];
-			hp_sdc.rtime = ktime_get();
+			do_gettimeofday(&hp_sdc.rtv);
 			curr->idx++;
 			/* Still need to lock here in case of spurious irq. */
 			write_lock_irq(&hp_sdc.rtq_lock);
@@ -791,7 +795,7 @@ int hp_sdc_release_cooked_irq(hp_sdc_irqhook *callback)
 
 /************************* Keepalive timer task *********************/
 
-static void hp_sdc_kicker(struct timer_list *unused)
+static void hp_sdc_kicker(unsigned long data)
 {
 	tasklet_schedule(&hp_sdc.task);
 	/* Re-insert the periodic task. */
@@ -802,7 +806,7 @@ static void hp_sdc_kicker(struct timer_list *unused)
 
 #if defined(__hppa__)
 
-static const struct parisc_device_id hp_sdc_tbl[] __initconst = {
+static const struct parisc_device_id hp_sdc_tbl[] = {
 	{
 		.hw_type =	HPHW_FIO,
 		.hversion_rev =	HVERSION_REV_ANY_ID,
@@ -817,7 +821,7 @@ MODULE_DEVICE_TABLE(parisc, hp_sdc_tbl);
 static int __init hp_sdc_init_hppa(struct parisc_device *d);
 static struct delayed_work moduleloader_work;
 
-static struct parisc_driver hp_sdc_driver __refdata = {
+static struct parisc_driver hp_sdc_driver = {
 	.name =		"hp_sdc",
 	.id_table =	hp_sdc_tbl,
 	.probe =	hp_sdc_init_hppa,
@@ -875,7 +879,7 @@ static int __init hp_sdc_init(void)
 #endif
 
 	errstr = "IRQ not available for";
-	if (request_irq(hp_sdc.irq, &hp_sdc_isr, IRQF_SHARED,
+	if (request_irq(hp_sdc.irq, &hp_sdc_isr, IRQF_SHARED|IRQF_SAMPLE_RANDOM,
 			"HP SDC", &hp_sdc))
 		goto err1;
 
@@ -906,8 +910,9 @@ static int __init hp_sdc_init(void)
 	down(&s_sync); /* Wait for t_sync to complete */
 
 	/* Create the keepalive task */
-	timer_setup(&hp_sdc.kicker, hp_sdc_kicker, 0);
+	init_timer(&hp_sdc.kicker);
 	hp_sdc.kicker.expires = jiffies + HZ;
+	hp_sdc.kicker.function = &hp_sdc_kicker;
 	add_timer(&hp_sdc.kicker);
 
 	hp_sdc.dev_err = 0;
@@ -980,7 +985,7 @@ static void hp_sdc_exit(void)
 	free_irq(hp_sdc.irq, &hp_sdc);
 	write_unlock_irq(&hp_sdc.lock);
 
-	del_timer_sync(&hp_sdc.kicker);
+	del_timer(&hp_sdc.kicker);
 
 	tasklet_kill(&hp_sdc.task);
 
@@ -997,6 +1002,7 @@ static int __init hp_sdc_register(void)
 	uint8_t tq_init_seq[5];
 	struct semaphore tq_init_sem;
 #if defined(__mc68000__)
+	mm_segment_t fs;
 	unsigned char i;
 #endif
 
@@ -1021,8 +1027,11 @@ static int __init hp_sdc_register(void)
 	hp_sdc.base_io	 = (unsigned long) 0xf0428000;
 	hp_sdc.data_io	 = (unsigned long) hp_sdc.base_io + 1;
 	hp_sdc.status_io = (unsigned long) hp_sdc.base_io + 3;
-	if (!probe_kernel_read(&i, (unsigned char *)hp_sdc.data_io, 1))
+	fs = get_fs();
+	set_fs(KERNEL_DS);
+	if (!get_user(i, (unsigned char *)hp_sdc.data_io))
 		hp_sdc.dev = (void *)1;
+	set_fs(fs);
 	hp_sdc.dev_err   = hp_sdc_init();
 #endif
 	if (hp_sdc.dev == NULL) {

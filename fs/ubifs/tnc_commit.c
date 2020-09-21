@@ -53,19 +53,19 @@ static int make_idx_node(struct ubifs_info *c, struct ubifs_idx_node *idx,
 		br->offs = cpu_to_le32(zbr->offs);
 		br->len = cpu_to_le32(zbr->len);
 		if (!zbr->lnum || !zbr->len) {
-			ubifs_err(c, "bad ref in znode");
-			ubifs_dump_znode(c, znode);
+			ubifs_err("bad ref in znode");
+			dbg_dump_znode(c, znode);
 			if (zbr->znode)
-				ubifs_dump_znode(c, zbr->znode);
-
-			return -EINVAL;
+				dbg_dump_znode(c, zbr->znode);
 		}
 	}
 	ubifs_prepare_node(c, idx, len, 0);
 
+#ifdef CONFIG_UBIFS_FS_DEBUG
 	znode->lnum = lnum;
 	znode->offs = offs;
 	znode->len = len;
+#endif
 
 	err = insert_old_idx_znode(c, znode);
 
@@ -87,8 +87,8 @@ static int make_idx_node(struct ubifs_info *c, struct ubifs_idx_node *idx,
 
 	atomic_long_dec(&c->dirty_zn_cnt);
 
-	ubifs_assert(c, ubifs_zn_dirty(znode));
-	ubifs_assert(c, ubifs_zn_cow(znode));
+	ubifs_assert(ubifs_zn_dirty(znode));
+	ubifs_assert(ubifs_zn_cow(znode));
 
 	/*
 	 * Note, unlike 'write_index()' we do not add memory barriers here
@@ -115,9 +115,9 @@ static int fill_gap(struct ubifs_info *c, int lnum, int gap_start, int gap_end,
 {
 	int len, gap_remains, gap_pos, written, pad_len;
 
-	ubifs_assert(c, (gap_start & 7) == 0);
-	ubifs_assert(c, (gap_end & 7) == 0);
-	ubifs_assert(c, gap_end >= gap_start);
+	ubifs_assert((gap_start & 7) == 0);
+	ubifs_assert((gap_end & 7) == 0);
+	ubifs_assert(gap_end >= gap_start);
 
 	gap_remains = gap_end - gap_start;
 	if (!gap_remains)
@@ -131,7 +131,7 @@ static int fill_gap(struct ubifs_info *c, int lnum, int gap_start, int gap_end,
 			const int alen = ALIGN(len, 8);
 			int err;
 
-			ubifs_assert(c, alen <= gap_remains);
+			ubifs_assert(alen <= gap_remains);
 			err = make_idx_node(c, c->ileb_buf + gap_pos, znode,
 					    lnum, gap_pos, len);
 			if (err)
@@ -259,7 +259,7 @@ static int layout_leb_in_gaps(struct ubifs_info *c, int *p)
 		struct ubifs_idx_node *idx;
 		int in_use, level;
 
-		ubifs_assert(c, snod->type == UBIFS_IDX_NODE);
+		ubifs_assert(snod->type == UBIFS_IDX_NODE);
 		idx = snod->node;
 		key_read(c, ubifs_idx_key(c, idx), &snod->key);
 		level = le16_to_cpu(idx->level);
@@ -322,7 +322,8 @@ static int layout_leb_in_gaps(struct ubifs_info *c, int *p)
 				  0, 0, 0);
 	if (err)
 		return err;
-	err = ubifs_leb_change(c, lnum, c->ileb_buf, c->ileb_len);
+	err = ubifs_leb_change(c, lnum, c->ileb_buf, c->ileb_len,
+			       UBI_SHORTTERM);
 	if (err)
 		return err;
 	dbg_gc("LEB %d wrote %d index nodes", lnum, tot_written);
@@ -366,14 +367,13 @@ static int layout_in_gaps(struct ubifs_info *c, int cnt)
 
 	dbg_gc("%d znodes to write", cnt);
 
-	c->gap_lebs = kmalloc_array(c->lst.idx_lebs + 1, sizeof(int),
-				    GFP_NOFS);
+	c->gap_lebs = kmalloc(sizeof(int) * (c->lst.idx_lebs + 1), GFP_NOFS);
 	if (!c->gap_lebs)
 		return -ENOMEM;
 
 	p = c->gap_lebs;
 	do {
-		ubifs_assert(c, p < c->gap_lebs + c->lst.idx_lebs);
+		ubifs_assert(p < c->gap_lebs + sizeof(int) * c->lst.idx_lebs);
 		written = layout_leb_in_gaps(c, p);
 		if (written < 0) {
 			err = written;
@@ -387,11 +387,12 @@ static int layout_in_gaps(struct ubifs_info *c, int cnt)
 				 * Do not print scary warnings if the debugging
 				 * option which forces in-the-gaps is enabled.
 				 */
-				ubifs_warn(c, "out of space");
-				ubifs_dump_budg(c, &c->bi);
-				ubifs_dump_lprops(c);
+				ubifs_warn("out of space");
+				dbg_dump_budg(c, &c->bi);
+				dbg_dump_lprops(c);
 			}
 			/* Try to commit anyway */
+			err = 0;
 			break;
 		}
 		p++;
@@ -444,7 +445,7 @@ static int layout_in_empty_space(struct ubifs_info *c)
 		/* Determine the index node position */
 		if (lnum == -1) {
 			if (c->ileb_nxt >= c->ileb_cnt) {
-				ubifs_err(c, "out of space");
+				ubifs_err("out of space");
 				return -ENOSPC;
 			}
 			lnum = c->ilebs[c->ileb_nxt++];
@@ -455,9 +456,11 @@ static int layout_in_empty_space(struct ubifs_info *c)
 
 		offs = buf_offs + used;
 
+#ifdef CONFIG_UBIFS_FS_DEBUG
 		znode->lnum = lnum;
 		znode->offs = offs;
 		znode->len = len;
+#endif
 
 		/* Update the parent */
 		zp = znode->parent;
@@ -533,8 +536,10 @@ static int layout_in_empty_space(struct ubifs_info *c)
 		break;
 	}
 
+#ifdef CONFIG_UBIFS_FS_DEBUG
 	c->dbg->new_ihead_lnum = lnum;
 	c->dbg->new_ihead_offs = buf_offs;
+#endif
 
 	return 0;
 }
@@ -639,7 +644,7 @@ static int get_znodes_to_commit(struct ubifs_info *c)
 	}
 	cnt += 1;
 	while (1) {
-		ubifs_assert(c, !ubifs_zn_cow(znode));
+		ubifs_assert(!ubifs_zn_cow(znode));
 		__set_bit(COW_ZNODE, &znode->flags);
 		znode->alt = 0;
 		cnext = find_next_dirty(znode);
@@ -652,7 +657,7 @@ static int get_znodes_to_commit(struct ubifs_info *c)
 		cnt += 1;
 	}
 	dbg_cmt("committing %d znodes", cnt);
-	ubifs_assert(c, cnt == atomic_long_read(&c->dirty_zn_cnt));
+	ubifs_assert(cnt == atomic_long_read(&c->dirty_zn_cnt));
 	return cnt;
 }
 
@@ -675,7 +680,7 @@ static int alloc_idx_lebs(struct ubifs_info *c, int cnt)
 	dbg_cmt("need about %d empty LEBS for TNC commit", leb_cnt);
 	if (!leb_cnt)
 		return 0;
-	c->ilebs = kmalloc_array(leb_cnt, sizeof(int), GFP_NOFS);
+	c->ilebs = kmalloc(leb_cnt * sizeof(int), GFP_NOFS);
 	if (!c->ilebs)
 		return -ENOMEM;
 	for (i = 0; i < leb_cnt; i++) {
@@ -685,7 +690,7 @@ static int alloc_idx_lebs(struct ubifs_info *c, int cnt)
 		c->ilebs[c->ileb_cnt++] = lnum;
 		dbg_cmt("LEB %d", lnum);
 	}
-	if (dbg_is_chk_index(c) && !(prandom_u32() & 7))
+	if (dbg_is_chk_index(c) && !(random32() & 7))
 		return -ENOSPC;
 	return 0;
 }
@@ -760,7 +765,7 @@ int ubifs_tnc_start_commit(struct ubifs_info *c, struct ubifs_zbranch *zroot)
 		err = layout_commit(c, no_space, cnt);
 		if (err)
 			goto out_free;
-		ubifs_assert(c, atomic_long_read(&c->dirty_zn_cnt) == 0);
+		ubifs_assert(atomic_long_read(&c->dirty_zn_cnt) == 0);
 		err = free_unused_idx_lebs(c);
 		if (err)
 			goto out;
@@ -781,7 +786,7 @@ int ubifs_tnc_start_commit(struct ubifs_info *c, struct ubifs_zbranch *zroot)
 	 * budgeting subsystem to assume the index is already committed,
 	 * even though it is not.
 	 */
-	ubifs_assert(c, c->bi.min_idx_lebs == ubifs_calc_min_idx_lebs(c));
+	ubifs_assert(c->bi.min_idx_lebs == ubifs_calc_min_idx_lebs(c));
 	c->bi.old_idx_sz = c->calc_idx_sz;
 	c->bi.uncommitted_idx = 0;
 	c->bi.min_idx_lebs = ubifs_calc_min_idx_lebs(c);
@@ -858,12 +863,10 @@ static int write_index(struct ubifs_info *c)
 			br->offs = cpu_to_le32(zbr->offs);
 			br->len = cpu_to_le32(zbr->len);
 			if (!zbr->lnum || !zbr->len) {
-				ubifs_err(c, "bad ref in znode");
-				ubifs_dump_znode(c, znode);
+				ubifs_err("bad ref in znode");
+				dbg_dump_znode(c, znode);
 				if (zbr->znode)
-					ubifs_dump_znode(c, zbr->znode);
-
-				return -EINVAL;
+					dbg_dump_znode(c, zbr->znode);
 			}
 		}
 		len = ubifs_idx_node_sz(c, znode->child_cnt);
@@ -878,17 +881,19 @@ static int write_index(struct ubifs_info *c)
 		}
 		offs = buf_offs + used;
 
+#ifdef CONFIG_UBIFS_FS_DEBUG
 		if (lnum != znode->lnum || offs != znode->offs ||
 		    len != znode->len) {
-			ubifs_err(c, "inconsistent znode posn");
+			ubifs_err("inconsistent znode posn");
 			return -EINVAL;
 		}
+#endif
 
 		/* Grab some stuff from znode while we still can */
 		cnext = znode->cnext;
 
-		ubifs_assert(c, ubifs_zn_dirty(znode));
-		ubifs_assert(c, ubifs_zn_cow(znode));
+		ubifs_assert(ubifs_zn_dirty(znode));
+		ubifs_assert(ubifs_zn_cow(znode));
 
 		/*
 		 * It is important that other threads should see %DIRTY_ZNODE
@@ -899,9 +904,9 @@ static int write_index(struct ubifs_info *c)
 		 * the reason for the second barrier.
 		 */
 		clear_bit(DIRTY_ZNODE, &znode->flags);
-		smp_mb__before_atomic();
+		smp_mb__before_clear_bit();
 		clear_bit(COW_ZNODE, &znode->flags);
-		smp_mb__after_atomic();
+		smp_mb__after_clear_bit();
 
 		/*
 		 * We have marked the znode as clean but have not updated the
@@ -954,7 +959,8 @@ static int write_index(struct ubifs_info *c)
 		}
 
 		/* The buffer is full or there are no more znodes to do */
-		err = ubifs_leb_write(c, lnum, c->cbuf, buf_offs, blen);
+		err = ubifs_leb_write(c, lnum, c->cbuf, buf_offs, blen,
+				      UBI_SHORTTERM);
 		if (err)
 			return err;
 		buf_offs += blen;
@@ -976,11 +982,13 @@ static int write_index(struct ubifs_info *c)
 		break;
 	}
 
+#ifdef CONFIG_UBIFS_FS_DEBUG
 	if (lnum != c->dbg->new_ihead_lnum ||
 	    buf_offs != c->dbg->new_ihead_offs) {
-		ubifs_err(c, "inconsistent ihead");
+		ubifs_err("inconsistent ihead");
 		return -EINVAL;
 	}
+#endif
 
 	c->ihead_lnum = lnum;
 	c->ihead_offs = buf_offs;

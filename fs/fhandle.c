@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/syscalls.h>
 #include <linux/slab.h>
 #include <linux/fs.h>
@@ -9,10 +8,8 @@
 #include <linux/fs_struct.h>
 #include <linux/fsnotify.h>
 #include <linux/personality.h>
-#include <linux/uaccess.h>
-#include <linux/compat.h>
+#include <asm/uaccess.h>
 #include "internal.h"
-#include "mount.h"
 
 static long do_sys_name_to_handle(struct path *path,
 				  struct file_handle __user *ufh,
@@ -24,11 +21,11 @@ static long do_sys_name_to_handle(struct path *path,
 	struct file_handle *handle = NULL;
 
 	/*
-	 * We need to make sure whether the file system
+	 * We need t make sure wether the file system
 	 * support decoding of the file handle
 	 */
-	if (!path->dentry->d_sb->s_export_op ||
-	    !path->dentry->d_sb->s_export_op->fh_to_dentry)
+	if (!path->mnt->mnt_sb->s_export_op ||
+	    !path->mnt->mnt_sb->s_export_op->fh_to_dentry)
 		return -EOPNOTSUPP;
 
 	if (copy_from_user(&f_handle, ufh, sizeof(struct file_handle)))
@@ -42,7 +39,7 @@ static long do_sys_name_to_handle(struct path *path,
 	if (!handle)
 		return -ENOMEM;
 
-	/* convert handle size to multiple of sizeof(u32) */
+	/* convert handle size to  multiple of sizeof(u32) */
 	handle_dwords = f_handle.handle_bytes >> 2;
 
 	/* we ask for a non connected handle */
@@ -54,7 +51,7 @@ static long do_sys_name_to_handle(struct path *path,
 	handle_bytes = handle_dwords * sizeof(u32);
 	handle->handle_bytes = handle_bytes;
 	if ((handle->handle_bytes > f_handle.handle_bytes) ||
-	    (retval == FILEID_INVALID) || (retval == -ENOSPC)) {
+	    (retval == 255) || (retval == -ENOSPC)) {
 		/* As per old exportfs_encode_fh documentation
 		 * we could return ENOSPC to indicate overflow
 		 * But file system returned 255 always. So handle
@@ -69,7 +66,7 @@ static long do_sys_name_to_handle(struct path *path,
 	} else
 		retval = 0;
 	/* copy the mount id */
-	if (put_user(real_mount(path->mnt)->mnt_id, mnt_id) ||
+	if (copy_to_user(mnt_id, &path->mnt->mnt_id, sizeof(*mnt_id)) ||
 	    copy_to_user(ufh, handle,
 			 sizeof(struct file_handle) + handle_bytes))
 		retval = -EFAULT;
@@ -114,21 +111,24 @@ SYSCALL_DEFINE5(name_to_handle_at, int, dfd, const char __user *, name,
 
 static struct vfsmount *get_vfsmount_from_fd(int fd)
 {
-	struct vfsmount *mnt;
+	struct path path;
 
 	if (fd == AT_FDCWD) {
 		struct fs_struct *fs = current->fs;
 		spin_lock(&fs->lock);
-		mnt = mntget(fs->pwd.mnt);
+		path = fs->pwd;
+		mntget(path.mnt);
 		spin_unlock(&fs->lock);
 	} else {
-		struct fd f = fdget(fd);
-		if (!f.file)
+		int fput_needed;
+		struct file *file = fget_light(fd, &fput_needed);
+		if (!file)
 			return ERR_PTR(-EBADF);
-		mnt = mntget(f.file->f_path.mnt);
-		fdput(f);
+		path = file->f_path;
+		mntget(path.mnt);
+		fput_light(file, fput_needed);
 	}
-	return mnt;
+	return path.mnt;
 }
 
 static int vfs_dentry_acceptable(void *context, struct dentry *dentry)
@@ -196,9 +196,8 @@ static int handle_to_path(int mountdirfd, struct file_handle __user *ufh,
 		goto out_err;
 	}
 	/* copy the full handle */
-	*handle = f_handle;
-	if (copy_from_user(&handle->f_handle,
-			   &ufh->f_handle,
+	if (copy_from_user(handle, ufh,
+			   sizeof(struct file_handle) +
 			   f_handle.handle_bytes)) {
 		retval = -EFAULT;
 		goto out_handle;
@@ -212,8 +211,8 @@ out_err:
 	return retval;
 }
 
-static long do_handle_open(int mountdirfd, struct file_handle __user *ufh,
-			   int open_flag)
+long do_handle_open(int mountdirfd,
+		    struct file_handle __user *ufh, int open_flag)
 {
 	long retval = 0;
 	struct path path;
@@ -229,7 +228,7 @@ static long do_handle_open(int mountdirfd, struct file_handle __user *ufh,
 		path_put(&path);
 		return fd;
 	}
-	file = file_open_root(path.dentry, path.mnt, "", open_flag, 0);
+	file = file_open_root(path.dentry, path.mnt, "", open_flag);
 	if (IS_ERR(file)) {
 		put_unused_fd(fd);
 		retval =  PTR_ERR(file);
@@ -265,15 +264,3 @@ SYSCALL_DEFINE3(open_by_handle_at, int, mountdirfd,
 	ret = do_handle_open(mountdirfd, handle, flags);
 	return ret;
 }
-
-#ifdef CONFIG_COMPAT
-/*
- * Exactly like fs/open.c:sys_open_by_handle_at(), except that it
- * doesn't set the O_LARGEFILE flag.
- */
-COMPAT_SYSCALL_DEFINE3(open_by_handle_at, int, mountdirfd,
-			     struct file_handle __user *, handle, int, flags)
-{
-	return do_handle_open(mountdirfd, handle, flags);
-}
-#endif

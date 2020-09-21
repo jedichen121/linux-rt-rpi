@@ -19,7 +19,6 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
-#include <linux/cpu.h>
 
 #include <linux/mtd/physmap.h>
 #include <linux/mtd/mtd.h>
@@ -28,18 +27,17 @@
 #include <linux/spi/spi.h>
 #include <linux/spi/flash.h>
 
-#include <asm/system_misc.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 #include <asm/mach/irq.h>
 #include <asm/mach-types.h>
 
 #include <mach/regs-serial.h>
-#include <linux/platform_data/spi-nuc900.h>
+#include <mach/nuc900_spi.h>
 #include <mach/map.h>
-#include <linux/platform_data/video-nuc900fb.h>
+#include <mach/fb.h>
 #include <mach/regs-ldm.h>
-#include <linux/platform_data/keypad-w90p910.h>
+#include <mach/w90p910_keypad.h>
 
 #include "cpu.h"
 
@@ -503,8 +501,8 @@ static struct resource nuc900_ac97_resource[] = {
 
 };
 
-struct platform_device nuc900_device_ac97 = {
-	.name		= "nuc900-ac97",
+struct platform_device nuc900_device_audio = {
+	.name		= "nuc900-audio",
 	.id		= -1,
 	.num_resources	= ARRAY_SIZE(nuc900_ac97_resource),
 	.resource	= nuc900_ac97_resource,
@@ -525,14 +523,13 @@ static struct platform_device *nuc900_public_dev[] __initdata = {
 	&nuc900_device_emc,
 	&nuc900_device_spi,
 	&nuc900_device_wdt,
-	&nuc900_device_ac97,
+	&nuc900_device_audio,
 };
 
 /* Provide adding specific CPU platform devices API */
 
 void __init nuc900_board_init(struct platform_device **device, int size)
 {
-	cpu_idle_poll_ctrl(true);
 	platform_add_devices(device, size);
 	platform_add_devices(nuc900_public_dev, ARRAY_SIZE(nuc900_public_dev));
 	spi_register_board_info(nuc900_spi_board_info,

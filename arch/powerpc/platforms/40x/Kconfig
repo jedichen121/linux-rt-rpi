@@ -1,4 +1,19 @@
-# SPDX-License-Identifier: GPL-2.0
+#config BUBINGA
+#	bool "Bubinga"
+#	depends on 40x
+#	default n
+#	select 405EP
+#	help
+#	  This option enables support for the IBM 405EP evaluation board.
+
+#config CPCI405
+#	bool "CPCI405"
+#	depends on 40x
+#	default n
+#	select 405GP
+#	help
+#	  This option enables support for the CPCI405 board.
+
 config ACADIA
 	bool "Acadia"
 	depends on 40x
@@ -21,6 +36,7 @@ config HOTFOOT
         bool "Hotfoot"
 	depends on 40x
 	default n
+	select 405EP
 	select PPC40x_SIMPLE
 	select PCI
         help
@@ -49,6 +65,14 @@ config MAKALU
 	help
 	  This option enables support for the AMCC PPC405EX board.
 
+#config SYCAMORE
+#	bool "Sycamore"
+#	depends on 40x
+#	default n
+#	select 405GPR
+#	help
+#	  This option enables support for the IBM PPC405GPr evaluation board.
+
 config WALNUT
 	bool "Walnut"
 	depends on 40x
@@ -65,7 +89,6 @@ config XILINX_VIRTEX_GENERIC_BOARD
 	default n
 	select XILINX_VIRTEX_II_PRO
 	select XILINX_VIRTEX_4_FX
-	select XILINX_INTC
 	help
 	  This option enables generic support for Xilinx Virtex based boards.
 
@@ -104,18 +127,24 @@ config 405GP
 	bool
 	select IBM405_ERR77
 	select IBM405_ERR51
-	select IBM_EMAC_ZMII if IBM_EMAC
+	select IBM_EMAC_ZMII
+
+config 405EP
+	bool
 
 config 405EX
 	bool
-	select IBM_EMAC_EMAC4 if IBM_EMAC
-	select IBM_EMAC_RGMII if IBM_EMAC
+	select IBM_EMAC_EMAC4
+	select IBM_EMAC_RGMII
 
 config 405EZ
 	bool
-	select IBM_EMAC_NO_FLOW_CTRL if IBM_EMAC
-	select IBM_EMAC_MAL_CLR_ICINTSTAT if IBM_EMAC
-	select IBM_EMAC_MAL_COMMON_ERR if IBM_EMAC
+	select IBM_EMAC_NO_FLOW_CTRL
+	select IBM_EMAC_MAL_CLR_ICINTSTAT
+	select IBM_EMAC_MAL_COMMON_ERR
+
+config 405GPR
+	bool
 
 config XILINX_VIRTEX
 	bool
@@ -139,7 +168,8 @@ config STB03xxx
 config PPC4xx_GPIO
 	bool "PPC4xx GPIO support"
 	depends on 40x
-	select GPIOLIB
+	select ARCH_REQUIRE_GPIOLIB
+	select GENERIC_GPIO
 	help
 	  Enable gpiolib support for ppc40x based boards
 
@@ -153,6 +183,21 @@ config IBM405_ERR77
 config IBM405_ERR51
 	bool
 
+#config BIOS_FIXUP
+#	bool
+#	depends on BUBINGA || EP405 || SYCAMORE || WALNUT
+#	default y
+
+#config PPC4xx_DMA
+#	bool "PPC4xx DMA controller support"
+#	depends on 4xx
+
+#config PPC4xx_EDMA
+#	bool
+#	depends on !STB03xxx && PPC4xx_DMA
+#	default y
+#
+
 config APM8018X
 	bool "APM8018X"
 	depends on 40x
@@ -161,3 +206,4 @@ config APM8018X
 	help
 	  This option enables support for the AppliedMicro APM8018X evaluation
 	  board.
+

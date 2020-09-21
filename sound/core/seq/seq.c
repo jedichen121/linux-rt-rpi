@@ -21,7 +21,6 @@
 
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/device.h>
 #include <sound/core.h>
 #include <sound/initval.h>
 
@@ -47,6 +46,8 @@ int seq_default_timer_card = -1;
 int seq_default_timer_device =
 #ifdef CONFIG_SND_SEQ_HRTIMER_DEFAULT
 	SNDRV_TIMER_GLOBAL_HRTIMER
+#elif defined(CONFIG_SND_SEQ_RTCTIMER_DEFAULT)
+	SNDRV_TIMER_GLOBAL_RTC
 #else
 	SNDRV_TIMER_GLOBAL_SYSTEM
 #endif
@@ -84,33 +85,32 @@ static int __init alsa_seq_init(void)
 {
 	int err;
 
-	err = client_init_data();
-	if (err < 0)
+	snd_seq_autoload_lock();
+	if ((err = client_init_data()) < 0)
+		goto error;
+
+	/* init memory, room for selected events */
+	if ((err = snd_sequencer_memory_init()) < 0)
+		goto error;
+
+	/* init event queues */
+	if ((err = snd_seq_queues_init()) < 0)
 		goto error;
 
 	/* register sequencer device */
-	err = snd_sequencer_device_init();
-	if (err < 0)
+	if ((err = snd_sequencer_device_init()) < 0)
 		goto error;
 
 	/* register proc interface */
-	err = snd_seq_info_init();
-	if (err < 0)
-		goto error_device;
+	if ((err = snd_seq_info_init()) < 0)
+		goto error;
 
 	/* register our internal client */
-	err = snd_seq_system_client_init();
-	if (err < 0)
-		goto error_info;
+	if ((err = snd_seq_system_client_init()) < 0)
+		goto error;
 
-	snd_seq_autoload_init();
-	return 0;
-
- error_info:
-	snd_seq_info_done();
- error_device:
-	snd_sequencer_device_done();
  error:
+	snd_seq_autoload_unlock();
 	return err;
 }
 
@@ -128,7 +128,8 @@ static void __exit alsa_seq_exit(void)
 	/* unregister sequencer device */
 	snd_sequencer_device_done();
 
-	snd_seq_autoload_exit();
+	/* release event memory */
+	snd_sequencer_memory_done();
 }
 
 module_init(alsa_seq_init)

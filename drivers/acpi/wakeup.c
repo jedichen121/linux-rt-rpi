@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * wakeup.c - support wakeup devices
  * Copyright (C) 2004 Li Shaohua <shaohua.li@intel.com>
@@ -6,6 +5,7 @@
 
 #include <linux/init.h>
 #include <linux/acpi.h>
+#include <acpi/acpi_drivers.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
 

@@ -1,14 +1,13 @@
-# SPDX-License-Identifier: GPL-2.0
 # Makefile for USB tools
 
+CC = $(CROSS_COMPILE)gcc
 PTHREAD_LIBS = -lpthread
 WARNINGS = -Wall -Wextra
-CFLAGS = $(WARNINGS) -g -I../include
-LDFLAGS = $(PTHREAD_LIBS)
+CFLAGS = $(WARNINGS) -g $(PTHREAD_LIBS)
 
 all: testusb ffs-test
 %: %.c
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $^
 
 clean:
 	$(RM) testusb ffs-test

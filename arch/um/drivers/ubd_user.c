@@ -1,5 +1,4 @@
-/*
- * Copyright (C) 2016 Anton Ivanov (aivanov@brocade.com)
+/* 
  * Copyright (C) 2000, 2001, 2002 Jeff Dike (jdike@karaya.com)
  * Copyright (C) 2001 Ridgerun,Inc (glonnon@ridgerun.com)
  * Licensed under the GPL
@@ -16,14 +15,18 @@
 #include <sys/socket.h>
 #include <sys/mman.h>
 #include <sys/param.h>
+#include "asm/types.h"
+#include "ubd_user.h"
+#include "os.h"
+#include "cow.h"
+
 #include <endian.h>
 #include <byteswap.h>
 
-#include "ubd.h"
-#include <os.h>
-#include <poll.h>
-
-struct pollfd kernel_pollfd;
+void ignore_sigwinch_sig(void)
+{
+	signal(SIGWINCH, SIG_IGN);
+}
 
 int start_io_thread(unsigned long sp, int *fd_out)
 {
@@ -36,12 +39,9 @@ int start_io_thread(unsigned long sp, int *fd_out)
 	}
 
 	kernel_fd = fds[0];
-	kernel_pollfd.fd = kernel_fd;
-	kernel_pollfd.events = POLLIN;
 	*fd_out = fds[1];
 
 	err = os_set_fd_block(*fd_out, 0);
-	err = os_set_fd_block(kernel_fd, 0);
 	if (err) {
 		printk("start_io_thread - failed to set nonblocking I/O.\n");
 		goto out_close;
@@ -64,15 +64,3 @@ int start_io_thread(unsigned long sp, int *fd_out)
  out:
 	return err;
 }
-
-int ubd_read_poll(int timeout)
-{
-	kernel_pollfd.events = POLLIN;
-	return poll(&kernel_pollfd, 1, timeout);
-}
-int ubd_write_poll(int timeout)
-{
-	kernel_pollfd.events = POLLOUT;
-	return poll(&kernel_pollfd, 1, timeout);
-}
-

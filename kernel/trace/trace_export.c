@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * trace_export.c - export basic ftrace utilities to user space
  *
@@ -7,32 +6,17 @@
 #include <linux/stringify.h>
 #include <linux/kallsyms.h>
 #include <linux/seq_file.h>
+#include <linux/debugfs.h>
 #include <linux/uaccess.h>
 #include <linux/ftrace.h>
 #include <linux/module.h>
 #include <linux/init.h>
+#include <linux/fs.h>
 
 #include "trace_output.h"
 
-/* Stub function for events with triggers */
-static int ftrace_event_register(struct trace_event_call *call,
-				 enum trace_reg type, void *data)
-{
-	return 0;
-}
-
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM	ftrace
-
-/*
- * The FTRACE_ENTRY_REG macro allows ftrace entry to define register
- * function and thus become accesible via perf.
- */
-#undef FTRACE_ENTRY_REG
-#define FTRACE_ENTRY_REG(name, struct_name, id, tstruct, print, \
-			 filter, regfn) \
-	FTRACE_ENTRY(name, struct_name, id, PARAMS(tstruct), PARAMS(print), \
-		     filter)
 
 /* not needed for this file */
 #undef __field_struct
@@ -60,22 +44,21 @@ static int ftrace_event_register(struct trace_event_call *call,
 #define F_printk(fmt, args...) fmt, args
 
 #undef FTRACE_ENTRY
-#define FTRACE_ENTRY(name, struct_name, id, tstruct, print, filter)	\
-struct ____ftrace_##name {						\
-	tstruct								\
-};									\
-static void __always_unused ____ftrace_check_##name(void)		\
-{									\
-	struct ____ftrace_##name *__entry = NULL;			\
-									\
-	/* force compile-time check on F_printk() */			\
-	printk(print);							\
+#define FTRACE_ENTRY(name, struct_name, id, tstruct, print)	\
+struct ____ftrace_##name {					\
+	tstruct							\
+};								\
+static void __always_unused ____ftrace_check_##name(void)	\
+{								\
+	struct ____ftrace_##name *__entry = NULL;		\
+								\
+	/* force compile-time check on F_printk() */		\
+	printk(print);						\
 }
 
 #undef FTRACE_ENTRY_DUP
-#define FTRACE_ENTRY_DUP(name, struct_name, id, tstruct, print, filter)	\
-	FTRACE_ENTRY(name, struct_name, id, PARAMS(tstruct), PARAMS(print), \
-		     filter)
+#define FTRACE_ENTRY_DUP(name, struct_name, id, tstruct, print)	\
+	FTRACE_ENTRY(name, struct_name, id, PARAMS(tstruct), PARAMS(print))
 
 #include "trace_entries.h"
 
@@ -84,7 +67,7 @@ static void __always_unused ____ftrace_check_##name(void)		\
 	ret = trace_define_field(event_call, #type, #item,		\
 				 offsetof(typeof(field), item),		\
 				 sizeof(field.item),			\
-				 is_signed_type(type), filter_type);	\
+				 is_signed_type(type), FILTER_OTHER);	\
 	if (ret)							\
 		return ret;
 
@@ -94,19 +77,22 @@ static void __always_unused ____ftrace_check_##name(void)		\
 				 offsetof(typeof(field),		\
 					  container.item),		\
 				 sizeof(field.container.item),		\
-				 is_signed_type(type), filter_type);	\
+				 is_signed_type(type), FILTER_OTHER);	\
 	if (ret)							\
 		return ret;
 
 #undef __array
 #define __array(type, item, len)					\
 	do {								\
-		char *type_str = #type"["__stringify(len)"]";		\
 		BUILD_BUG_ON(len > MAX_FILTER_STR_VAL);			\
-		ret = trace_define_field(event_call, type_str, #item,	\
+		mutex_lock(&event_storage_mutex);			\
+		snprintf(event_storage, sizeof(event_storage),		\
+			 "%s[%d]", #type, len);				\
+		ret = trace_define_field(event_call, event_storage, #item, \
 				 offsetof(typeof(field), item),		\
 				 sizeof(field.item),			\
-				 is_signed_type(type), filter_type);	\
+				 is_signed_type(type), FILTER_OTHER);	\
+		mutex_unlock(&event_storage_mutex);			\
 		if (ret)						\
 			return ret;					\
 	} while (0);
@@ -118,26 +104,25 @@ static void __always_unused ____ftrace_check_##name(void)		\
 				 offsetof(typeof(field),		\
 					  container.item),		\
 				 sizeof(field.container.item),		\
-				 is_signed_type(type), filter_type);	\
+				 is_signed_type(type), FILTER_OTHER);	\
 	if (ret)							\
 		return ret;
 
 #undef __dynamic_array
 #define __dynamic_array(type, item)					\
-	ret = trace_define_field(event_call, #type "[]", #item,  \
+	ret = trace_define_field(event_call, #type, #item,		\
 				 offsetof(typeof(field), item),		\
-				 0, is_signed_type(type), filter_type);\
+				 0, is_signed_type(type), FILTER_OTHER);\
 	if (ret)							\
 		return ret;
 
 #undef FTRACE_ENTRY
-#define FTRACE_ENTRY(name, struct_name, id, tstruct, print, filter)	\
-static int __init							\
-ftrace_define_fields_##name(struct trace_event_call *event_call)	\
+#define FTRACE_ENTRY(name, struct_name, id, tstruct, print)		\
+int									\
+ftrace_define_fields_##name(struct ftrace_event_call *event_call)	\
 {									\
 	struct struct_name field;					\
 	int ret;							\
-	int filter_type = filter;					\
 									\
 	tstruct;							\
 									\
@@ -165,39 +150,24 @@ ftrace_define_fields_##name(struct trace_event_call *event_call)	\
 #define __dynamic_array(type, item)
 
 #undef F_printk
-#define F_printk(fmt, args...) __stringify(fmt) ", "  __stringify(args)
+#define F_printk(fmt, args...) #fmt ", "  __stringify(args)
 
-#undef FTRACE_ENTRY_REG
-#define FTRACE_ENTRY_REG(call, struct_name, etype, tstruct, print, filter,\
-			 regfn)						\
+#undef FTRACE_ENTRY
+#define FTRACE_ENTRY(call, struct_name, etype, tstruct, print)		\
 									\
-struct trace_event_class __refdata event_class_ftrace_##call = {	\
+struct ftrace_event_class event_class_ftrace_##call = {			\
 	.system			= __stringify(TRACE_SYSTEM),		\
 	.define_fields		= ftrace_define_fields_##call,		\
 	.fields			= LIST_HEAD_INIT(event_class_ftrace_##call.fields),\
-	.reg			= regfn,				\
 };									\
 									\
-struct trace_event_call __used event_##call = {				\
-	.class			= &event_class_ftrace_##call,		\
-	{								\
-		.name			= #call,			\
-	},								\
+struct ftrace_event_call __used event_##call = {			\
+	.name			= #call,				\
 	.event.type		= etype,				\
+	.class			= &event_class_ftrace_##call,		\
 	.print_fmt		= print,				\
-	.flags			= TRACE_EVENT_FL_IGNORE_ENABLE,		\
 };									\
-struct trace_event_call __used						\
+struct ftrace_event_call __used						\
 __attribute__((section("_ftrace_events"))) *__event_##call = &event_##call;
-
-#undef FTRACE_ENTRY
-#define FTRACE_ENTRY(call, struct_name, etype, tstruct, print, filter)	\
-	FTRACE_ENTRY_REG(call, struct_name, etype,			\
-			 PARAMS(tstruct), PARAMS(print), filter, NULL)
-
-bool ftrace_event_is_function(struct trace_event_call *call)
-{
-	return call == &event_function;
-}
 
 #include "trace_entries.h"

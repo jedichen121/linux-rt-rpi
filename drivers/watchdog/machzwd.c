@@ -28,8 +28,6 @@
  *      Added nowayout module option to override CONFIG_WATCHDOG_NOWAYOUT
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/types.h>
@@ -45,6 +43,7 @@
 #include <linux/io.h>
 #include <linux/uaccess.h>
 
+#include <asm/system.h>
 
 /* ports */
 #define ZF_IOBASE	0x218
@@ -92,9 +91,10 @@ static unsigned short zf_readw(unsigned char port)
 MODULE_AUTHOR("Fernando Fuganti <fuganti@conectiva.com.br>");
 MODULE_DESCRIPTION("MachZ ZF-Logic Watchdog driver");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS_MISCDEV(WATCHDOG_MINOR);
 
-static bool nowayout = WATCHDOG_NOWAYOUT;
-module_param(nowayout, bool, 0);
+static int nowayout = WATCHDOG_NOWAYOUT;
+module_param(nowayout, int, 0);
 MODULE_PARM_DESC(nowayout,
 		"Watchdog cannot be stopped once started (default="
 				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
@@ -121,13 +121,13 @@ module_param(action, int, 0);
 MODULE_PARM_DESC(action, "after watchdog resets, generate: "
 				"0 = RESET(*)  1 = SMI  2 = NMI  3 = SCI");
 
-static void zf_ping(struct timer_list *unused);
+static void zf_ping(unsigned long data);
 
 static int zf_action = GEN_RESET;
 static unsigned long zf_is_open;
 static char zf_expect_close;
 static DEFINE_SPINLOCK(zf_port_lock);
-static DEFINE_TIMER(zf_timer, zf_ping);
+static DEFINE_TIMER(zf_timer, zf_ping, 0, 0);
 static unsigned long next_heartbeat;
 
 
@@ -141,10 +141,10 @@ static unsigned long next_heartbeat;
 #define ZF_CTIMEOUT 0xffff
 
 #ifndef ZF_DEBUG
-#define dprintk(format, args...)
+#	define dprintk(format, args...)
 #else
-#define dprintk(format, args...)					\
-	pr_debug(":%s:%d: " format, __func__, __LINE__ , ## args)
+#	define dprintk(format, args...) printk(KERN_DEBUG PFX \
+				":%s:%d: " format, __func__, __LINE__ , ## args)
 #endif
 
 
@@ -203,7 +203,7 @@ static void zf_timer_off(void)
 	zf_set_control(ctrl_reg);
 	spin_unlock_irqrestore(&zf_port_lock, flags);
 
-	pr_info("Watchdog timer is now disabled\n");
+	printk(KERN_INFO PFX ": Watchdog timer is now disabled\n");
 }
 
 
@@ -233,11 +233,11 @@ static void zf_timer_on(void)
 	zf_set_control(ctrl_reg);
 	spin_unlock_irqrestore(&zf_port_lock, flags);
 
-	pr_info("Watchdog timer is now enabled\n");
+	printk(KERN_INFO PFX ": Watchdog timer is now enabled\n");
 }
 
 
-static void zf_ping(struct timer_list *unused)
+static void zf_ping(unsigned long data)
 {
 	unsigned int ctrl_reg = 0;
 	unsigned long flags;
@@ -263,7 +263,7 @@ static void zf_ping(struct timer_list *unused)
 
 		mod_timer(&zf_timer, jiffies + ZF_HW_TIMEO);
 	} else
-		pr_crit("I will reset your machine\n");
+		printk(KERN_CRIT PFX ": I will reset your machine\n");
 }
 
 static ssize_t zf_write(struct file *file, const char __user *buf, size_t count,
@@ -342,7 +342,8 @@ static int zf_close(struct inode *inode, struct file *file)
 		zf_timer_off();
 	else {
 		del_timer(&zf_timer);
-		pr_err("device file closed unexpectedly. Will not stop the WDT!\n");
+		printk(KERN_ERR PFX ": device file closed unexpectedly. "
+						"Will not stop the WDT!\n");
 	}
 	clear_bit(0, &zf_is_open);
 	zf_expect_close = 0;
@@ -389,18 +390,19 @@ static void __init zf_show_action(int act)
 {
 	static const char * const str[] = { "RESET", "SMI", "NMI", "SCI" };
 
-	pr_info("Watchdog using action = %s\n", str[act]);
+	printk(KERN_INFO PFX ": Watchdog using action = %s\n", str[act]);
 }
 
 static int __init zf_init(void)
 {
 	int ret;
 
-	pr_info("MachZ ZF-Logic Watchdog driver initializing\n");
+	printk(KERN_INFO PFX
+		": MachZ ZF-Logic Watchdog driver initializing.\n");
 
 	ret = zf_get_ZFL_version();
 	if (!ret || ret == 0xffff) {
-		pr_warn("no ZF-Logic found\n");
+		printk(KERN_WARNING PFX ": no ZF-Logic found\n");
 		return -ENODEV;
 	}
 
@@ -412,20 +414,23 @@ static int __init zf_init(void)
 	zf_show_action(action);
 
 	if (!request_region(ZF_IOBASE, 3, "MachZ ZFL WDT")) {
-		pr_err("cannot reserve I/O ports at %d\n", ZF_IOBASE);
+		printk(KERN_ERR "cannot reserve I/O ports at %d\n",
+							ZF_IOBASE);
 		ret = -EBUSY;
 		goto no_region;
 	}
 
 	ret = register_reboot_notifier(&zf_notifier);
 	if (ret) {
-		pr_err("can't register reboot notifier (err=%d)\n", ret);
+		printk(KERN_ERR "can't register reboot notifier (err=%d)\n",
+									ret);
 		goto no_reboot;
 	}
 
 	ret = misc_register(&zf_miscdev);
 	if (ret) {
-		pr_err("can't misc_register on minor=%d\n", WATCHDOG_MINOR);
+		printk(KERN_ERR "can't misc_register on minor=%d\n",
+							WATCHDOG_MINOR);
 		goto no_misc;
 	}
 

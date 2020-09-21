@@ -1,8 +1,6 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/string.h>
 #include <linux/kernel.h>
 #include <linux/of.h>
-#include <linux/dma-mapping.h>
 #include <linux/init.h>
 #include <linux/export.h>
 #include <linux/mod_devicetable.h>
@@ -582,7 +580,7 @@ static unsigned int __init build_one_device_irq(struct platform_device *op,
 				printk("%s: Apply [%s:%x] imap --> [%s:%x]\n",
 				       op->dev.of_node->full_name,
 				       pp->full_name, this_orig_irq,
-				       of_node_full_name(iret), irq);
+				       (iret ? iret->full_name : "NULL"), irq);
 
 			if (!iret)
 				break;
@@ -676,8 +674,6 @@ static struct platform_device * __init scan_one_device(struct device_node *dp,
 		dev_set_name(&op->dev, "root");
 	else
 		dev_set_name(&op->dev, "%08x", dp->phandle);
-	op->dev.coherent_dma_mask = DMA_BIT_MASK(32);
-	op->dev.dma_mask = &op->dev.coherent_dma_mask;
 
 	if (of_device_register(op)) {
 		printk("%s: Could not register of device.\n",

@@ -13,7 +13,6 @@
  */
 
 #include <linux/errno.h>
-#include <linux/bug.h>
 #include <linux/spinlock.h>
 #include <linux/export.h>
 

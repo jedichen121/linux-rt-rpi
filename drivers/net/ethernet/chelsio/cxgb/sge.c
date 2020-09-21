@@ -12,7 +12,8 @@
  * published by the Free Software Foundation.                                *
  *                                                                           *
  * You should have received a copy of the GNU General Public License along   *
- * with this program; if not, see <http://www.gnu.org/licenses/>.            *
+ * with this program; if not, write to the Free Software Foundation, Inc.,   *
+ * 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.                 *
  *                                                                           *
  * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR IMPLIED    *
  * WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF      *
@@ -46,6 +47,7 @@
 #include <linux/etherdevice.h>
 #include <linux/if_vlan.h>
 #include <linux/skbuff.h>
+#include <linux/init.h>
 #include <linux/mm.h>
 #include <linux/tcp.h>
 #include <linux/ip.h>
@@ -301,7 +303,7 @@ unsigned int t1_sched_update_parms(struct sge *sge, unsigned int port,
 	struct sched_port *p = &s->p[port];
 	unsigned int max_avail_segs;
 
-	pr_debug("%s mtu=%d speed=%d\n", __func__, mtu, speed);
+	pr_debug("t1_sched_update_params mtu=%d speed=%d\n", mtu, speed);
 	if (speed)
 		p->speed = speed;
 	if (mtu)
@@ -365,6 +367,18 @@ void t1_sched_set_drain_bits_per_us(struct sge *sge, unsigned int port,
 
 #endif  /*  0  */
 
+
+/*
+ * get_clock() implements a ns clock (see ktime_get)
+ */
+static inline ktime_t get_clock(void)
+{
+	struct timespec ts;
+
+	ktime_get_ts(&ts);
+	return timespec_to_ktime(ts);
+}
+
 /*
  * tx_sched_init() allocates resources and does basic initialization.
  */
@@ -397,7 +411,7 @@ static int tx_sched_init(struct sge *sge)
 static inline int sched_update_avail(struct sge *sge)
 {
 	struct sched *s = sge->tx_sched;
-	ktime_t now = ktime_get();
+	ktime_t now = get_clock();
 	unsigned int i;
 	long long delta_time_ns;
 
@@ -732,7 +746,7 @@ void t1_vlan_mode(struct adapter *adapter, netdev_features_t features)
 {
 	struct sge *sge = adapter->sge;
 
-	if (features & NETIF_F_HW_VLAN_CTAG_RX)
+	if (features & NETIF_F_HW_VLAN_RX)
 		sge->sge_control |= F_VLAN_XTRACT;
 	else
 		sge->sge_control &= ~F_VLAN_XTRACT;
@@ -833,7 +847,7 @@ static void refill_free_list(struct sge *sge, struct freelQ *q)
 		struct sk_buff *skb;
 		dma_addr_t mapping;
 
-		skb = dev_alloc_skb(q->rx_buffer_size);
+		skb = alloc_skb(q->rx_buffer_size, GFP_ATOMIC);
 		if (!skb)
 			break;
 
@@ -1025,7 +1039,7 @@ MODULE_PARM_DESC(copybreak, "Receive copy threshold");
 
 /**
  *	get_packet - return the next ingress packet buffer
- *	@adapter: the adapter that received the packet
+ *	@pdev: the PCI device that received the packet
  *	@fl: the SGE free list holding the packet
  *	@len: the actual packet length, excluding any SGE padding
  *
@@ -1037,18 +1051,18 @@ MODULE_PARM_DESC(copybreak, "Receive copy threshold");
  *	threshold and the packet is too big to copy, or (b) the packet should
  *	be copied but there is no memory for the copy.
  */
-static inline struct sk_buff *get_packet(struct adapter *adapter,
+static inline struct sk_buff *get_packet(struct pci_dev *pdev,
 					 struct freelQ *fl, unsigned int len)
 {
-	const struct freelQ_ce *ce = &fl->centries[fl->cidx];
-	struct pci_dev *pdev = adapter->pdev;
 	struct sk_buff *skb;
+	const struct freelQ_ce *ce = &fl->centries[fl->cidx];
 
 	if (len < copybreak) {
-		skb = napi_alloc_skb(&adapter->napi, len);
+		skb = alloc_skb(len + 2, GFP_ATOMIC);
 		if (!skb)
 			goto use_orig_buf;
 
+		skb_reserve(skb, 2);	/* align IP header */
 		skb_put(skb, len);
 		pci_dma_sync_single_for_cpu(pdev,
 					    dma_unmap_addr(ce, dma_addr),
@@ -1358,7 +1372,7 @@ static void sge_rx(struct sge *sge, struct freelQ *fl, unsigned int len)
 	struct sge_port_stats *st;
 	struct net_device *dev;
 
-	skb = get_packet(adapter, fl, len - sge->rx_pkt_pad);
+	skb = get_packet(adapter->pdev, fl, len - sge->rx_pkt_pad);
 	if (unlikely(!skb)) {
 		sge->stats.rx_drops++;
 		return;
@@ -1385,7 +1399,7 @@ static void sge_rx(struct sge *sge, struct freelQ *fl, unsigned int len)
 
 	if (p->vlan_valid) {
 		st->vlan_xtract++;
-		__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q), ntohs(p->vlan));
+		__vlan_hwaccel_put_tag(skb, ntohs(p->vlan));
 	}
 	netif_receive_skb(skb);
 }
@@ -1605,7 +1619,7 @@ int t1_poll(struct napi_struct *napi, int budget)
 	int work_done = process_responses(adapter, budget);
 
 	if (likely(work_done < budget)) {
-		napi_complete_done(napi, work_done);
+		napi_complete(napi);
 		writel(adapter->sge->respQ.cidx,
 		       adapter->regs + A_SG_SLEEPING);
 	}
@@ -1664,7 +1678,8 @@ static int t1_sge_tx(struct sk_buff *skb, struct adapter *adapter,
 	struct cmdQ *q = &sge->cmdQ[qid];
 	unsigned int credits, pidx, genbit, count, use_sched_skb = 0;
 
-	spin_lock(&q->lock);
+	if (!spin_trylock(&q->lock))
+		return NETDEV_TX_LOCKED;
 
 	reclaim_completed_tx(sge, q);
 
@@ -1801,7 +1816,7 @@ netdev_tx_t t1_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		eth_type = skb_network_offset(skb) == ETH_HLEN ?
 			CPL_ETH_II : CPL_ETH_II_VLAN;
 
-		hdr = skb_push(skb, sizeof(*hdr));
+		hdr = (struct cpl_tx_pkt_lso *)skb_push(skb, sizeof(*hdr));
 		hdr->opcode = CPL_TX_PKT_LSO;
 		hdr->ip_csum_dis = hdr->l4_csum_dis = 0;
 		hdr->ip_hdr_words = ip_hdr(skb)->ihl;
@@ -1819,8 +1834,8 @@ netdev_tx_t t1_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		 */
 		if (unlikely(skb->len < ETH_HLEN ||
 			     skb->len > dev->mtu + eth_hdr_len(skb->data))) {
-			netdev_dbg(dev, "packet size %d hdr %d mtu%d\n",
-				   skb->len, eth_hdr_len(skb->data), dev->mtu);
+			pr_debug("%s: packet size %d hdr %d mtu%d\n", dev->name,
+				 skb->len, eth_hdr_len(skb->data), dev->mtu);
 			dev_kfree_skb_any(skb);
 			return NETDEV_TX_OK;
 		}
@@ -1828,7 +1843,7 @@ netdev_tx_t t1_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		if (skb->ip_summed == CHECKSUM_PARTIAL &&
 		    ip_hdr(skb)->protocol == IPPROTO_UDP) {
 			if (unlikely(skb_checksum_help(skb))) {
-				netdev_dbg(dev, "unable to do udp checksum\n");
+				pr_debug("%s: unable to do udp checksum\n", dev->name);
 				dev_kfree_skb_any(skb);
 				return NETDEV_TX_OK;
 			}
@@ -1849,7 +1864,7 @@ netdev_tx_t t1_start_xmit(struct sk_buff *skb, struct net_device *dev)
 			}
 		}
 
-		cpl = __skb_push(skb, sizeof(*cpl));
+		cpl = (struct cpl_tx_pkt *)__skb_push(skb, sizeof(*cpl));
 		cpl->opcode = CPL_TX_PKT;
 		cpl->ip_csum_dis = 1;    /* SW calculates IP csum */
 		cpl->l4_csum_dis = skb->ip_summed == CHECKSUM_PARTIAL ? 0 : 1;
@@ -1859,9 +1874,9 @@ netdev_tx_t t1_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	}
 	cpl->iff = dev->if_port;
 
-	if (skb_vlan_tag_present(skb)) {
+	if (vlan_tx_tag_present(skb)) {
 		cpl->vlan_valid = 1;
-		cpl->vlan = htons(skb_vlan_tag_get(skb));
+		cpl->vlan = htons(vlan_tx_tag_get(skb));
 		st->vlan_insert++;
 	} else
 		cpl->vlan_valid = 0;
@@ -1882,10 +1897,10 @@ send:
 /*
  * Callback for the Tx buffer reclaim timer.  Runs with softirqs disabled.
  */
-static void sge_tx_reclaim_cb(struct timer_list *t)
+static void sge_tx_reclaim_cb(unsigned long data)
 {
 	int i;
-	struct sge *sge = from_timer(sge, t, tx_reclaim_timer);
+	struct sge *sge = (struct sge *)data;
 
 	for (i = 0; i < SGE_CMDQ_N; ++i) {
 		struct cmdQ *q = &sge->cmdQ[i];
@@ -1978,10 +1993,10 @@ void t1_sge_start(struct sge *sge)
 /*
  * Callback for the T2 ESPI 'stuck packet feature' workaorund
  */
-static void espibug_workaround_t204(struct timer_list *t)
+static void espibug_workaround_t204(unsigned long data)
 {
-	struct sge *sge = from_timer(sge, t, espibug_timer);
-	struct adapter *adapter = sge->adapter;
+	struct adapter *adapter = (struct adapter *)data;
+	struct sge *sge = adapter->sge;
 	unsigned int nports = adapter->params.nports;
 	u32 seop[MAX_NPORTS];
 
@@ -2021,10 +2036,10 @@ static void espibug_workaround_t204(struct timer_list *t)
 	mod_timer(&sge->espibug_timer, jiffies + sge->espibug_timeout);
 }
 
-static void espibug_workaround(struct timer_list *t)
+static void espibug_workaround(unsigned long data)
 {
-	struct sge *sge = from_timer(sge, t, espibug_timer);
-	struct adapter *adapter = sge->adapter;
+	struct adapter *adapter = (struct adapter *)data;
+	struct sge *sge = adapter->sge;
 
 	if (netif_running(adapter->port[0].dev)) {
 	        struct sk_buff *skb = sge->espibug_skb[0];
@@ -2056,7 +2071,8 @@ static void espibug_workaround(struct timer_list *t)
 /*
  * Creates a t1_sge structure and returns suggested resource parameters.
  */
-struct sge *t1_sge_create(struct adapter *adapter, struct sge_params *p)
+struct sge * __devinit t1_sge_create(struct adapter *adapter,
+				     struct sge_params *p)
 {
 	struct sge *sge = kzalloc(sizeof(*sge), GFP_KERNEL);
 	int i;
@@ -2075,15 +2091,19 @@ struct sge *t1_sge_create(struct adapter *adapter, struct sge_params *p)
 			goto nomem_port;
 	}
 
-	timer_setup(&sge->tx_reclaim_timer, sge_tx_reclaim_cb, 0);
+	init_timer(&sge->tx_reclaim_timer);
+	sge->tx_reclaim_timer.data = (unsigned long)sge;
+	sge->tx_reclaim_timer.function = sge_tx_reclaim_cb;
 
 	if (is_T2(sge->adapter)) {
-		timer_setup(&sge->espibug_timer,
-			    adapter->params.nports > 1 ? espibug_workaround_t204 : espibug_workaround,
-			    0);
+		init_timer(&sge->espibug_timer);
 
-		if (adapter->params.nports > 1)
+		if (adapter->params.nports > 1) {
 			tx_sched_init(sge);
+			sge->espibug_timer.function = espibug_workaround_t204;
+		} else
+			sge->espibug_timer.function = espibug_workaround;
+		sge->espibug_timer.data = (unsigned long)sge->adapter;
 
 		sge->espibug_timeout = 1;
 		/* for T204, every 10ms */

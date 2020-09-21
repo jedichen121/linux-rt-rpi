@@ -47,7 +47,7 @@
  *  
  */
 
-#include <linux/io.h>
+#include <asm/io.h>
 #include <linux/init.h>
 #include <linux/time.h>
 #include <linux/wait.h>
@@ -349,14 +349,15 @@ static void snd_wavefront_midi_input_trigger(struct snd_rawmidi_substream *subst
 	spin_unlock_irqrestore (&midi->virtual, flags);
 }
 
-static void snd_wavefront_midi_output_timer(struct timer_list *t)
+static void snd_wavefront_midi_output_timer(unsigned long data)
 {
-	snd_wavefront_midi_t *midi = from_timer(midi, t, timer);
-	snd_wavefront_card_t *card = midi->timer_card;
+	snd_wavefront_card_t *card = (snd_wavefront_card_t *)data;
+	snd_wavefront_midi_t *midi = &card->wavefront.midi;
 	unsigned long flags;
 	
 	spin_lock_irqsave (&midi->virtual, flags);
-	mod_timer(&midi->timer, 1 + jiffies);
+	midi->timer.expires = 1 + jiffies;
+	add_timer(&midi->timer);
 	spin_unlock_irqrestore (&midi->virtual, flags);
 	snd_wavefront_midi_output_write(card);
 }
@@ -383,10 +384,11 @@ static void snd_wavefront_midi_output_trigger(struct snd_rawmidi_substream *subs
 	if (up) {
 		if ((midi->mode[mpu] & MPU401_MODE_OUTPUT_TRIGGER) == 0) {
 			if (!midi->istimer) {
-				timer_setup(&midi->timer,
-					    snd_wavefront_midi_output_timer,
-					    0);
-				mod_timer(&midi->timer, 1 + jiffies);
+				init_timer(&midi->timer);
+				midi->timer.function = snd_wavefront_midi_output_timer;
+				midi->timer.data = (unsigned long) substream->rmidi->card->private_data;
+				midi->timer.expires = 1 + jiffies;
+				add_timer(&midi->timer);
 			}
 			midi->istimer++;
 			midi->mode[mpu] |= MPU401_MODE_OUTPUT_TRIGGER;
@@ -479,7 +481,7 @@ snd_wavefront_midi_disable_virtual (snd_wavefront_card_t *card)
 	spin_unlock_irqrestore (&card->wavefront.midi.virtual, flags);
 }
 
-int
+int __devinit
 snd_wavefront_midi_start (snd_wavefront_card_t *card)
 
 {
@@ -559,14 +561,14 @@ snd_wavefront_midi_start (snd_wavefront_card_t *card)
 	return 0;
 }
 
-const struct snd_rawmidi_ops snd_wavefront_midi_output =
+struct snd_rawmidi_ops snd_wavefront_midi_output =
 {
 	.open =		snd_wavefront_midi_output_open,
 	.close =	snd_wavefront_midi_output_close,
 	.trigger =	snd_wavefront_midi_output_trigger,
 };
 
-const struct snd_rawmidi_ops snd_wavefront_midi_input =
+struct snd_rawmidi_ops snd_wavefront_midi_input =
 {
 	.open =		snd_wavefront_midi_input_open,
 	.close =	snd_wavefront_midi_input_close,

@@ -1,11 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0
-//
-// Serial Sound Interface (I2S) support for SH7760/SH7780
-//
-// Copyright (c) 2007 Manuel Lauss <mano@roarinelk.homelinux.net>
-//
-// dont forget to set IPSEL/OMSEL register bits (in your board code) to
-// enable SSI output pins!
+/*
+ * Serial Sound Interface (I2S) support for SH7760/SH7780
+ *
+ * Copyright (c) 2007 Manuel Lauss <mano@roarinelk.homelinux.net>
+ *
+ *  licensed under the terms outlined in the file COPYING at the root
+ *  of the linux kernel sources.
+ *
+ * dont forget to set IPSEL/OMSEL register bits (in your board code) to
+ * enable SSI output pins!
+ */
 
 /*
  * LIMITATIONS:
@@ -329,7 +332,7 @@ static int ssi_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	 SNDRV_PCM_FMTBIT_S24_3LE | SNDRV_PCM_FMTBIT_U24_3LE |	\
 	 SNDRV_PCM_FMTBIT_S32_LE  | SNDRV_PCM_FMTBIT_U32_LE)
 
-static const struct snd_soc_dai_ops ssi_dai_ops = {
+static struct snd_soc_dai_ops ssi_dai_ops = {
 	.startup	= ssi_startup,
 	.shutdown	= ssi_shutdown,
 	.trigger	= ssi_trigger,
@@ -376,27 +379,40 @@ static struct snd_soc_dai_driver sh4_ssi_dai[] = {
 #endif
 };
 
-static const struct snd_soc_component_driver sh4_ssi_component = {
-	.name		= "sh4-ssi",
-};
-
-static int sh4_soc_dai_probe(struct platform_device *pdev)
+static int __devinit sh4_soc_dai_probe(struct platform_device *pdev)
 {
-	return devm_snd_soc_register_component(&pdev->dev, &sh4_ssi_component,
-					       sh4_ssi_dai,
-					       ARRAY_SIZE(sh4_ssi_dai));
+	return snd_soc_register_dais(&pdev->dev, sh4_ssi_dai,
+			ARRAY_SIZE(sh4_ssi_dai));
+}
+
+static int __devexit sh4_soc_dai_remove(struct platform_device *pdev)
+{
+	snd_soc_unregister_dais(&pdev->dev, ARRAY_SIZE(sh4_ssi_dai));
+	return 0;
 }
 
 static struct platform_driver sh4_ssi_driver = {
 	.driver = {
 			.name = "sh4-ssi-dai",
+			.owner = THIS_MODULE,
 	},
 
 	.probe = sh4_soc_dai_probe,
+	.remove = __devexit_p(sh4_soc_dai_remove),
 };
 
-module_platform_driver(sh4_ssi_driver);
+static int __init snd_sh4_ssi_init(void)
+{
+	return platform_driver_register(&sh4_ssi_driver);
+}
+module_init(snd_sh4_ssi_init);
 
-MODULE_LICENSE("GPL v2");
+static void __exit snd_sh4_ssi_exit(void)
+{
+	platform_driver_unregister(&sh4_ssi_driver);
+}
+module_exit(snd_sh4_ssi_exit);
+
+MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("SuperH onchip SSI (I2S) audio driver");
 MODULE_AUTHOR("Manuel Lauss <mano@roarinelk.homelinux.net>");

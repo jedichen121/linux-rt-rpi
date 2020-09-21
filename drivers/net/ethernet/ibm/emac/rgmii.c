@@ -1,5 +1,5 @@
 /*
- * drivers/net/ethernet/ibm/emac/rgmii.c
+ * drivers/net/ibm_newemac/rgmii.c
  *
  * Driver for PowerPC 4xx on-chip ethernet controller, RGMII bridge support.
  *
@@ -24,7 +24,6 @@
 #include <linux/slab.h>
 #include <linux/kernel.h>
 #include <linux/ethtool.h>
-#include <linux/of_address.h>
 #include <asm/io.h>
 
 #include "emac.h"
@@ -45,52 +44,66 @@
 
 /* RGMIIx_SSR */
 #define RGMII_SSR_MASK(idx)	(0x7 << ((idx) * 8))
-#define RGMII_SSR_10(idx)	(0x1 << ((idx) * 8))
 #define RGMII_SSR_100(idx)	(0x2 << ((idx) * 8))
 #define RGMII_SSR_1000(idx)	(0x4 << ((idx) * 8))
 
 /* RGMII bridge supports only GMII/TBI and RGMII/RTBI PHYs */
 static inline int rgmii_valid_mode(int phy_mode)
 {
-	return  phy_interface_mode_is_rgmii(phy_mode) ||
-		phy_mode == PHY_INTERFACE_MODE_GMII ||
-		phy_mode == PHY_INTERFACE_MODE_MII ||
-		phy_mode == PHY_INTERFACE_MODE_TBI ||
-		phy_mode == PHY_INTERFACE_MODE_RTBI;
+	return  phy_mode == PHY_MODE_GMII ||
+		phy_mode == PHY_MODE_MII ||
+		phy_mode == PHY_MODE_RGMII ||
+		phy_mode == PHY_MODE_TBI ||
+		phy_mode == PHY_MODE_RTBI;
+}
+
+static inline const char *rgmii_mode_name(int mode)
+{
+	switch (mode) {
+	case PHY_MODE_RGMII:
+		return "RGMII";
+	case PHY_MODE_TBI:
+		return "TBI";
+	case PHY_MODE_GMII:
+		return "GMII";
+	case PHY_MODE_MII:
+		return "MII";
+	case PHY_MODE_RTBI:
+		return "RTBI";
+	default:
+		BUG();
+	}
 }
 
 static inline u32 rgmii_mode_mask(int mode, int input)
 {
 	switch (mode) {
-	case PHY_INTERFACE_MODE_RGMII:
-	case PHY_INTERFACE_MODE_RGMII_ID:
-	case PHY_INTERFACE_MODE_RGMII_RXID:
-	case PHY_INTERFACE_MODE_RGMII_TXID:
+	case PHY_MODE_RGMII:
 		return RGMII_FER_RGMII(input);
-	case PHY_INTERFACE_MODE_TBI:
+	case PHY_MODE_TBI:
 		return RGMII_FER_TBI(input);
-	case PHY_INTERFACE_MODE_GMII:
+	case PHY_MODE_GMII:
 		return RGMII_FER_GMII(input);
-	case PHY_INTERFACE_MODE_MII:
+	case PHY_MODE_MII:
 		return RGMII_FER_MII(input);
-	case PHY_INTERFACE_MODE_RTBI:
+	case PHY_MODE_RTBI:
 		return RGMII_FER_RTBI(input);
 	default:
 		BUG();
 	}
 }
 
-int rgmii_attach(struct platform_device *ofdev, int input, int mode)
+int __devinit rgmii_attach(struct platform_device *ofdev, int input, int mode)
 {
-	struct rgmii_instance *dev = platform_get_drvdata(ofdev);
+	struct rgmii_instance *dev = dev_get_drvdata(&ofdev->dev);
 	struct rgmii_regs __iomem *p = dev->base;
 
 	RGMII_DBG(dev, "attach(%d)" NL, input);
 
 	/* Check if we need to attach to a RGMII */
 	if (input < 0 || !rgmii_valid_mode(mode)) {
-		printk(KERN_ERR "%pOF: unsupported settings !\n",
-		       ofdev->dev.of_node);
+		printk(KERN_ERR "%s: unsupported settings !\n",
+		       ofdev->dev.of_node->full_name);
 		return -ENODEV;
 	}
 
@@ -99,8 +112,8 @@ int rgmii_attach(struct platform_device *ofdev, int input, int mode)
 	/* Enable this input */
 	out_be32(&p->fer, in_be32(&p->fer) | rgmii_mode_mask(mode, input));
 
-	printk(KERN_NOTICE "%pOF: input %d in %s mode\n",
-	       ofdev->dev.of_node, input, phy_modes(mode));
+	printk(KERN_NOTICE "%s: input %d in %s mode\n",
+	       ofdev->dev.of_node->full_name, input, rgmii_mode_name(mode));
 
 	++dev->users;
 
@@ -111,7 +124,7 @@ int rgmii_attach(struct platform_device *ofdev, int input, int mode)
 
 void rgmii_set_speed(struct platform_device *ofdev, int input, int speed)
 {
-	struct rgmii_instance *dev = platform_get_drvdata(ofdev);
+	struct rgmii_instance *dev = dev_get_drvdata(&ofdev->dev);
 	struct rgmii_regs __iomem *p = dev->base;
 	u32 ssr;
 
@@ -125,8 +138,6 @@ void rgmii_set_speed(struct platform_device *ofdev, int input, int speed)
 		ssr |= RGMII_SSR_1000(input);
 	else if (speed == SPEED_100)
 		ssr |= RGMII_SSR_100(input);
-	else if (speed == SPEED_10)
-		ssr |= RGMII_SSR_10(input);
 
 	out_be32(&p->ssr, ssr);
 
@@ -135,7 +146,7 @@ void rgmii_set_speed(struct platform_device *ofdev, int input, int speed)
 
 void rgmii_get_mdio(struct platform_device *ofdev, int input)
 {
-	struct rgmii_instance *dev = platform_get_drvdata(ofdev);
+	struct rgmii_instance *dev = dev_get_drvdata(&ofdev->dev);
 	struct rgmii_regs __iomem *p = dev->base;
 	u32 fer;
 
@@ -156,7 +167,7 @@ void rgmii_get_mdio(struct platform_device *ofdev, int input)
 
 void rgmii_put_mdio(struct platform_device *ofdev, int input)
 {
-	struct rgmii_instance *dev = platform_get_drvdata(ofdev);
+	struct rgmii_instance *dev = dev_get_drvdata(&ofdev->dev);
 	struct rgmii_regs __iomem *p = dev->base;
 	u32 fer;
 
@@ -177,7 +188,7 @@ void rgmii_put_mdio(struct platform_device *ofdev, int input)
 
 void rgmii_detach(struct platform_device *ofdev, int input)
 {
-	struct rgmii_instance *dev = platform_get_drvdata(ofdev);
+	struct rgmii_instance *dev = dev_get_drvdata(&ofdev->dev);
 	struct rgmii_regs __iomem *p;
 
 	BUG_ON(!dev || dev->users == 0);
@@ -203,7 +214,7 @@ int rgmii_get_regs_len(struct platform_device *ofdev)
 
 void *rgmii_dump_regs(struct platform_device *ofdev, void *buf)
 {
-	struct rgmii_instance *dev = platform_get_drvdata(ofdev);
+	struct rgmii_instance *dev = dev_get_drvdata(&ofdev->dev);
 	struct emac_ethtool_regs_subhdr *hdr = buf;
 	struct rgmii_regs *regs = (struct rgmii_regs *)(hdr + 1);
 
@@ -217,7 +228,7 @@ void *rgmii_dump_regs(struct platform_device *ofdev, void *buf)
 }
 
 
-static int rgmii_probe(struct platform_device *ofdev)
+static int __devinit rgmii_probe(struct platform_device *ofdev)
 {
 	struct device_node *np = ofdev->dev.of_node;
 	struct rgmii_instance *dev;
@@ -226,15 +237,19 @@ static int rgmii_probe(struct platform_device *ofdev)
 
 	rc = -ENOMEM;
 	dev = kzalloc(sizeof(struct rgmii_instance), GFP_KERNEL);
-	if (dev == NULL)
+	if (dev == NULL) {
+		printk(KERN_ERR "%s: could not allocate RGMII device!\n",
+		       np->full_name);
 		goto err_gone;
+	}
 
 	mutex_init(&dev->lock);
 	dev->ofdev = ofdev;
 
 	rc = -ENXIO;
 	if (of_address_to_resource(np, 0, &regs)) {
-		printk(KERN_ERR "%pOF: Can't get registers address\n", np);
+		printk(KERN_ERR "%s: Can't get registers address\n",
+		       np->full_name);
 		goto err_free;
 	}
 
@@ -242,7 +257,8 @@ static int rgmii_probe(struct platform_device *ofdev)
 	dev->base = (struct rgmii_regs __iomem *)ioremap(regs.start,
 						 sizeof(struct rgmii_regs));
 	if (dev->base == NULL) {
-		printk(KERN_ERR "%pOF: Can't map device registers!\n", np);
+		printk(KERN_ERR "%s: Can't map device registers!\n",
+		       np->full_name);
 		goto err_free;
 	}
 
@@ -261,12 +277,12 @@ static int rgmii_probe(struct platform_device *ofdev)
 	out_be32(&dev->base->fer, 0);
 
 	printk(KERN_INFO
-	       "RGMII %pOF initialized with%s MDIO support\n",
-	       ofdev->dev.of_node,
+	       "RGMII %s initialized with%s MDIO support\n",
+	       ofdev->dev.of_node->full_name,
 	       (dev->flags & EMAC_RGMII_FLAG_HAS_MDIO) ? "" : "out");
 
 	wmb();
-	platform_set_drvdata(ofdev, dev);
+	dev_set_drvdata(&ofdev->dev, dev);
 
 	return 0;
 
@@ -276,9 +292,11 @@ static int rgmii_probe(struct platform_device *ofdev)
 	return rc;
 }
 
-static int rgmii_remove(struct platform_device *ofdev)
+static int __devexit rgmii_remove(struct platform_device *ofdev)
 {
-	struct rgmii_instance *dev = platform_get_drvdata(ofdev);
+	struct rgmii_instance *dev = dev_get_drvdata(&ofdev->dev);
+
+	dev_set_drvdata(&ofdev->dev, NULL);
 
 	WARN_ON(dev->users != 0);
 
@@ -288,7 +306,7 @@ static int rgmii_remove(struct platform_device *ofdev)
 	return 0;
 }
 
-static const struct of_device_id rgmii_match[] =
+static struct of_device_id rgmii_match[] =
 {
 	{
 		.compatible	= "ibm,rgmii",
@@ -302,6 +320,7 @@ static const struct of_device_id rgmii_match[] =
 static struct platform_driver rgmii_driver = {
 	.driver = {
 		.name = "emac-rgmii",
+		.owner = THIS_MODULE,
 		.of_match_table = rgmii_match,
 	},
 	.probe = rgmii_probe,

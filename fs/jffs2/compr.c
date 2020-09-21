@@ -12,8 +12,6 @@
  *
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include "compr.h"
 
 static DEFINE_SPINLOCK(jffs2_compressor_list_lock);
@@ -81,7 +79,7 @@ static int jffs2_selected_compress(u8 compr, unsigned char *data_in,
 
 	output_buf = kmalloc(*cdatalen, GFP_KERNEL);
 	if (!output_buf) {
-		pr_warn("No memory for compressor allocation. Compression failed.\n");
+		printk(KERN_WARNING "JFFS2: No memory for compressor allocation. Compression failed.\n");
 		return ret;
 	}
 	orig_slen = *datalen;
@@ -190,8 +188,7 @@ uint16_t jffs2_compress(struct jffs2_sb_info *c, struct jffs2_inode_info *f,
 				tmp_buf = kmalloc(orig_slen, GFP_KERNEL);
 				spin_lock(&jffs2_compressor_list_lock);
 				if (!tmp_buf) {
-					pr_warn("No memory for compressor allocation. (%d bytes)\n",
-						orig_slen);
+					printk(KERN_WARNING "JFFS2: No memory for compressor allocation. (%d bytes)\n", orig_slen);
 					continue;
 				}
 				else {
@@ -238,7 +235,7 @@ uint16_t jffs2_compress(struct jffs2_sb_info *c, struct jffs2_inode_info *f,
 				cpage_out, datalen, cdatalen);
 		break;
 	default:
-		pr_err("unknown compression mode\n");
+		printk(KERN_ERR "JFFS2: unknown compression mode.\n");
 	}
 
 	if (ret == JFFS2_COMPR_NONE) {
@@ -280,8 +277,7 @@ int jffs2_decompress(struct jffs2_sb_info *c, struct jffs2_inode_info *f,
 				ret = this->decompress(cdata_in, data_out, cdatalen, datalen);
 				spin_lock(&jffs2_compressor_list_lock);
 				if (ret) {
-					pr_warn("Decompressor \"%s\" returned %d\n",
-						this->name, ret);
+					printk(KERN_WARNING "Decompressor \"%s\" returned %d\n", this->name, ret);
 				}
 				else {
 					this->stat_decompr_blocks++;
@@ -291,7 +287,7 @@ int jffs2_decompress(struct jffs2_sb_info *c, struct jffs2_inode_info *f,
 				return ret;
 			}
 		}
-		pr_warn("compression type 0x%02x not available\n", comprtype);
+		printk(KERN_WARNING "JFFS2 compression type 0x%02x not available.\n", comprtype);
 		spin_unlock(&jffs2_compressor_list_lock);
 		return -EIO;
 	}
@@ -303,7 +299,7 @@ int jffs2_register_compressor(struct jffs2_compressor *comp)
 	struct jffs2_compressor *this;
 
 	if (!comp->name) {
-		pr_warn("NULL compressor name at registering JFFS2 compressor. Failed.\n");
+		printk(KERN_WARNING "NULL compressor name at registering JFFS2 compressor. Failed.\n");
 		return -1;
 	}
 	comp->compr_buf_size=0;
@@ -313,7 +309,7 @@ int jffs2_register_compressor(struct jffs2_compressor *comp)
 	comp->stat_compr_new_size=0;
 	comp->stat_compr_blocks=0;
 	comp->stat_decompr_blocks=0;
-	jffs2_dbg(1, "Registering JFFS2 compressor \"%s\"\n", comp->name);
+	D1(printk(KERN_DEBUG "Registering JFFS2 compressor \"%s\"\n", comp->name));
 
 	spin_lock(&jffs2_compressor_list_lock);
 
@@ -336,15 +332,15 @@ out:
 
 int jffs2_unregister_compressor(struct jffs2_compressor *comp)
 {
-	D2(struct jffs2_compressor *this);
+	D2(struct jffs2_compressor *this;)
 
-	jffs2_dbg(1, "Unregistering JFFS2 compressor \"%s\"\n", comp->name);
+	D1(printk(KERN_DEBUG "Unregistering JFFS2 compressor \"%s\"\n", comp->name));
 
 	spin_lock(&jffs2_compressor_list_lock);
 
 	if (comp->usecount) {
 		spin_unlock(&jffs2_compressor_list_lock);
-		pr_warn("Compressor module is in use. Unregister failed.\n");
+		printk(KERN_WARNING "JFFS2: Compressor modul is in use. Unregister failed.\n");
 		return -1;
 	}
 	list_del(&comp->list);
@@ -381,17 +377,17 @@ int __init jffs2_compressors_init(void)
 /* Setting default compression mode */
 #ifdef CONFIG_JFFS2_CMODE_NONE
 	jffs2_compression_mode = JFFS2_COMPR_MODE_NONE;
-	jffs2_dbg(1, "default compression mode: none\n");
+	D1(printk(KERN_INFO "JFFS2: default compression mode: none\n");)
 #else
 #ifdef CONFIG_JFFS2_CMODE_SIZE
 	jffs2_compression_mode = JFFS2_COMPR_MODE_SIZE;
-	jffs2_dbg(1, "default compression mode: size\n");
+	D1(printk(KERN_INFO "JFFS2: default compression mode: size\n");)
 #else
 #ifdef CONFIG_JFFS2_CMODE_FAVOURLZO
 	jffs2_compression_mode = JFFS2_COMPR_MODE_FAVOURLZO;
-	jffs2_dbg(1, "default compression mode: favourlzo\n");
+	D1(printk(KERN_INFO "JFFS2: default compression mode: favourlzo\n");)
 #else
-	jffs2_dbg(1, "default compression mode: priority\n");
+	D1(printk(KERN_INFO "JFFS2: default compression mode: priority\n");)
 #endif
 #endif
 #endif

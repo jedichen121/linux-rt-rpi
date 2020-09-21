@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  Copyright (c) 2000-2008 LSI Corporation.
  *
@@ -858,7 +857,7 @@ typedef struct _EVENT_DATA_SAS_DISCOVERY
 #define MPI_EVENT_SAS_DSCVRY_PHY_BITS_MASK                  (0xFFFF0000)
 #define MPI_EVENT_SAS_DSCVRY_PHY_BITS_SHIFT                 (16)
 
-/* SAS Discovery Error Event data */
+/* SAS Discovery Errror Event data */
 
 typedef struct _EVENT_DATA_DISCOVERY_ERROR
 {

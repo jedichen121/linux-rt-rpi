@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_MICROBLAZE_FUTEX_H
 #define _ASM_MICROBLAZE_FUTEX_H
 
@@ -25,14 +24,23 @@
 			.word	1b,4b,2b,4b;				\
 			.previous;"					\
 	: "=&r" (oldval), "=&r" (ret)					\
-	: "r" (uaddr), "i" (-EFAULT), "r" (oparg)			\
+	: "b" (uaddr), "i" (-EFAULT), "r" (oparg)			\
 	);								\
 })
 
 static inline int
-arch_futex_atomic_op_inuser(int op, int oparg, int *oval, u32 __user *uaddr)
+futex_atomic_op_inuser(int encoded_op, u32 __user *uaddr)
 {
+	int op = (encoded_op >> 28) & 7;
+	int cmp = (encoded_op >> 24) & 15;
+	int oparg = (encoded_op << 8) >> 20;
+	int cmparg = (encoded_op << 20) >> 20;
 	int oldval = 0, ret;
+	if (encoded_op & (FUTEX_OP_OPARG_SHIFT << 28))
+		oparg = 1 << oparg;
+
+	if (!access_ok(VERIFY_WRITE, uaddr, sizeof(u32)))
+		return -EFAULT;
 
 	pagefault_disable();
 
@@ -58,9 +66,30 @@ arch_futex_atomic_op_inuser(int op, int oparg, int *oval, u32 __user *uaddr)
 
 	pagefault_enable();
 
-	if (!ret)
-		*oval = oldval;
-
+	if (!ret) {
+		switch (cmp) {
+		case FUTEX_OP_CMP_EQ:
+			ret = (oldval == cmparg);
+			break;
+		case FUTEX_OP_CMP_NE:
+			ret = (oldval != cmparg);
+			break;
+		case FUTEX_OP_CMP_LT:
+			ret = (oldval < cmparg);
+			break;
+		case FUTEX_OP_CMP_GE:
+			ret = (oldval >= cmparg);
+			break;
+		case FUTEX_OP_CMP_LE:
+			ret = (oldval <= cmparg);
+			break;
+		case FUTEX_OP_CMP_GT:
+			ret = (oldval > cmparg);
+			break;
+		default:
+			ret = -ENOSYS;
+		}
+	}
 	return ret;
 }
 
@@ -76,7 +105,7 @@ futex_atomic_cmpxchg_inatomic(u32 *uval, u32 __user *uaddr,
 
 	__asm__ __volatile__ ("1:	lwx	%1, %3, r0;		\
 					cmp	%2, %1, %4;		\
-					bnei	%2, 3f;			\
+					beqi	%2, 3f;			\
 				2:	swx	%5, %3, r0;		\
 					addic	%2, r0, 0;		\
 					bnei	%2, 1b;			\

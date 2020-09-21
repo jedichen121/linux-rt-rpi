@@ -1,11 +1,9 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /* Raytheon wireless LAN PCMCIA card driver for Linux 
    A  PCMCIA client driver for the Raylink wireless network card
    Written by Corey Thomas
 */
 
-#ifndef _RAY_CS_H_
-#define _RAY_CS_H_
+#ifndef RAYLINK_H
 
 struct beacon_rx {
     struct mac_header mac;
@@ -71,4 +69,4 @@ typedef struct ray_dev_t {
 } ray_dev_t;
 /*****************************************************************************/
 
-#endif /* _RAY_CS_H_ */
+#endif /* RAYLINK_H */

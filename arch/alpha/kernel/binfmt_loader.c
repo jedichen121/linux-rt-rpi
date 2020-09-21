@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/file.h>
@@ -6,7 +5,7 @@
 #include <linux/binfmts.h>
 #include <linux/a.out.h>
 
-static int load_binary(struct linux_binprm *bprm)
+static int load_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 {
 	struct exec *eh = (struct exec *)bprm->buf;
 	unsigned long loader;
@@ -38,7 +37,7 @@ static int load_binary(struct linux_binprm *bprm)
 	retval = prepare_binprm(bprm);
 	if (retval < 0)
 		return retval;
-	return search_binary_handler(bprm);
+	return search_binary_handler(bprm,regs);
 }
 
 static struct linux_binfmt loader_format = {
@@ -47,7 +46,6 @@ static struct linux_binfmt loader_format = {
 
 static int __init init_loader_binfmt(void)
 {
-	insert_binfmt(&loader_format);
-	return 0;
+	return insert_binfmt(&loader_format);
 }
 arch_initcall(init_loader_binfmt);

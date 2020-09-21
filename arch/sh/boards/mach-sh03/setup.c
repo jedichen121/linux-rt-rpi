@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/arch/sh/boards/sh03/setup.c
  *
@@ -102,5 +101,6 @@ device_initcall(sh03_devices_setup);
 static struct sh_machine_vector mv_sh03 __initmv = {
 	.mv_name		= "Interface (CTP/PCI-SH03)",
 	.mv_setup		= sh03_setup,
+	.mv_nr_irqs		= 48,
 	.mv_init_irq		= init_sh03_IRQ,
 };

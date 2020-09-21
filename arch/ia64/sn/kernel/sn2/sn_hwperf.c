@@ -25,7 +25,6 @@
 
 #include <linux/fs.h>
 #include <linux/slab.h>
-#include <linux/export.h>
 #include <linux/vmalloc.h>
 #include <linux/seq_file.h>
 #include <linux/miscdevice.h>
@@ -37,7 +36,7 @@
 
 #include <asm/processor.h>
 #include <asm/topology.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <asm/sal.h>
 #include <asm/sn/io.h>
 #include <asm/sn/sn_sal.h>
@@ -525,7 +524,7 @@ static int sn_topology_show(struct seq_file *s, void *d)
 				/* both ends local to this partition */
 				seq_puts(s, " local");
 			else if (SN_HWPERF_FOREIGN(p))
-				/* both ends of the link in foreign partition */
+				/* both ends of the link in foreign partiton */
 				seq_puts(s, " foreign");
 			else
 				/* link straddles a partition */
@@ -598,17 +597,12 @@ static void sn_hwperf_call_sal(void *info)
 	op_info->ret = r;
 }
 
-static long sn_hwperf_call_sal_work(void *info)
-{
-	sn_hwperf_call_sal(info);
-	return 0;
-}
-
 static int sn_hwperf_op_cpu(struct sn_hwperf_op_info *op_info)
 {
 	u32 cpu;
 	u32 use_ipi;
 	int r = 0;
+	cpumask_t save_allowed;
 	
 	cpu = (op_info->a->arg & SN_HWPERF_ARG_CPU_MASK) >> 32;
 	use_ipi = op_info->a->arg & SN_HWPERF_ARG_USE_IPI_MASK;
@@ -634,9 +628,13 @@ static int sn_hwperf_op_cpu(struct sn_hwperf_op_info *op_info)
 			/* use an interprocessor interrupt to call SAL */
 			smp_call_function_single(cpu, sn_hwperf_call_sal,
 				op_info, 1);
-		} else {
-			/* Call on the target CPU */
-			work_on_cpu_safe(cpu, sn_hwperf_call_sal_work, op_info);
+		}
+		else {
+			/* migrate the task before calling SAL */ 
+			save_allowed = current->cpus_allowed;
+			set_cpus_allowed_ptr(current, cpumask_of(cpu));
+			sn_hwperf_call_sal(op_info);
+			set_cpus_allowed_ptr(current, &save_allowed);
 		}
 	}
 	r = op_info->ret;
@@ -978,7 +976,7 @@ int sn_hwperf_get_nearest_node(cnodeid_t node,
 	return e;
 }
 
-static int sn_hwperf_misc_register_init(void)
+static int __devinit sn_hwperf_misc_register_init(void)
 {
 	int e;
 

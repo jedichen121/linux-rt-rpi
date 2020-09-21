@@ -26,6 +26,7 @@
 #include <sound/core.h>
 #include <sound/initval.h>
 #include <sound/rawmidi.h>
+#include "usbhid/usbhid.h"
 #include "hid-ids.h"
 
 
@@ -89,7 +90,7 @@ static const char longname[] = "Prodikeys PC-MIDI Keyboard";
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;
-static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;
+static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;
 
 module_param_array(index, int, NULL, 0444);
 module_param_array(id, charp, NULL, 0444);
@@ -103,8 +104,8 @@ MODULE_PARM_DESC(enable, "Enable for the PC-MIDI virtual audio driver");
 static ssize_t show_channel(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
-	struct hid_device *hdev = to_hid_device(dev);
-	struct pk_device *pk = hid_get_drvdata(hdev);
+	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
+	struct pk_device *pk = (struct pk_device *)hid_get_drvdata(hdev);
 
 	dbg_hid("pcmidi sysfs read channel=%u\n", pk->pm->midi_channel);
 
@@ -116,8 +117,8 @@ static ssize_t show_channel(struct device *dev,
 static ssize_t store_channel(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
-	struct hid_device *hdev = to_hid_device(dev);
-	struct pk_device *pk = hid_get_drvdata(hdev);
+	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
+	struct pk_device *pk = (struct pk_device *)hid_get_drvdata(hdev);
 
 	unsigned channel = 0;
 
@@ -140,8 +141,8 @@ static struct device_attribute *sysfs_device_attr_channel = {
 static ssize_t show_sustain(struct device *dev,
  struct device_attribute *attr, char *buf)
 {
-	struct hid_device *hdev = to_hid_device(dev);
-	struct pk_device *pk = hid_get_drvdata(hdev);
+	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
+	struct pk_device *pk = (struct pk_device *)hid_get_drvdata(hdev);
 
 	dbg_hid("pcmidi sysfs read sustain=%u\n", pk->pm->midi_sustain);
 
@@ -153,8 +154,8 @@ static ssize_t show_sustain(struct device *dev,
 static ssize_t store_sustain(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
-	struct hid_device *hdev = to_hid_device(dev);
-	struct pk_device *pk = hid_get_drvdata(hdev);
+	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
+	struct pk_device *pk = (struct pk_device *)hid_get_drvdata(hdev);
 
 	unsigned sustain = 0;
 
@@ -179,8 +180,8 @@ static struct device_attribute *sysfs_device_attr_sustain = {
 static ssize_t show_octave(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
-	struct hid_device *hdev = to_hid_device(dev);
-	struct pk_device *pk = hid_get_drvdata(hdev);
+	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
+	struct pk_device *pk = (struct pk_device *)hid_get_drvdata(hdev);
 
 	dbg_hid("pcmidi sysfs read octave=%d\n", pk->pm->midi_octave);
 
@@ -192,8 +193,8 @@ static ssize_t show_octave(struct device *dev,
 static ssize_t store_octave(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
-	struct hid_device *hdev = to_hid_device(dev);
-	struct pk_device *pk = hid_get_drvdata(hdev);
+	struct hid_device *hdev = container_of(dev, struct hid_device, dev);
+	struct pk_device *pk = (struct pk_device *)hid_get_drvdata(hdev);
 
 	int octave = 0;
 
@@ -239,9 +240,9 @@ drop_note:
 	return;
 }
 
-static void pcmidi_sustained_note_release(struct timer_list *t)
+static void pcmidi_sustained_note_release(unsigned long data)
 {
-	struct pcmidi_sustain *pms = from_timer(pms, t, timer);
+	struct pcmidi_sustain *pms = (struct pcmidi_sustain *)data;
 
 	pcmidi_send_note(pms->pm, pms->status, pms->note, pms->velocity);
 	pms->in_use = 0;
@@ -256,7 +257,8 @@ static void init_sustain_timers(struct pcmidi_snd *pm)
 		pms = &pm->sustained_notes[i];
 		pms->in_use = 0;
 		pms->pm = pm;
-		timer_setup(&pms->timer, pcmidi_sustained_note_release, 0);
+		setup_timer(&pms->timer, pcmidi_sustained_note_release,
+			(unsigned long)pms);
 	}
 }
 
@@ -304,7 +306,7 @@ static void pcmidi_submit_output_report(struct pcmidi_snd *pm, int state)
 	report->field[0]->value[0] = 0x01;
 	report->field[0]->value[1] = state;
 
-	hid_hw_request(hdev, report, HID_REQ_SET_REPORT);
+	usbhid_submit_report(hdev, report, USB_DIR_OUT);
 }
 
 static int pcmidi_handle_report1(struct pcmidi_snd *pm, u8 *data)
@@ -394,10 +396,11 @@ static int pcmidi_handle_report4(struct pcmidi_snd *pm, u8 *data)
 
 	/* break keys */
 	for (bit_index = 0; bit_index < 24; bit_index++) {
+		key = pm->last_key[bit_index];
 		if (!((0x01 << bit_index) & bit_mask)) {
 			input_event(pm->input_ep82, EV_KEY,
 				pm->last_key[bit_index], 0);
-			pm->last_key[bit_index] = 0;
+				pm->last_key[bit_index] = 0;
 		}
 	}
 
@@ -426,7 +429,7 @@ static int pcmidi_handle_report4(struct pcmidi_snd *pm, u8 *data)
 					pm->midi_octave = 2;
 				dbg_hid("pcmidi mode: %d octave: %d\n",
 					pm->midi_mode, pm->midi_octave);
-				continue;
+			    continue;
 			} else
 				key = KEY_MESSENGER;
 			break;
@@ -555,14 +558,10 @@ static void pcmidi_setup_extra_keys(
 
 static int pcmidi_set_operational(struct pcmidi_snd *pm)
 {
-	int rc;
-
 	if (pm->ifnum != 1)
 		return 0; /* only set up ONCE for interace 1 */
 
-	rc = pcmidi_get_output_report(pm);
-	if (rc < 0)
-		return rc;
+	pcmidi_get_output_report(pm);
 	pcmidi_submit_output_report(pm, 0xc1);
 	return 0;
 }
@@ -596,7 +595,7 @@ static void pcmidi_in_trigger(struct snd_rawmidi_substream *substream, int up)
 	pm->in_triggered = up;
 }
 
-static const struct snd_rawmidi_ops pcmidi_in_ops = {
+static struct snd_rawmidi_ops pcmidi_in_ops = {
 	.open = pcmidi_in_open,
 	.close = pcmidi_in_close,
 	.trigger = pcmidi_in_trigger
@@ -626,8 +625,7 @@ static int pcmidi_snd_initialise(struct pcmidi_snd *pm)
 
 	/* Setup sound card */
 
-	err = snd_card_new(&pm->pk->hdev->dev, index[dev], id[dev],
-			   THIS_MODULE, 0, &card);
+	err = snd_card_create(index[dev], id[dev], THIS_MODULE, 0, &card);
 	if (err < 0) {
 		pk_error("failed to create pc-midi sound card\n");
 		err = -ENOMEM;
@@ -663,6 +661,8 @@ static int pcmidi_snd_initialise(struct pcmidi_snd *pm)
 	snd_rawmidi_set_ops(rwmidi, SNDRV_RAWMIDI_STREAM_INPUT,
 		&pcmidi_in_ops);
 
+	snd_card_set_dev(card, &pm->pk->hdev->dev);
+
 	/* create sysfs variables */
 	err = device_create_file(&pm->pk->hdev->dev,
 				 sysfs_device_attr_channel);
@@ -691,18 +691,14 @@ static int pcmidi_snd_initialise(struct pcmidi_snd *pm)
 	spin_lock_init(&pm->rawmidi_in_lock);
 
 	init_sustain_timers(pm);
-	err = pcmidi_set_operational(pm);
-	if (err < 0) {
-		pk_error("failed to find output report\n");
-		goto fail_register;
-	}
+	pcmidi_set_operational(pm);
 
 	/* register it */
 	err = snd_card_register(card);
 	if (err < 0) {
 		pk_error("failed to register pc-midi sound card: error %d\n",
 			 err);
-		goto fail_register;
+			 goto fail_register;
 	}
 
 	dbg_hid("pcmidi_snd_initialise finished ok\n");
@@ -763,7 +759,7 @@ static int pk_input_mapping(struct hid_device *hdev, struct hid_input *hi,
 		struct hid_field *field, struct hid_usage *usage,
 		unsigned long **bit, int *max)
 {
-	struct pk_device *pk = hid_get_drvdata(hdev);
+	struct pk_device *pk = (struct pk_device *)hid_get_drvdata(hdev);
 	struct pcmidi_snd *pm;
 
 	pm = pk->pm;
@@ -781,7 +777,7 @@ static int pk_input_mapping(struct hid_device *hdev, struct hid_input *hi,
 static int pk_raw_event(struct hid_device *hdev, struct hid_report *report,
 	u8 *data, int size)
 {
-	struct pk_device *pk = hid_get_drvdata(hdev);
+	struct pk_device *pk = (struct pk_device *)hid_get_drvdata(hdev);
 	int ret = 0;
 
 	if (1 == pk->pm->ifnum) {
@@ -862,7 +858,7 @@ err_free_pk:
 
 static void pk_remove(struct hid_device *hdev)
 {
-	struct pk_device *pk = hid_get_drvdata(hdev);
+	struct pk_device *pk = (struct pk_device *)hid_get_drvdata(hdev);
 	struct pcmidi_snd *pm;
 
 	pm = pk->pm;
@@ -893,6 +889,23 @@ static struct hid_driver pk_driver = {
 	.probe = pk_probe,
 	.remove = pk_remove,
 };
-module_hid_driver(pk_driver);
 
+static int pk_init(void)
+{
+	int ret;
+
+	ret = hid_register_driver(&pk_driver);
+	if (ret)
+		pr_err("can't register prodikeys driver\n");
+
+	return ret;
+}
+
+static void pk_exit(void)
+{
+	hid_unregister_driver(&pk_driver);
+}
+
+module_init(pk_init);
+module_exit(pk_exit);
 MODULE_LICENSE("GPL");

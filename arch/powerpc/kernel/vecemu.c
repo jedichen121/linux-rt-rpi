@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Routines to emulate some Altivec/VMX instructions, specifically
  * those that can trap when given denormalized operands in Java mode.
@@ -8,8 +7,7 @@
 #include <linux/sched.h>
 #include <asm/ptrace.h>
 #include <asm/processor.h>
-#include <asm/switch_to.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 
 /* Functions in vector.S */
 extern void vaddfp(vector128 *dst, vector128 *a, vector128 *b);
@@ -273,7 +271,7 @@ int emulate_altivec(struct pt_regs *regs)
 	vb = (instr >> 11) & 0x1f;
 	vc = (instr >> 6) & 0x1f;
 
-	vrs = current->thread.vr_state.vr;
+	vrs = current->thread.vr;
 	switch (instr & 0x3f) {
 	case 10:
 		switch (vc) {
@@ -322,12 +320,12 @@ int emulate_altivec(struct pt_regs *regs)
 		case 14:	/* vctuxs */
 			for (i = 0; i < 4; ++i)
 				vrs[vd].u[i] = ctuxs(vrs[vb].u[i], va,
-					&current->thread.vr_state.vscr.u[3]);
+						&current->thread.vscr.u[3]);
 			break;
 		case 15:	/* vctsxs */
 			for (i = 0; i < 4; ++i)
 				vrs[vd].u[i] = ctsxs(vrs[vb].u[i], va,
-					&current->thread.vr_state.vscr.u[3]);
+						&current->thread.vscr.u[3]);
 			break;
 		default:
 			return -EINVAL;

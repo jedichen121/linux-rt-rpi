@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /* Copyright (C) 1995, 1996 Olaf Kirch <okir@monad.swb.de> */
 
 #include <linux/sched.h>
@@ -11,7 +10,7 @@ int nfsexp_flags(struct svc_rqst *rqstp, struct svc_export *exp)
 	struct exp_flavor_info *end = exp->ex_flavors + exp->ex_nflavors;
 
 	for (f = exp->ex_flavors; f < end; f++) {
-		if (f->pseudoflavor == rqstp->rq_cred.cr_flavor)
+		if (f->pseudoflavor == rqstp->rq_flavor)
 			return f->flags;
 	}
 	return exp->ex_flags;
@@ -25,11 +24,12 @@ int nfsd_setuser(struct svc_rqst *rqstp, struct svc_export *exp)
 	struct cred *new;
 	int i;
 	int flags = nfsexp_flags(rqstp, exp);
+	int ret;
 
 	validate_process_creds();
 
 	/* discard any old override before preparing the new set */
-	revert_creds(get_cred(current_real_cred()));
+	revert_creds(get_cred(current->real_cred));
 	new = prepare_creds();
 	if (!new)
 		return -ENOMEM;
@@ -46,9 +46,9 @@ int nfsd_setuser(struct svc_rqst *rqstp, struct svc_export *exp)
 		if (!gi)
 			goto oom;
 	} else if (flags & NFSEXP_ROOTSQUASH) {
-		if (uid_eq(new->fsuid, GLOBAL_ROOT_UID))
+		if (!new->fsuid)
 			new->fsuid = exp->ex_anon_uid;
-		if (gid_eq(new->fsgid, GLOBAL_ROOT_GID))
+		if (!new->fsgid)
 			new->fsgid = exp->ex_anon_gid;
 
 		gi = groups_alloc(rqgi->ngroups);
@@ -56,27 +56,26 @@ int nfsd_setuser(struct svc_rqst *rqstp, struct svc_export *exp)
 			goto oom;
 
 		for (i = 0; i < rqgi->ngroups; i++) {
-			if (gid_eq(GLOBAL_ROOT_GID, rqgi->gid[i]))
-				gi->gid[i] = exp->ex_anon_gid;
+			if (!GROUP_AT(rqgi, i))
+				GROUP_AT(gi, i) = exp->ex_anon_gid;
 			else
-				gi->gid[i] = rqgi->gid[i];
+				GROUP_AT(gi, i) = GROUP_AT(rqgi, i);
 		}
-
-		/* Each thread allocates its own gi, no race */
-		groups_sort(gi);
 	} else {
 		gi = get_group_info(rqgi);
 	}
 
-	if (uid_eq(new->fsuid, INVALID_UID))
+	if (new->fsuid == (uid_t) -1)
 		new->fsuid = exp->ex_anon_uid;
-	if (gid_eq(new->fsgid, INVALID_GID))
+	if (new->fsgid == (gid_t) -1)
 		new->fsgid = exp->ex_anon_gid;
 
-	set_groups(new, gi);
+	ret = set_groups(new, gi);
 	put_group_info(gi);
+	if (ret < 0)
+		goto error;
 
-	if (!uid_eq(new->fsuid, GLOBAL_ROOT_UID))
+	if (new->fsuid)
 		new->cap_effective = cap_drop_nfsd_set(new->cap_effective);
 	else
 		new->cap_effective = cap_raise_nfsd_set(new->cap_effective,
@@ -88,7 +87,9 @@ int nfsd_setuser(struct svc_rqst *rqstp, struct svc_export *exp)
 	return 0;
 
 oom:
+	ret = -ENOMEM;
+error:
 	abort_creds(new);
-	return -ENOMEM;
+	return ret;
 }
 

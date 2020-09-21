@@ -25,6 +25,7 @@
 
 #include <asm/setup.h>
 #include <asm/fpu.h>
+#include <asm/system.h>
 #include <asm/traps.h>
 
 /* assembler routines */

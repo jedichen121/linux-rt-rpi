@@ -21,7 +21,8 @@
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
 #include <net/sock.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
+#include <asm/system.h>
 #include <linux/fcntl.h>
 #include <linux/mm.h>
 #include <linux/interrupt.h>
@@ -189,10 +190,8 @@ const unsigned char *ax25_addr_parse(const unsigned char *buf, int len,
 	digi->ndigi      = 0;
 
 	while (!(buf[-1] & AX25_EBIT)) {
-		if (d >= AX25_MAX_DIGIS)
-			return NULL;
-		if (len < AX25_ADDR_LEN)
-			return NULL;
+		if (d >= AX25_MAX_DIGIS)  return NULL;	/* Max of 6 digis */
+		if (len < 7) return NULL;	/* Short packet */
 
 		memcpy(&digi->calls[d], buf, AX25_ADDR_LEN);
 		digi->ndigi = d + 1;
@@ -304,3 +303,4 @@ void ax25_digi_invert(const ax25_digi *in, ax25_digi *out)
 		}
 	}
 }
+

@@ -21,7 +21,13 @@
 
 #include "psc.h"
 
-#define DRV_NAME "au1x_dma"
+#define ALCHEMY_PCM_FMTS					\
+	(SNDRV_PCM_FMTBIT_S8     | SNDRV_PCM_FMTBIT_U8 |	\
+	 SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S16_BE |	\
+	 SNDRV_PCM_FMTBIT_U16_LE | SNDRV_PCM_FMTBIT_U16_BE |	\
+	 SNDRV_PCM_FMTBIT_S32_LE | SNDRV_PCM_FMTBIT_S32_BE |	\
+	 SNDRV_PCM_FMTBIT_U32_LE | SNDRV_PCM_FMTBIT_U32_BE |	\
+	 0)
 
 struct pcm_period {
 	u32 start;
@@ -165,6 +171,12 @@ static irqreturn_t au1000_dma_interrupt(int irq, void *ptr)
 static const struct snd_pcm_hardware alchemy_pcm_hardware = {
 	.info		  = SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
 			    SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_BATCH,
+	.formats	  = ALCHEMY_PCM_FMTS,
+	.rates		  = SNDRV_PCM_RATE_8000_192000,
+	.rate_min	  = SNDRV_PCM_RATE_8000,
+	.rate_max	  = SNDRV_PCM_RATE_192000,
+	.channels_min	  = 2,
+	.channels_max	  = 2,
 	.period_bytes_min = 1024,
 	.period_bytes_max = 16 * 1024 - 1,
 	.periods_min	  = 4,
@@ -176,8 +188,7 @@ static const struct snd_pcm_hardware alchemy_pcm_hardware = {
 static inline struct alchemy_pcm_ctx *ss_to_ctx(struct snd_pcm_substream *ss)
 {
 	struct snd_soc_pcm_runtime *rtd = ss->private_data;
-	struct snd_soc_component *component = snd_soc_rtdcom_lookup(rtd, DRV_NAME);
-	return snd_soc_component_get_drvdata(component);
+	return snd_soc_platform_get_drvdata(rtd->platform);
 }
 
 static inline struct audio_stream *ss_to_as(struct snd_pcm_substream *ss)
@@ -280,7 +291,7 @@ static snd_pcm_uframes_t alchemy_pcm_pointer(struct snd_pcm_substream *ss)
 	return bytes_to_frames(ss->runtime, location);
 }
 
-static const struct snd_pcm_ops alchemy_pcm_ops = {
+static struct snd_pcm_ops alchemy_pcm_ops = {
 	.open			= alchemy_pcm_open,
 	.close			= alchemy_pcm_close,
 	.ioctl			= snd_pcm_lib_ioctl,
@@ -289,6 +300,11 @@ static const struct snd_pcm_ops alchemy_pcm_ops = {
 	.trigger		= alchemy_pcm_trigger,
 	.pointer		= alchemy_pcm_pointer,
 };
+
+static void alchemy_pcm_free_dma_buffers(struct snd_pcm *pcm)
+{
+	snd_pcm_lib_preallocate_free_for_all(pcm);
+}
 
 static int alchemy_pcm_new(struct snd_soc_pcm_runtime *rtd)
 {
@@ -300,34 +316,61 @@ static int alchemy_pcm_new(struct snd_soc_pcm_runtime *rtd)
 	return 0;
 }
 
-static struct snd_soc_component_driver alchemy_pcm_soc_component = {
-	.name		= DRV_NAME,
+struct snd_soc_platform_driver alchemy_pcm_soc_platform = {
 	.ops		= &alchemy_pcm_ops,
 	.pcm_new	= alchemy_pcm_new,
+	.pcm_free	= alchemy_pcm_free_dma_buffers,
 };
 
-static int alchemy_pcm_drvprobe(struct platform_device *pdev)
+static int __devinit alchemy_pcm_drvprobe(struct platform_device *pdev)
 {
 	struct alchemy_pcm_ctx *ctx;
+	int ret;
 
-	ctx = devm_kzalloc(&pdev->dev, sizeof(*ctx), GFP_KERNEL);
+	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
 		return -ENOMEM;
 
 	platform_set_drvdata(pdev, ctx);
 
-	return devm_snd_soc_register_component(&pdev->dev,
-					&alchemy_pcm_soc_component, NULL, 0);
+	ret = snd_soc_register_platform(&pdev->dev, &alchemy_pcm_soc_platform);
+	if (ret)
+		kfree(ctx);
+
+	return ret;
+}
+
+static int __devexit alchemy_pcm_drvremove(struct platform_device *pdev)
+{
+	struct alchemy_pcm_ctx *ctx = platform_get_drvdata(pdev);
+
+	snd_soc_unregister_platform(&pdev->dev);
+	kfree(ctx);
+
+	return 0;
 }
 
 static struct platform_driver alchemy_pcmdma_driver = {
 	.driver	= {
 		.name	= "alchemy-pcm-dma",
+		.owner	= THIS_MODULE,
 	},
 	.probe		= alchemy_pcm_drvprobe,
+	.remove		= __devexit_p(alchemy_pcm_drvremove),
 };
 
-module_platform_driver(alchemy_pcmdma_driver);
+static int __init alchemy_pcmdma_load(void)
+{
+	return platform_driver_register(&alchemy_pcmdma_driver);
+}
+
+static void __exit alchemy_pcmdma_unload(void)
+{
+	platform_driver_unregister(&alchemy_pcmdma_driver);
+}
+
+module_init(alchemy_pcmdma_load);
+module_exit(alchemy_pcmdma_unload);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Au1000/Au1500/Au1100 Audio DMA driver");

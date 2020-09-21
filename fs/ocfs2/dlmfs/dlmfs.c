@@ -45,10 +45,11 @@
 #include <linux/backing-dev.h>
 #include <linux/poll.h>
 
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 
 #include "stackglue.h"
 #include "userdlm.h"
+#include "dlmfsver.h"
 
 #define MLOG_MASK_PREFIX ML_DLMFS
 #include "cluster/masklog.h"
@@ -71,7 +72,7 @@ struct workqueue_struct *user_dlm_worker;
  * Over time, dlmfs has added some features that were not part of the
  * initial ABI.  Unfortunately, some of these features are not detectable
  * via standard usage.  For example, Linux's default poll always returns
- * EPOLLIN, so there is no way for a caller of poll(2) to know when dlmfs
+ * POLLIN, so there is no way for a caller of poll(2) to know when dlmfs
  * added poll support.  Instead, we provide this list of new capabilities.
  *
  * Capabilities is a read-only attribute.  We do it as a module parameter
@@ -83,18 +84,18 @@ struct workqueue_struct *user_dlm_worker;
  * interaction.
  *
  * Capabilities:
- * - bast	: EPOLLIN against the file descriptor of a held lock
+ * - bast	: POLLIN against the file descriptor of a held lock
  *		  signifies a bast fired on the lock.
  */
 #define DLMFS_CAPABILITIES "bast stackglue"
 static int param_set_dlmfs_capabilities(const char *val,
-					const struct kernel_param *kp)
+					struct kernel_param *kp)
 {
 	printk(KERN_ERR "%s: readonly parameter\n", kp->name);
 	return -EINVAL;
 }
 static int param_get_dlmfs_capabilities(char *buffer,
-					const struct kernel_param *kp)
+					struct kernel_param *kp)
 {
 	return strlcpy(buffer, DLMFS_CAPABILITIES,
 		       strlen(DLMFS_CAPABILITIES) + 1);
@@ -208,10 +209,10 @@ static int dlmfs_file_release(struct inode *inode,
 static int dlmfs_file_setattr(struct dentry *dentry, struct iattr *attr)
 {
 	int error;
-	struct inode *inode = d_inode(dentry);
+	struct inode *inode = dentry->d_inode;
 
 	attr->ia_valid &= ~ATTR_SIZE;
-	error = setattr_prepare(dentry, attr);
+	error = inode_change_ok(inode, attr);
 	if (error)
 		return error;
 
@@ -220,17 +221,17 @@ static int dlmfs_file_setattr(struct dentry *dentry, struct iattr *attr)
 	return 0;
 }
 
-static __poll_t dlmfs_file_poll(struct file *file, poll_table *wait)
+static unsigned int dlmfs_file_poll(struct file *file, poll_table *wait)
 {
-	__poll_t event = 0;
-	struct inode *inode = file_inode(file);
+	int event = 0;
+	struct inode *inode = file->f_path.dentry->d_inode;
 	struct dlmfs_inode_private *ip = DLMFS_I(inode);
 
 	poll_wait(file, &ip->ip_lockres.l_event, wait);
 
 	spin_lock(&ip->ip_lockres.l_lock);
 	if (ip->ip_lockres.l_flags & USER_LOCK_BLOCKED)
-		event = EPOLLIN | EPOLLRDNORM;
+		event = POLLIN | POLLRDNORM;
 	spin_unlock(&ip->ip_lockres.l_lock);
 
 	return event;
@@ -244,7 +245,7 @@ static ssize_t dlmfs_file_read(struct file *filp,
 	int bytes_left;
 	ssize_t readlen, got;
 	char *lvb_buf;
-	struct inode *inode = file_inode(filp);
+	struct inode *inode = filp->f_path.dentry->d_inode;
 
 	mlog(0, "inode %lu, count = %zu, *ppos = %llu\n",
 		inode->i_ino, count, *ppos);
@@ -292,7 +293,7 @@ static ssize_t dlmfs_file_write(struct file *filp,
 	int bytes_left;
 	ssize_t writelen;
 	char *lvb_buf;
-	struct inode *inode = file_inode(filp);
+	struct inode *inode = filp->f_path.dentry->d_inode;
 
 	mlog(0, "inode %lu, count = %zu, *ppos = %llu\n",
 		inode->i_ino, count, *ppos);
@@ -353,6 +354,7 @@ static struct inode *dlmfs_alloc_inode(struct super_block *sb)
 static void dlmfs_i_callback(struct rcu_head *head)
 {
 	struct inode *inode = container_of(head, struct inode, i_rcu);
+	INIT_LIST_HEAD(&inode->i_dentry);
 	kmem_cache_free(dlmfs_inode_cache, DLMFS_I(inode));
 }
 
@@ -366,7 +368,7 @@ static void dlmfs_evict_inode(struct inode *inode)
 	int status;
 	struct dlmfs_inode_private *ip;
 
-	clear_inode(inode);
+	end_writeback(inode);
 
 	mlog(0, "inode %lu\n", inode->i_ino);
 
@@ -390,15 +392,27 @@ clear_fields:
 	ip->ip_conn = NULL;
 }
 
+static struct backing_dev_info dlmfs_backing_dev_info = {
+	.name		= "ocfs2-dlmfs",
+	.ra_pages	= 0,	/* No readahead */
+	.capabilities	= BDI_CAP_NO_ACCT_AND_WRITEBACK,
+};
+
 static struct inode *dlmfs_get_root_inode(struct super_block *sb)
 {
 	struct inode *inode = new_inode(sb);
-	umode_t mode = S_IFDIR | 0755;
+	int mode = S_IFDIR | 0755;
+	struct dlmfs_inode_private *ip;
 
 	if (inode) {
+		ip = DLMFS_I(inode);
+
 		inode->i_ino = get_next_ino();
-		inode_init_owner(inode, NULL, mode);
-		inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
+		inode->i_mode = mode;
+		inode->i_uid = current_fsuid();
+		inode->i_gid = current_fsgid();
+		inode->i_mapping->backing_dev_info = &dlmfs_backing_dev_info;
+		inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME;
 		inc_nlink(inode);
 
 		inode->i_fop = &simple_dir_operations;
@@ -410,7 +424,7 @@ static struct inode *dlmfs_get_root_inode(struct super_block *sb)
 
 static struct inode *dlmfs_get_inode(struct inode *parent,
 				     struct dentry *dentry,
-				     umode_t mode)
+				     int mode)
 {
 	struct super_block *sb = parent->i_sb;
 	struct inode * inode = new_inode(sb);
@@ -420,8 +434,11 @@ static struct inode *dlmfs_get_inode(struct inode *parent,
 		return NULL;
 
 	inode->i_ino = get_next_ino();
-	inode_init_owner(inode, parent, mode);
-	inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
+	inode->i_mode = mode;
+	inode->i_uid = current_fsuid();
+	inode->i_gid = current_fsgid();
+	inode->i_mapping->backing_dev_info = &dlmfs_backing_dev_info;
+	inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME;
 
 	ip = DLMFS_I(inode);
 	ip->ip_conn = DLMFS_I(parent)->ip_conn;
@@ -456,6 +473,13 @@ static struct inode *dlmfs_get_inode(struct inode *parent,
 		inc_nlink(inode);
 		break;
 	}
+
+	if (parent->i_mode & S_ISGID) {
+		inode->i_gid = parent->i_gid;
+		if (S_ISDIR(mode))
+			inode->i_mode |= S_ISGID;
+	}
+
 	return inode;
 }
 
@@ -465,11 +489,11 @@ static struct inode *dlmfs_get_inode(struct inode *parent,
 /* SMP-safe */
 static int dlmfs_mkdir(struct inode * dir,
 		       struct dentry * dentry,
-		       umode_t mode)
+		       int mode)
 {
 	int status;
 	struct inode *inode = NULL;
-	const struct qstr *domain = &dentry->d_name;
+	struct qstr *domain = &dentry->d_name;
 	struct dlmfs_inode_private *ip;
 	struct ocfs2_cluster_connection *conn;
 
@@ -513,12 +537,12 @@ bail:
 
 static int dlmfs_create(struct inode *dir,
 			struct dentry *dentry,
-			umode_t mode,
-			bool excl)
+			int mode,
+			struct nameidata *nd)
 {
 	int status = 0;
 	struct inode *inode;
-	const struct qstr *name = &dentry->d_name;
+	struct qstr *name = &dentry->d_name;
 
 	mlog(0, "create %.*s\n", name->len, name->name);
 
@@ -549,7 +573,7 @@ static int dlmfs_unlink(struct inode *dir,
 			struct dentry *dentry)
 {
 	int status;
-	struct inode *inode = d_inode(dentry);
+	struct inode *inode = dentry->d_inode;
 
 	mlog(0, "unlink inode %lu\n", inode->i_ino);
 
@@ -557,8 +581,8 @@ static int dlmfs_unlink(struct inode *dir,
 	 * to acquire a lock, this basically destroys our lockres. */
 	status = user_dlm_destroy_lock(&DLMFS_I(inode)->ip_lockres);
 	if (status < 0) {
-		mlog(ML_ERROR, "unlink %pd, error %d from destroy\n",
-		     dentry, status);
+		mlog(ML_ERROR, "unlink %.*s, error %d from destroy\n",
+		     dentry->d_name.len, dentry->d_name.name, status);
 		goto bail;
 	}
 	status = simple_unlink(dir, dentry);
@@ -570,14 +594,24 @@ static int dlmfs_fill_super(struct super_block * sb,
 			    void * data,
 			    int silent)
 {
+	struct inode * inode;
+	struct dentry * root;
+
 	sb->s_maxbytes = MAX_LFS_FILESIZE;
-	sb->s_blocksize = PAGE_SIZE;
-	sb->s_blocksize_bits = PAGE_SHIFT;
+	sb->s_blocksize = PAGE_CACHE_SIZE;
+	sb->s_blocksize_bits = PAGE_CACHE_SHIFT;
 	sb->s_magic = DLMFS_MAGIC;
 	sb->s_op = &dlmfs_ops;
-	sb->s_root = d_make_root(dlmfs_get_root_inode(sb));
-	if (!sb->s_root)
+	inode = dlmfs_get_root_inode(sb);
+	if (!inode)
 		return -ENOMEM;
+
+	root = d_alloc_root(inode);
+	if (!root) {
+		iput(inode);
+		return -ENOMEM;
+	}
+	sb->s_root = root;
 	return 0;
 }
 
@@ -628,17 +662,22 @@ static struct file_system_type dlmfs_fs_type = {
 	.mount		= dlmfs_mount,
 	.kill_sb	= kill_litter_super,
 };
-MODULE_ALIAS_FS("ocfs2_dlmfs");
 
 static int __init init_dlmfs_fs(void)
 {
 	int status;
 	int cleanup_inode = 0, cleanup_worker = 0;
 
+	dlmfs_print_version();
+
+	status = bdi_init(&dlmfs_backing_dev_info);
+	if (status)
+		return status;
+
 	dlmfs_inode_cache = kmem_cache_create("dlmfs_inode_cache",
 				sizeof(struct dlmfs_inode_private),
 				0, (SLAB_HWCACHE_ALIGN|SLAB_RECLAIM_ACCOUNT|
-					SLAB_MEM_SPREAD|SLAB_ACCOUNT),
+					SLAB_MEM_SPREAD),
 				dlmfs_init_once);
 	if (!dlmfs_inode_cache) {
 		status = -ENOMEM;
@@ -646,7 +685,7 @@ static int __init init_dlmfs_fs(void)
 	}
 	cleanup_inode = 1;
 
-	user_dlm_worker = alloc_workqueue("user_dlm", WQ_MEM_RECLAIM, 0);
+	user_dlm_worker = create_singlethread_workqueue("user_dlm");
 	if (!user_dlm_worker) {
 		status = -ENOMEM;
 		goto bail;
@@ -661,6 +700,7 @@ bail:
 			kmem_cache_destroy(dlmfs_inode_cache);
 		if (cleanup_worker)
 			destroy_workqueue(user_dlm_worker);
+		bdi_destroy(&dlmfs_backing_dev_info);
 	} else
 		printk("OCFS2 User DLM kernel interface loaded\n");
 	return status;
@@ -670,20 +710,16 @@ static void __exit exit_dlmfs_fs(void)
 {
 	unregister_filesystem(&dlmfs_fs_type);
 
+	flush_workqueue(user_dlm_worker);
 	destroy_workqueue(user_dlm_worker);
 
-	/*
-	 * Make sure all delayed rcu free inodes are flushed before we
-	 * destroy cache.
-	 */
-	rcu_barrier();
 	kmem_cache_destroy(dlmfs_inode_cache);
 
+	bdi_destroy(&dlmfs_backing_dev_info);
 }
 
 MODULE_AUTHOR("Oracle");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("OCFS2 DLM-Filesystem");
 
 module_init(init_dlmfs_fs)
 module_exit(exit_dlmfs_fs)

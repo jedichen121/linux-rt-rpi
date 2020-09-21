@@ -26,8 +26,9 @@
 #include <linux/tty.h>
 #include <linux/serial_core.h>
 #include <linux/of_platform.h>
-#include <linux/extable.h>
+#include <linux/module.h>
 
+#include <asm/system.h>
 #include <asm/time.h>
 #include <asm/machdep.h>
 #include <asm/prom.h>
@@ -153,9 +154,11 @@ static void __init holly_init_IRQ(void)
 	struct device_node *cascade_node = NULL;
 #endif
 
-	mpic = mpic_alloc(NULL, 0, MPIC_BIG_ENDIAN |
+	mpic = mpic_alloc(NULL, 0,
+			MPIC_BIG_ENDIAN | MPIC_WANTS_RESET |
 			MPIC_SPV_EOI | MPIC_NO_PTHROU_DIS | MPIC_REGSET_TSI108,
-			24, 0,
+			24,
+			NR_IRQS-4, /* num_sources used */
 			"Tsi108_PIC");
 
 	BUG_ON(mpic == NULL);
@@ -193,7 +196,7 @@ void holly_show_cpuinfo(struct seq_file *m)
 	seq_printf(m, "machine\t\t: PPC750 GX/CL\n");
 }
 
-void __noreturn holly_restart(char *cmd)
+void holly_restart(char *cmd)
 {
 	__be32 __iomem *ocn_bar1 = NULL;
 	unsigned long bar;
@@ -250,7 +253,9 @@ void holly_halt(void)
  */
 static int __init holly_probe(void)
 {
-	if (!of_machine_is_compatible("ibm,holly"))
+	unsigned long root = of_get_flat_dt_root();
+
+	if (!of_flat_dt_is_compatible(root, "ibm,holly"))
 		return 0;
 	return 1;
 }
@@ -263,7 +268,7 @@ static int ppc750_machine_check_exception(struct pt_regs *regs)
 	if ((entry = search_exception_tables(regs->nip)) != NULL) {
 		tsi108_clear_pci_cfg_error();
 		regs->msr |= MSR_RI;
-		regs->nip = extable_fixup(entry);
+		regs->nip = entry->fixup;
 		return 1;
 	}
 	return 0;

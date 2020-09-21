@@ -44,6 +44,7 @@
 #include <asm/processor.h>
 #include <asm/ptrace.h>
 #include <asm/sal.h>
+#include <asm/system.h>
 #include <asm/tlbflush.h>
 #include <asm/unistd.h>
 #include <asm/mca.h>
@@ -76,7 +77,7 @@ stop_this_cpu(void)
 	/*
 	 * Remove this CPU:
 	 */
-	set_cpu_online(smp_processor_id(), false);
+	cpu_clear(smp_processor_id(), cpu_online_map);
 	max_xtp();
 	local_irq_disable();
 	cpu_halt();
@@ -262,11 +263,11 @@ smp_flush_tlb_cpumask(cpumask_t xcpumask)
 	preempt_disable();
 	mycpu = smp_processor_id();
 
-	for_each_cpu(cpu, &cpumask)
+	for_each_cpu_mask(cpu, cpumask)
 		counts[cpu] = local_tlb_flush_counts[cpu].count & 0xffff;
 
 	mb();
-	for_each_cpu(cpu, &cpumask) {
+	for_each_cpu_mask(cpu, cpumask) {
 		if (cpu == mycpu)
 			flush_mycpu = 1;
 		else
@@ -276,7 +277,7 @@ smp_flush_tlb_cpumask(cpumask_t xcpumask)
 	if (flush_mycpu)
 		smp_local_flush_tlb();
 
-	for_each_cpu(cpu, &cpumask)
+	for_each_cpu_mask(cpu, cpumask)
 		while(counts[cpu] == (local_tlb_flush_counts[cpu].count & 0xffff))
 			udelay(FLUSH_DELAY);
 

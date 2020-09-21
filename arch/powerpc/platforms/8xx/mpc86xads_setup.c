@@ -15,12 +15,11 @@
  */
 
 #include <linux/init.h>
-#include <linux/of_address.h>
-#include <linux/of_fdt.h>
 #include <linux/of_platform.h>
 
 #include <asm/io.h>
 #include <asm/machdep.h>
+#include <asm/system.h>
 #include <asm/time.h>
 #include <asm/8xx_immap.h>
 #include <asm/cpm1.h>
@@ -118,10 +117,11 @@ static void __init mpc86xads_setup_arch(void)
 
 static int __init mpc86xads_probe(void)
 {
-	return of_machine_is_compatible("fsl,mpc866ads");
+	unsigned long root = of_get_flat_dt_root();
+	return of_flat_dt_is_compatible(root, "fsl,mpc866ads");
 }
 
-static const struct of_device_id of_bus_ids[] __initconst = {
+static struct of_device_id __initdata of_bus_ids[] = {
 	{ .name = "soc", },
 	{ .name = "cpm", },
 	{ .name = "localbus", },

@@ -334,8 +334,11 @@ static bool hgpk_is_byte_valid(struct psmouse *psmouse, unsigned char *packet)
 
 	if (!valid)
 		psmouse_dbg(psmouse,
-			    "bad data, mode %d (%d) %*ph\n",
-			    priv->mode, pktcnt, 6, psmouse->packet);
+			    "bad data, mode %d (%d) %02x %02x %02x %02x %02x %02x\n",
+			    priv->mode, pktcnt,
+			    psmouse->packet[0], psmouse->packet[1],
+			    psmouse->packet[2], psmouse->packet[3],
+			    psmouse->packet[4], psmouse->packet[5]);
 
 	return valid;
 }
@@ -637,6 +640,7 @@ static int hgpk_reset_device(struct psmouse *psmouse, bool recalibrate)
 
 static int hgpk_force_recalibrate(struct psmouse *psmouse)
 {
+	struct ps2dev *ps2dev = &psmouse->ps2dev;
 	struct hgpk_data *priv = psmouse->private;
 	int err;
 
@@ -665,8 +669,11 @@ static int hgpk_force_recalibrate(struct psmouse *psmouse)
 	 * we don't have a good way to deal with it.  The 2s window stuff
 	 * (below) is our best option for now.
 	 */
-	if (psmouse_activate(psmouse))
+
+	if (ps2_command(ps2dev, NULL, PSMOUSE_CMD_ENABLE))
 		return -1;
+
+	psmouse_set_state(psmouse, PSMOUSE_ACTIVATED);
 
 	if (tpdebug)
 		psmouse_dbg(psmouse, "touchpad reactivated\n");
@@ -713,7 +720,8 @@ static int hgpk_toggle_powersave(struct psmouse *psmouse, int enable)
 		 * the upper bound. (in practice, it takes about 3 loops.)
 		 */
 		for (timeo = 20; timeo > 0; timeo--) {
-			if (!ps2_sendbyte(ps2dev, PSMOUSE_CMD_DISABLE, 20))
+			if (!ps2_sendbyte(&psmouse->ps2dev,
+					PSMOUSE_CMD_DISABLE, 20))
 				break;
 			msleep(25);
 		}
@@ -725,7 +733,8 @@ static int hgpk_toggle_powersave(struct psmouse *psmouse, int enable)
 		}
 
 		/* should be all set, enable the touchpad */
-		psmouse_activate(psmouse);
+		ps2_command(&psmouse->ps2dev, NULL, PSMOUSE_CMD_ENABLE);
+		psmouse_set_state(psmouse, PSMOUSE_ACTIVATED);
 		psmouse_dbg(psmouse, "Touchpad powered up.\n");
 	} else {
 		psmouse_dbg(psmouse, "Powering off touchpad.\n");
@@ -739,7 +748,7 @@ static int hgpk_toggle_powersave(struct psmouse *psmouse, int enable)
 		psmouse_set_state(psmouse, PSMOUSE_IGNORE);
 
 		/* probably won't see an ACK, the touchpad will be off */
-		ps2_sendbyte(ps2dev, 0xec, 20);
+		ps2_sendbyte(&psmouse->ps2dev, 0xec, 20);
 	}
 
 	return 0;
@@ -780,14 +789,11 @@ static ssize_t hgpk_set_powered(struct psmouse *psmouse, void *data,
 				const char *buf, size_t count)
 {
 	struct hgpk_data *priv = psmouse->private;
-	unsigned int value;
+	unsigned long value;
 	int err;
 
-	err = kstrtouint(buf, 10, &value);
-	if (err)
-		return err;
-
-	if (value > 1)
+	err = strict_strtoul(buf, 10, &value);
+	if (err || value > 1)
 		return -EINVAL;
 
 	if (value != priv->powered) {
@@ -875,14 +881,11 @@ static ssize_t hgpk_trigger_recal(struct psmouse *psmouse, void *data,
 				const char *buf, size_t count)
 {
 	struct hgpk_data *priv = psmouse->private;
-	unsigned int value;
+	unsigned long value;
 	int err;
 
-	err = kstrtouint(buf, 10, &value);
-	if (err)
-		return err;
-
-	if (value != 1)
+	err = strict_strtoul(buf, 10, &value);
+	if (err || value != 1)
 		return -EINVAL;
 
 	/*
@@ -1026,7 +1029,7 @@ static enum hgpk_model_t hgpk_get_model(struct psmouse *psmouse)
 		return -EIO;
 	}
 
-	psmouse_dbg(psmouse, "ID: %*ph\n", 3, param);
+	psmouse_dbg(psmouse, "ID: %02x %02x %02x\n", param[0], param[1], param[2]);
 
 	/* HGPK signature: 0x67, 0x00, 0x<model> */
 	if (param[0] != 0x67 || param[1] != 0x00)

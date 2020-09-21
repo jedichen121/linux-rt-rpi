@@ -14,24 +14,27 @@
  * another interface, some abstraction will have to be introduced.
  */
 
-#include <linux/err.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
-#include <linux/mod_devicetable.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
+#include <linux/fs.h>
+#include <linux/miscdevice.h>
 #include <linux/watchdog.h>
+#include <linux/init.h>
 #include <linux/bitops.h>
 #include <linux/platform_device.h>
 #include <linux/spinlock.h>
+#include <linux/uaccess.h>
 #include <linux/io.h>
+#include <linux/device.h>
 #include <linux/slab.h>
 
 #define DEFAULT_HEARTBEAT 60
 #define MAX_HEARTBEAT     60
 
-static unsigned int heartbeat = DEFAULT_HEARTBEAT;
-static bool nowayout  = WATCHDOG_NOWAYOUT;
+static int heartbeat = DEFAULT_HEARTBEAT;
+static int nowayout  = WATCHDOG_NOWAYOUT;
 
 /*
  * Memory mapping: a single byte, 3 first lower bits to select bit 3
@@ -40,22 +43,17 @@ static bool nowayout  = WATCHDOG_NOWAYOUT;
 #define MAX6369_WDSET	(7 << 0)
 #define MAX6369_WDI	(1 << 3)
 
-#define MAX6369_WDSET_DISABLED	3
+static DEFINE_SPINLOCK(io_lock);
+
+static unsigned long wdt_status;
+#define WDT_IN_USE	0
+#define WDT_RUNNING	1
+#define WDT_OK_TO_CLOSE 2
 
 static int nodelay;
-
-struct max63xx_wdt {
-	struct watchdog_device wdd;
-	const struct max63xx_timeout *timeout;
-
-	/* memory mapping */
-	void __iomem *base;
-	spinlock_t lock;
-
-	/* WDI and WSET bits write access routines */
-	void (*ping)(struct max63xx_wdt *wdt);
-	void (*set)(struct max63xx_wdt *wdt, u8 set);
-};
+static struct resource	*wdt_mem;
+static void __iomem	*wdt_base;
+static struct platform_device *max63xx_pdev;
 
 /*
  * The timeout values used are actually the absolute minimum the chip
@@ -72,25 +70,25 @@ struct max63xx_wdt {
 
 /* Timeouts in second */
 struct max63xx_timeout {
-	const u8 wdset;
-	const u8 tdelay;
-	const u8 twd;
+	u8 wdset;
+	u8 tdelay;
+	u8 twd;
 };
 
-static const struct max63xx_timeout max6369_table[] = {
+static struct max63xx_timeout max6369_table[] = {
 	{ 5,  1,  1 },
 	{ 6, 10, 10 },
 	{ 7, 60, 60 },
 	{ },
 };
 
-static const struct max63xx_timeout max6371_table[] = {
+static struct max63xx_timeout max6371_table[] = {
 	{ 6, 60,  3 },
 	{ 7, 60, 60 },
 	{ },
 };
 
-static const struct max63xx_timeout max6373_table[] = {
+static struct max63xx_timeout max6373_table[] = {
 	{ 2, 60,  1 },
 	{ 5,  0,  1 },
 	{ 1,  3,  3 },
@@ -98,6 +96,8 @@ static const struct max63xx_timeout max6373_table[] = {
 	{ 6,  0, 10 },
 	{ },
 };
+
+static struct max63xx_timeout *current_timeout;
 
 static struct max63xx_timeout *
 max63xx_select_timeout(struct max63xx_timeout *table, int value)
@@ -117,143 +117,233 @@ max63xx_select_timeout(struct max63xx_timeout *table, int value)
 	return NULL;
 }
 
-static int max63xx_wdt_ping(struct watchdog_device *wdd)
+static void max63xx_wdt_ping(void)
 {
-	struct max63xx_wdt *wdt = watchdog_get_drvdata(wdd);
+	u8 val;
 
-	wdt->ping(wdt);
-	return 0;
+	spin_lock(&io_lock);
+
+	val = __raw_readb(wdt_base);
+
+	__raw_writeb(val | MAX6369_WDI, wdt_base);
+	__raw_writeb(val & ~MAX6369_WDI, wdt_base);
+
+	spin_unlock(&io_lock);
 }
 
-static int max63xx_wdt_start(struct watchdog_device *wdd)
+static void max63xx_wdt_enable(struct max63xx_timeout *entry)
 {
-	struct max63xx_wdt *wdt = watchdog_get_drvdata(wdd);
+	u8 val;
 
-	wdt->set(wdt, wdt->timeout->wdset);
+	if (test_and_set_bit(WDT_RUNNING, &wdt_status))
+		return;
+
+	spin_lock(&io_lock);
+
+	val = __raw_readb(wdt_base);
+	val &= ~MAX6369_WDSET;
+	val |= entry->wdset;
+	__raw_writeb(val, wdt_base);
+
+	spin_unlock(&io_lock);
 
 	/* check for a edge triggered startup */
-	if (wdt->timeout->tdelay == 0)
-		wdt->ping(wdt);
-	return 0;
+	if (entry->tdelay == 0)
+		max63xx_wdt_ping();
 }
 
-static int max63xx_wdt_stop(struct watchdog_device *wdd)
+static void max63xx_wdt_disable(void)
 {
-	struct max63xx_wdt *wdt = watchdog_get_drvdata(wdd);
+	u8 val;
 
-	wdt->set(wdt, MAX6369_WDSET_DISABLED);
-	return 0;
+	spin_lock(&io_lock);
+
+	val = __raw_readb(wdt_base);
+	val &= ~MAX6369_WDSET;
+	val |= 3;
+	__raw_writeb(val, wdt_base);
+
+	spin_unlock(&io_lock);
+
+	clear_bit(WDT_RUNNING, &wdt_status);
 }
 
-static const struct watchdog_ops max63xx_wdt_ops = {
-	.owner = THIS_MODULE,
-	.start = max63xx_wdt_start,
-	.stop = max63xx_wdt_stop,
-	.ping = max63xx_wdt_ping,
-};
+static int max63xx_wdt_open(struct inode *inode, struct file *file)
+{
+	if (test_and_set_bit(WDT_IN_USE, &wdt_status))
+		return -EBUSY;
 
-static const struct watchdog_info max63xx_wdt_info = {
-	.options = WDIOF_KEEPALIVEPING | WDIOF_MAGICCLOSE,
+	max63xx_wdt_enable(current_timeout);
+	clear_bit(WDT_OK_TO_CLOSE, &wdt_status);
+
+	return nonseekable_open(inode, file);
+}
+
+static ssize_t max63xx_wdt_write(struct file *file, const char *data,
+				 size_t len, loff_t *ppos)
+{
+	if (len) {
+		if (!nowayout) {
+			size_t i;
+
+			clear_bit(WDT_OK_TO_CLOSE, &wdt_status);
+			for (i = 0; i != len; i++) {
+				char c;
+
+				if (get_user(c, data + i))
+					return -EFAULT;
+
+				if (c == 'V')
+					set_bit(WDT_OK_TO_CLOSE, &wdt_status);
+			}
+		}
+
+		max63xx_wdt_ping();
+	}
+
+	return len;
+}
+
+static const struct watchdog_info ident = {
+	.options = WDIOF_MAGICCLOSE | WDIOF_KEEPALIVEPING,
 	.identity = "max63xx Watchdog",
 };
 
-static void max63xx_mmap_ping(struct max63xx_wdt *wdt)
+static long max63xx_wdt_ioctl(struct file *file, unsigned int cmd,
+			      unsigned long arg)
 {
-	u8 val;
+	int ret = -ENOTTY;
 
-	spin_lock(&wdt->lock);
+	switch (cmd) {
+	case WDIOC_GETSUPPORT:
+		ret = copy_to_user((struct watchdog_info *)arg, &ident,
+				   sizeof(ident)) ? -EFAULT : 0;
+		break;
 
-	val = __raw_readb(wdt->base);
+	case WDIOC_GETSTATUS:
+	case WDIOC_GETBOOTSTATUS:
+		ret = put_user(0, (int *)arg);
+		break;
 
-	__raw_writeb(val | MAX6369_WDI, wdt->base);
-	__raw_writeb(val & ~MAX6369_WDI, wdt->base);
+	case WDIOC_KEEPALIVE:
+		max63xx_wdt_ping();
+		ret = 0;
+		break;
 
-	spin_unlock(&wdt->lock);
+	case WDIOC_GETTIMEOUT:
+		ret = put_user(heartbeat, (int *)arg);
+		break;
+	}
+	return ret;
 }
 
-static void max63xx_mmap_set(struct max63xx_wdt *wdt, u8 set)
+static int max63xx_wdt_release(struct inode *inode, struct file *file)
 {
-	u8 val;
+	if (test_bit(WDT_OK_TO_CLOSE, &wdt_status))
+		max63xx_wdt_disable();
+	else
+		dev_crit(&max63xx_pdev->dev,
+			 "device closed unexpectedly - timer will not stop\n");
 
-	spin_lock(&wdt->lock);
+	clear_bit(WDT_IN_USE, &wdt_status);
+	clear_bit(WDT_OK_TO_CLOSE, &wdt_status);
 
-	val = __raw_readb(wdt->base);
-	val &= ~MAX6369_WDSET;
-	val |= set & MAX6369_WDSET;
-	__raw_writeb(val, wdt->base);
-
-	spin_unlock(&wdt->lock);
-}
-
-static int max63xx_mmap_init(struct platform_device *p, struct max63xx_wdt *wdt)
-{
-	struct resource *mem = platform_get_resource(p, IORESOURCE_MEM, 0);
-
-	wdt->base = devm_ioremap_resource(&p->dev, mem);
-	if (IS_ERR(wdt->base))
-		return PTR_ERR(wdt->base);
-
-	spin_lock_init(&wdt->lock);
-
-	wdt->ping = max63xx_mmap_ping;
-	wdt->set = max63xx_mmap_set;
 	return 0;
 }
 
-static int max63xx_wdt_probe(struct platform_device *pdev)
-{
-	struct max63xx_wdt *wdt;
-	struct max63xx_timeout *table;
-	int err;
+static const struct file_operations max63xx_wdt_fops = {
+	.owner		= THIS_MODULE,
+	.llseek		= no_llseek,
+	.write		= max63xx_wdt_write,
+	.unlocked_ioctl	= max63xx_wdt_ioctl,
+	.open		= max63xx_wdt_open,
+	.release	= max63xx_wdt_release,
+};
 
-	wdt = devm_kzalloc(&pdev->dev, sizeof(*wdt), GFP_KERNEL);
-	if (!wdt)
-		return -ENOMEM;
+static struct miscdevice max63xx_wdt_miscdev = {
+	.minor	= WATCHDOG_MINOR,
+	.name	= "watchdog",
+	.fops	= &max63xx_wdt_fops,
+};
+
+static int __devinit max63xx_wdt_probe(struct platform_device *pdev)
+{
+	int ret = 0;
+	int size;
+	struct device *dev = &pdev->dev;
+	struct max63xx_timeout *table;
 
 	table = (struct max63xx_timeout *)pdev->id_entry->driver_data;
 
 	if (heartbeat < 1 || heartbeat > MAX_HEARTBEAT)
 		heartbeat = DEFAULT_HEARTBEAT;
 
-	wdt->timeout = max63xx_select_timeout(table, heartbeat);
-	if (!wdt->timeout) {
-		dev_err(&pdev->dev, "unable to satisfy %ds heartbeat request\n",
-			heartbeat);
+	dev_info(dev, "requesting %ds heartbeat\n", heartbeat);
+	current_timeout = max63xx_select_timeout(table, heartbeat);
+
+	if (!current_timeout) {
+		dev_err(dev, "unable to satisfy heartbeat request\n");
 		return -EINVAL;
 	}
 
-	err = max63xx_mmap_init(pdev, wdt);
-	if (err)
-		return err;
+	dev_info(dev, "using %ds heartbeat with %ds initial delay\n",
+		 current_timeout->twd, current_timeout->tdelay);
 
-	platform_set_drvdata(pdev, &wdt->wdd);
-	watchdog_set_drvdata(&wdt->wdd, wdt);
+	heartbeat = current_timeout->twd;
 
-	wdt->wdd.parent = &pdev->dev;
-	wdt->wdd.timeout = wdt->timeout->twd;
-	wdt->wdd.info = &max63xx_wdt_info;
-	wdt->wdd.ops = &max63xx_wdt_ops;
+	max63xx_pdev = pdev;
 
-	watchdog_set_nowayout(&wdt->wdd, nowayout);
+	wdt_mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (wdt_mem == NULL) {
+		dev_err(dev, "failed to get memory region resource\n");
+		return -ENOENT;
+	}
 
-	err = watchdog_register_device(&wdt->wdd);
-	if (err)
-		return err;
+	size = resource_size(wdt_mem);
+	if (!request_mem_region(wdt_mem->start, size, pdev->name)) {
+		dev_err(dev, "failed to get memory region\n");
+		return -ENOENT;
+	}
 
-	dev_info(&pdev->dev, "using %ds heartbeat with %ds initial delay\n",
-		 wdt->timeout->twd, wdt->timeout->tdelay);
+	wdt_base = ioremap(wdt_mem->start, size);
+	if (!wdt_base) {
+		dev_err(dev, "failed to map memory region\n");
+		ret = -ENOMEM;
+		goto out_request;
+	}
+
+	ret = misc_register(&max63xx_wdt_miscdev);
+	if (ret < 0) {
+		dev_err(dev, "cannot register misc device\n");
+		goto out_unmap;
+	}
+
 	return 0;
+
+out_unmap:
+	iounmap(wdt_base);
+out_request:
+	release_mem_region(wdt_mem->start, size);
+	wdt_mem = NULL;
+
+	return ret;
 }
 
-static int max63xx_wdt_remove(struct platform_device *pdev)
+static int __devexit max63xx_wdt_remove(struct platform_device *pdev)
 {
-	struct watchdog_device *wdd = platform_get_drvdata(pdev);
+	misc_deregister(&max63xx_wdt_miscdev);
+	if (wdt_mem) {
+		release_mem_region(wdt_mem->start, resource_size(wdt_mem));
+		wdt_mem = NULL;
+	}
 
-	watchdog_unregister_device(wdd);
+	if (wdt_base)
+		iounmap(wdt_base);
+
 	return 0;
 }
 
-static const struct platform_device_id max63xx_id_table[] = {
+static struct platform_device_id max63xx_id_table[] = {
 	{ "max6369_wdt", (kernel_ulong_t)max6369_table, },
 	{ "max6370_wdt", (kernel_ulong_t)max6369_table, },
 	{ "max6371_wdt", (kernel_ulong_t)max6371_table, },
@@ -266,14 +356,26 @@ MODULE_DEVICE_TABLE(platform, max63xx_id_table);
 
 static struct platform_driver max63xx_wdt_driver = {
 	.probe		= max63xx_wdt_probe,
-	.remove		= max63xx_wdt_remove,
+	.remove		= __devexit_p(max63xx_wdt_remove),
 	.id_table	= max63xx_id_table,
 	.driver		= {
 		.name	= "max63xx_wdt",
+		.owner	= THIS_MODULE,
 	},
 };
 
-module_platform_driver(max63xx_wdt_driver);
+static int __init max63xx_wdt_init(void)
+{
+	return platform_driver_register(&max63xx_wdt_driver);
+}
+
+static void __exit max63xx_wdt_exit(void)
+{
+	platform_driver_unregister(&max63xx_wdt_driver);
+}
+
+module_init(max63xx_wdt_init);
+module_exit(max63xx_wdt_exit);
 
 MODULE_AUTHOR("Marc Zyngier <maz@misterjones.org>");
 MODULE_DESCRIPTION("max63xx Watchdog Driver");
@@ -284,7 +386,7 @@ MODULE_PARM_DESC(heartbeat,
 		 __MODULE_STRING(MAX_HEARTBEAT) ", default "
 		 __MODULE_STRING(DEFAULT_HEARTBEAT));
 
-module_param(nowayout, bool, 0);
+module_param(nowayout, int, 0);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
 		 __MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 
@@ -293,4 +395,5 @@ MODULE_PARM_DESC(nodelay,
 		 "Force selection of a timeout setting without initial delay "
 		 "(max6373/74 only, default=0)");
 
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");
+MODULE_ALIAS_MISCDEV(WATCHDOG_MINOR);

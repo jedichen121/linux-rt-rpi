@@ -1,5 +1,5 @@
 /*
- * drivers/net/ethernet/freescale/fec_mpc52xx.h
+ * drivers/drivers/net/fec_mpc52xx/fec.h
  *
  * Driver for the MPC5200 Fast Ethernet Controller
  *

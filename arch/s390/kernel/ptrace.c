@@ -1,15 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  Ptrace user space interface.
  *
- *    Copyright IBM Corp. 1999, 2010
+ *    Copyright IBM Corp. 1999,2010
  *    Author(s): Denis Joseph Barrow
  *               Martin Schwidefsky (schwidefsky@de.ibm.com)
  */
 
 #include <linux/kernel.h>
 #include <linux/sched.h>
-#include <linux/sched/task_stack.h>
 #include <linux/mm.h>
 #include <linux/smp.h>
 #include <linux/errno.h>
@@ -22,18 +20,15 @@
 #include <linux/regset.h>
 #include <linux/tracehook.h>
 #include <linux/seccomp.h>
-#include <linux/compat.h>
 #include <trace/syscall.h>
+#include <asm/compat.h>
 #include <asm/segment.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
-#include <linux/uaccess.h>
+#include <asm/system.h>
+#include <asm/uaccess.h>
 #include <asm/unistd.h>
-#include <asm/switch_to.h>
-#include <asm/runtime_instr.h>
-#include <asm/facility.h>
-
 #include "entry.h"
 
 #ifdef CONFIG_COMPAT
@@ -43,65 +38,30 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/syscalls.h>
 
-void update_cr_regs(struct task_struct *task)
+enum s390_regset {
+	REGSET_GENERAL,
+	REGSET_FP,
+	REGSET_LAST_BREAK,
+	REGSET_SYSTEM_CALL,
+	REGSET_GENERAL_EXTENDED,
+};
+
+void update_per_regs(struct task_struct *task)
 {
 	struct pt_regs *regs = task_pt_regs(task);
 	struct thread_struct *thread = &task->thread;
 	struct per_regs old, new;
-	union ctlreg0 cr0_old, cr0_new;
-	union ctlreg2 cr2_old, cr2_new;
-	int cr0_changed, cr2_changed;
 
-	__ctl_store(cr0_old.val, 0, 0);
-	__ctl_store(cr2_old.val, 2, 2);
-	cr0_new = cr0_old;
-	cr2_new = cr2_old;
-	/* Take care of the enable/disable of transactional execution. */
-	if (MACHINE_HAS_TE) {
-		/* Set or clear transaction execution TXC bit 8. */
-		cr0_new.tcx = 1;
-		if (task->thread.per_flags & PER_FLAG_NO_TE)
-			cr0_new.tcx = 0;
-		/* Set or clear transaction execution TDC bits 62 and 63. */
-		cr2_new.tdc = 0;
-		if (task->thread.per_flags & PER_FLAG_TE_ABORT_RAND) {
-			if (task->thread.per_flags & PER_FLAG_TE_ABORT_RAND_TEND)
-				cr2_new.tdc = 1;
-			else
-				cr2_new.tdc = 2;
-		}
-	}
-	/* Take care of enable/disable of guarded storage. */
-	if (MACHINE_HAS_GS) {
-		cr2_new.gse = 0;
-		if (task->thread.gs_cb)
-			cr2_new.gse = 1;
-	}
-	/* Load control register 0/2 iff changed */
-	cr0_changed = cr0_new.val != cr0_old.val;
-	cr2_changed = cr2_new.val != cr2_old.val;
-	if (cr0_changed)
-		__ctl_load(cr0_new.val, 0, 0);
-	if (cr2_changed)
-		__ctl_load(cr2_new.val, 2, 2);
 	/* Copy user specified PER registers */
 	new.control = thread->per_user.control;
 	new.start = thread->per_user.start;
 	new.end = thread->per_user.end;
 
 	/* merge TIF_SINGLE_STEP into user specified PER registers. */
-	if (test_tsk_thread_flag(task, TIF_SINGLE_STEP) ||
-	    test_tsk_thread_flag(task, TIF_UPROBE_SINGLESTEP)) {
-		if (test_tsk_thread_flag(task, TIF_BLOCK_STEP))
-			new.control |= PER_EVENT_BRANCH;
-		else
-			new.control |= PER_EVENT_IFETCH;
-		new.control |= PER_CONTROL_SUSPENSION;
-		new.control |= PER_EVENT_TRANSACTION_END;
-		if (test_tsk_thread_flag(task, TIF_UPROBE_SINGLESTEP))
-			new.control |= PER_EVENT_IFETCH;
+	if (test_tsk_thread_flag(task, TIF_SINGLE_STEP)) {
+		new.control |= PER_EVENT_IFETCH;
 		new.start = 0;
-		new.end = -1UL;
+		new.end = PSW_ADDR_INSN;
 	}
 
 	/* Take care of the PER enablement bit in the PSW. */
@@ -117,20 +77,16 @@ void update_cr_regs(struct task_struct *task)
 
 void user_enable_single_step(struct task_struct *task)
 {
-	clear_tsk_thread_flag(task, TIF_BLOCK_STEP);
 	set_tsk_thread_flag(task, TIF_SINGLE_STEP);
+	if (task == current)
+		update_per_regs(task);
 }
 
 void user_disable_single_step(struct task_struct *task)
 {
-	clear_tsk_thread_flag(task, TIF_BLOCK_STEP);
 	clear_tsk_thread_flag(task, TIF_SINGLE_STEP);
-}
-
-void user_enable_block_step(struct task_struct *task)
-{
-	set_tsk_thread_flag(task, TIF_SINGLE_STEP);
-	set_tsk_thread_flag(task, TIF_BLOCK_STEP);
+	if (task == current)
+		update_per_regs(task);
 }
 
 /*
@@ -143,11 +99,14 @@ void ptrace_disable(struct task_struct *task)
 	memset(&task->thread.per_user, 0, sizeof(task->thread.per_user));
 	memset(&task->thread.per_event, 0, sizeof(task->thread.per_event));
 	clear_tsk_thread_flag(task, TIF_SINGLE_STEP);
-	clear_pt_regs_flag(task_pt_regs(task), PIF_PER_TRAP);
-	task->thread.per_flags = 0;
+	clear_tsk_thread_flag(task, TIF_PER_TRAP);
 }
 
-#define __ADDR_MASK 7
+#ifndef CONFIG_64BIT
+# define __ADDR_MASK 3
+#else
+# define __ADDR_MASK 7
+#endif
 
 static inline unsigned long __peek_user_per(struct task_struct *child,
 					    addr_t addr)
@@ -165,7 +124,7 @@ static inline unsigned long __peek_user_per(struct task_struct *child,
 	else if (addr == (addr_t) &dummy->cr11)
 		/* End address of the active per set. */
 		return test_thread_flag(TIF_SINGLE_STEP) ?
-			-1UL : child->thread.per_user.end;
+			PSW_ADDR_INSN : child->thread.per_user.end;
 	else if (addr == (addr_t) &dummy->bits)
 		/* Single-step bit. */
 		return test_thread_flag(TIF_SINGLE_STEP) ?
@@ -209,17 +168,16 @@ static unsigned long __peek_user(struct task_struct *child, addr_t addr)
 		 * psw and gprs are stored on the stack
 		 */
 		tmp = *(addr_t *)((addr_t) &task_pt_regs(child)->psw + addr);
-		if (addr == (addr_t) &dummy->regs.psw.mask) {
+		if (addr == (addr_t) &dummy->regs.psw.mask)
 			/* Return a clean psw mask. */
-			tmp &= PSW_MASK_USER | PSW_MASK_RI;
-			tmp |= PSW_USER_BITS;
-		}
+			tmp = psw_user_bits | (tmp & PSW_MASK_USER);
 
 	} else if (addr < (addr_t) &dummy->regs.orig_gpr2) {
 		/*
 		 * access registers are stored in the thread structure
 		 */
 		offset = addr - (addr_t) &dummy->regs.acrs;
+#ifdef CONFIG_64BIT
 		/*
 		 * Very special case: old & broken 64 bit gdb reading
 		 * from acrs[15]. Result is a 64 bit value. Read the
@@ -228,7 +186,8 @@ static unsigned long __peek_user(struct task_struct *child, addr_t addr)
 		if (addr == (addr_t) &dummy->regs.acrs[15])
 			tmp = ((unsigned long) child->thread.acrs[15]) << 32;
 		else
-			tmp = *(addr_t *)((addr_t) &child->thread.acrs + offset);
+#endif
+		tmp = *(addr_t *)((addr_t) &child->thread.acrs + offset);
 
 	} else if (addr == (addr_t) &dummy->regs.orig_gpr2) {
 		/*
@@ -243,25 +202,15 @@ static unsigned long __peek_user(struct task_struct *child, addr_t addr)
 		 */
 		tmp = 0;
 
-	} else if (addr == (addr_t) &dummy->regs.fp_regs.fpc) {
-		/*
-		 * floating point control reg. is in the thread structure
-		 */
-		tmp = child->thread.fpu.fpc;
-		tmp <<= BITS_PER_LONG - 32;
-
 	} else if (addr < (addr_t) (&dummy->regs.fp_regs + 1)) {
-		/*
-		 * floating point regs. are either in child->thread.fpu
-		 * or the child->thread.fpu.vxrs array
+		/* 
+		 * floating point regs. are stored in the thread structure
 		 */
-		offset = addr - (addr_t) &dummy->regs.fp_regs.fprs;
-		if (MACHINE_HAS_VX)
-			tmp = *(addr_t *)
-			       ((addr_t) child->thread.fpu.vxrs + 2*offset);
-		else
-			tmp = *(addr_t *)
-			       ((addr_t) child->thread.fpu.fprs + offset);
+		offset = addr - (addr_t) &dummy->regs.fp_regs;
+		tmp = *(addr_t *)((addr_t) &child->thread.fp_regs + offset);
+		if (addr == (addr_t) &dummy->regs.fp_regs.fpc)
+			tmp &= (unsigned long) FPC_VALID_MASK
+				<< (BITS_PER_LONG - 32);
 
 	} else if (addr < (addr_t) (&dummy->regs.per_info + 1)) {
 		/*
@@ -286,9 +235,11 @@ peek_user(struct task_struct *child, addr_t addr, addr_t data)
 	 * an alignment of 4. Programmers from hell...
 	 */
 	mask = __ADDR_MASK;
+#ifdef CONFIG_64BIT
 	if (addr >= (addr_t) &((struct user *) NULL)->regs.acrs &&
 	    addr < (addr_t) &((struct user *) NULL)->regs.orig_gpr2)
 		mask = 3;
+#endif
 	if ((addr & mask) || addr > sizeof(struct user) - __ADDR_MASK)
 		return -EIO;
 
@@ -340,20 +291,11 @@ static int __poke_user(struct task_struct *child, addr_t addr, addr_t data)
 		/*
 		 * psw and gprs are stored on the stack
 		 */
-		if (addr == (addr_t) &dummy->regs.psw.mask) {
-			unsigned long mask = PSW_MASK_USER;
-
-			mask |= is_ri_task(child) ? PSW_MASK_RI : 0;
-			if ((data ^ PSW_USER_BITS) & ~mask)
-				/* Invalid psw mask. */
-				return -EINVAL;
-			if ((data & PSW_MASK_ASC) == PSW_ASC_HOME)
-				/* Invalid address-space-control bits */
-				return -EINVAL;
-			if ((data & PSW_MASK_EA) && !(data & PSW_MASK_BA))
-				/* Invalid addressing mode bits */
-				return -EINVAL;
-		}
+		if (addr == (addr_t) &dummy->regs.psw.mask &&
+		    ((data & ~PSW_MASK_USER) != psw_user_bits ||
+		     ((data & PSW_MASK_EA) && !(data & PSW_MASK_BA))))
+			/* Invalid psw mask. */
+			return -EINVAL;
 		*(addr_t *)((addr_t) &task_pt_regs(child)->psw + addr) = data;
 
 	} else if (addr < (addr_t) (&dummy->regs.orig_gpr2)) {
@@ -361,6 +303,7 @@ static int __poke_user(struct task_struct *child, addr_t addr, addr_t data)
 		 * access registers are stored in the thread structure
 		 */
 		offset = addr - (addr_t) &dummy->regs.acrs;
+#ifdef CONFIG_64BIT
 		/*
 		 * Very special case: old & broken 64 bit gdb writing
 		 * to acrs[15] with a 64 bit value. Ignore the lower
@@ -370,7 +313,8 @@ static int __poke_user(struct task_struct *child, addr_t addr, addr_t data)
 		if (addr == (addr_t) &dummy->regs.acrs[15])
 			child->thread.acrs[15] = (unsigned int) (data >> 32);
 		else
-			*(addr_t *)((addr_t) &child->thread.acrs + offset) = data;
+#endif
+		*(addr_t *)((addr_t) &child->thread.acrs + offset) = data;
 
 	} else if (addr == (addr_t) &dummy->regs.orig_gpr2) {
 		/*
@@ -385,27 +329,16 @@ static int __poke_user(struct task_struct *child, addr_t addr, addr_t data)
 		 */
 		return 0;
 
-	} else if (addr == (addr_t) &dummy->regs.fp_regs.fpc) {
-		/*
-		 * floating point control reg. is in the thread structure
-		 */
-		if ((unsigned int) data != 0 ||
-		    test_fp_ctl(data >> (BITS_PER_LONG - 32)))
-			return -EINVAL;
-		child->thread.fpu.fpc = data >> (BITS_PER_LONG - 32);
-
 	} else if (addr < (addr_t) (&dummy->regs.fp_regs + 1)) {
 		/*
-		 * floating point regs. are either in child->thread.fpu
-		 * or the child->thread.fpu.vxrs array
+		 * floating point regs. are stored in the thread structure
 		 */
-		offset = addr - (addr_t) &dummy->regs.fp_regs.fprs;
-		if (MACHINE_HAS_VX)
-			*(addr_t *)((addr_t)
-				child->thread.fpu.vxrs + 2*offset) = data;
-		else
-			*(addr_t *)((addr_t)
-				child->thread.fpu.fprs + offset) = data;
+		if (addr == (addr_t) &dummy->regs.fp_regs.fpc &&
+		    (data & ~((unsigned long) FPC_VALID_MASK
+			      << (BITS_PER_LONG - 32))) != 0)
+			return -EINVAL;
+		offset = addr - (addr_t) &dummy->regs.fp_regs;
+		*(addr_t *)((addr_t) &child->thread.fp_regs + offset) = data;
 
 	} else if (addr < (addr_t) (&dummy->regs.per_info + 1)) {
 		/*
@@ -428,9 +361,11 @@ static int poke_user(struct task_struct *child, addr_t addr, addr_t data)
 	 * an alignment of 4. Programmers from hell indeed...
 	 */
 	mask = __ADDR_MASK;
+#ifdef CONFIG_64BIT
 	if (addr >= (addr_t) &((struct user *) NULL)->regs.acrs &&
 	    addr < (addr_t) &((struct user *) NULL)->regs.orig_gpr2)
 		mask = 3;
+#endif
 	if ((addr & mask) || addr > sizeof(struct user) - __ADDR_MASK)
 		return -EIO;
 
@@ -478,40 +413,12 @@ long arch_ptrace(struct task_struct *child, long request,
 		}
 		return 0;
 	case PTRACE_GET_LAST_BREAK:
-		put_user(child->thread.last_break,
+		put_user(task_thread_info(child)->last_break,
 			 (unsigned long __user *) data);
 		return 0;
-	case PTRACE_ENABLE_TE:
-		if (!MACHINE_HAS_TE)
-			return -EIO;
-		child->thread.per_flags &= ~PER_FLAG_NO_TE;
-		return 0;
-	case PTRACE_DISABLE_TE:
-		if (!MACHINE_HAS_TE)
-			return -EIO;
-		child->thread.per_flags |= PER_FLAG_NO_TE;
-		child->thread.per_flags &= ~PER_FLAG_TE_ABORT_RAND;
-		return 0;
-	case PTRACE_TE_ABORT_RAND:
-		if (!MACHINE_HAS_TE || (child->thread.per_flags & PER_FLAG_NO_TE))
-			return -EIO;
-		switch (data) {
-		case 0UL:
-			child->thread.per_flags &= ~PER_FLAG_TE_ABORT_RAND;
-			break;
-		case 1UL:
-			child->thread.per_flags |= PER_FLAG_TE_ABORT_RAND;
-			child->thread.per_flags |= PER_FLAG_TE_ABORT_RAND_TEND;
-			break;
-		case 2UL:
-			child->thread.per_flags |= PER_FLAG_TE_ABORT_RAND;
-			child->thread.per_flags &= ~PER_FLAG_TE_ABORT_RAND_TEND;
-			break;
-		default:
-			return -EINVAL;
-		}
-		return 0;
 	default:
+		/* Removing high order bit from addr (only for 31 bit). */
+		addr &= PSW_ADDR_INSN;
 		return ptrace_request(child, request, addr, data);
 	}
 }
@@ -590,8 +497,7 @@ static u32 __peek_user_compat(struct task_struct *child, addr_t addr)
 		if (addr == (addr_t) &dummy32->regs.psw.mask) {
 			/* Fake a 31 bit psw mask. */
 			tmp = (__u32)(regs->psw.mask >> 32);
-			tmp &= PSW32_MASK_USER | PSW32_MASK_RI;
-			tmp |= PSW32_USER_BITS;
+			tmp = psw32_user_bits | (tmp & PSW32_MASK_USER);
 		} else if (addr == (addr_t) &dummy32->regs.psw.addr) {
 			/* Fake a 31 bit psw address. */
 			tmp = (__u32) regs->psw.addr |
@@ -620,24 +526,12 @@ static u32 __peek_user_compat(struct task_struct *child, addr_t addr)
 		 */
 		tmp = 0;
 
-	} else if (addr == (addr_t) &dummy32->regs.fp_regs.fpc) {
-		/*
-		 * floating point control reg. is in the thread structure
-		 */
-		tmp = child->thread.fpu.fpc;
-
 	} else if (addr < (addr_t) (&dummy32->regs.fp_regs + 1)) {
 		/*
-		 * floating point regs. are either in child->thread.fpu
-		 * or the child->thread.fpu.vxrs array
+		 * floating point regs. are stored in the thread structure 
 		 */
-		offset = addr - (addr_t) &dummy32->regs.fp_regs.fprs;
-		if (MACHINE_HAS_VX)
-			tmp = *(__u32 *)
-			       ((addr_t) child->thread.fpu.vxrs + 2*offset);
-		else
-			tmp = *(__u32 *)
-			       ((addr_t) child->thread.fpu.fprs + offset);
+	        offset = addr - (addr_t) &dummy32->regs.fp_regs;
+		tmp = *(__u32 *)((addr_t) &child->thread.fp_regs + offset);
 
 	} else if (addr < (addr_t) (&dummy32->regs.per_info + 1)) {
 		/*
@@ -700,19 +594,13 @@ static int __poke_user_compat(struct task_struct *child,
 		 * psw, gprs, acrs and orig_gpr2 are stored on the stack
 		 */
 		if (addr == (addr_t) &dummy32->regs.psw.mask) {
-			__u32 mask = PSW32_MASK_USER;
-
-			mask |= is_ri_task(child) ? PSW32_MASK_RI : 0;
 			/* Build a 64 bit psw mask from 31 bit mask. */
-			if ((tmp ^ PSW32_USER_BITS) & ~mask)
+			if ((tmp & ~PSW32_MASK_USER) != psw32_user_bits)
 				/* Invalid psw mask. */
-				return -EINVAL;
-			if ((data & PSW32_MASK_ASC) == PSW32_ASC_HOME)
-				/* Invalid address-space-control bits */
 				return -EINVAL;
 			regs->psw.mask = (regs->psw.mask & ~PSW_MASK_USER) |
 				(regs->psw.mask & PSW_MASK_BA) |
-				(__u64)(tmp & mask) << 32;
+				(__u64)(tmp & PSW32_MASK_USER) << 32;
 		} else if (addr == (addr_t) &dummy32->regs.psw.addr) {
 			/* Build a 64 bit psw address from 31 bit address. */
 			regs->psw.addr = (__u64) tmp & PSW32_ADDR_INSN;
@@ -743,26 +631,16 @@ static int __poke_user_compat(struct task_struct *child,
 		 */
 		return 0;
 
-	} else if (addr == (addr_t) &dummy32->regs.fp_regs.fpc) {
-		/*
-		 * floating point control reg. is in the thread structure
-		 */
-		if (test_fp_ctl(tmp))
-			return -EINVAL;
-		child->thread.fpu.fpc = data;
-
 	} else if (addr < (addr_t) (&dummy32->regs.fp_regs + 1)) {
 		/*
-		 * floating point regs. are either in child->thread.fpu
-		 * or the child->thread.fpu.vxrs array
+		 * floating point regs. are stored in the thread structure 
 		 */
-		offset = addr - (addr_t) &dummy32->regs.fp_regs.fprs;
-		if (MACHINE_HAS_VX)
-			*(__u32 *)((addr_t)
-				child->thread.fpu.vxrs + 2*offset) = tmp;
-		else
-			*(__u32 *)((addr_t)
-				child->thread.fpu.fprs + offset) = tmp;
+		if (addr == (addr_t) &dummy32->regs.fp_regs.fpc &&
+		    (tmp & ~FPC_VALID_MASK) != 0)
+			/* Invalid floating point control. */
+			return -EINVAL;
+	        offset = addr - (addr_t) &dummy32->regs.fp_regs;
+		*(__u32 *)((addr_t) &child->thread.fp_regs + offset) = tmp;
 
 	} else if (addr < (addr_t) (&dummy32->regs.per_info + 1)) {
 		/*
@@ -828,7 +706,7 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 		}
 		return 0;
 	case PTRACE_GET_LAST_BREAK:
-		put_user(child->thread.last_break,
+		put_user(task_thread_info(child)->last_break,
 			 (unsigned int __user *) data);
 		return 0;
 	}
@@ -838,7 +716,10 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 
 asmlinkage long do_syscall_trace_enter(struct pt_regs *regs)
 {
-	unsigned long mask = -1UL;
+	long ret = 0;
+
+	/* Do the secure computing check first. */
+	secure_computing(regs->gprs[2]);
 
 	/*
 	 * The sysc_tracesys code in entry.S stored the system
@@ -852,32 +733,27 @@ asmlinkage long do_syscall_trace_enter(struct pt_regs *regs)
 		 * debugger stored an invalid system call number. Skip
 		 * the system call and the system call restart handling.
 		 */
-		clear_pt_regs_flag(regs, PIF_SYSCALL);
-		return -1;
-	}
-
-	/* Do the secure computing check after ptrace. */
-	if (secure_computing(NULL)) {
-		/* seccomp failures shouldn't expose any additional code. */
-		return -1;
+		clear_thread_flag(TIF_SYSCALL);
+		ret = -1;
 	}
 
 	if (unlikely(test_thread_flag(TIF_SYSCALL_TRACEPOINT)))
 		trace_sys_enter(regs, regs->gprs[2]);
 
-	if (is_compat_task())
-		mask = 0xffffffff;
-
-	audit_syscall_entry(regs->gprs[2], regs->orig_gpr2 & mask,
-			    regs->gprs[3] &mask, regs->gprs[4] &mask,
-			    regs->gprs[5] &mask);
-
-	return regs->gprs[2];
+	if (unlikely(current->audit_context))
+		audit_syscall_entry(is_compat_task() ?
+					AUDIT_ARCH_S390 : AUDIT_ARCH_S390X,
+				    regs->gprs[2], regs->orig_gpr2,
+				    regs->gprs[3], regs->gprs[4],
+				    regs->gprs[5]);
+	return ret ?: regs->gprs[2];
 }
 
 asmlinkage void do_syscall_trace_exit(struct pt_regs *regs)
 {
-	audit_syscall_exit(regs);
+	if (unlikely(current->audit_context))
+		audit_syscall_exit(AUDITSC_RESULT(regs->gprs[2]),
+				   regs->gprs[2]);
 
 	if (unlikely(test_thread_flag(TIF_SYSCALL_TRACEPOINT)))
 		trace_sys_exit(regs, regs->gprs[2]);
@@ -957,16 +833,11 @@ static int s390_fpregs_get(struct task_struct *target,
 			   const struct user_regset *regset, unsigned int pos,
 			   unsigned int count, void *kbuf, void __user *ubuf)
 {
-	_s390_fp_regs fp_regs;
-
 	if (target == current)
-		save_fpu_regs();
-
-	fp_regs.fpc = target->thread.fpu.fpc;
-	fpregs_store(&fp_regs, &target->thread.fpu);
+		save_fp_regs(&target->thread.fp_regs);
 
 	return user_regset_copyout(&pos, &count, &kbuf, &ubuf,
-				   &fp_regs, 0, -1);
+				   &target->thread.fp_regs, 0, -1);
 }
 
 static int s390_fpregs_set(struct task_struct *target,
@@ -975,41 +846,34 @@ static int s390_fpregs_set(struct task_struct *target,
 			   const void __user *ubuf)
 {
 	int rc = 0;
-	freg_t fprs[__NUM_FPRS];
 
 	if (target == current)
-		save_fpu_regs();
-
-	if (MACHINE_HAS_VX)
-		convert_vx_to_fp(fprs, target->thread.fpu.vxrs);
-	else
-		memcpy(&fprs, target->thread.fpu.fprs, sizeof(fprs));
+		save_fp_regs(&target->thread.fp_regs);
 
 	/* If setting FPC, must validate it first. */
 	if (count > 0 && pos < offsetof(s390_fp_regs, fprs)) {
-		u32 ufpc[2] = { target->thread.fpu.fpc, 0 };
-		rc = user_regset_copyin(&pos, &count, &kbuf, &ubuf, &ufpc,
+		u32 fpc[2] = { target->thread.fp_regs.fpc, 0 };
+		rc = user_regset_copyin(&pos, &count, &kbuf, &ubuf, &fpc,
 					0, offsetof(s390_fp_regs, fprs));
 		if (rc)
 			return rc;
-		if (ufpc[1] != 0 || test_fp_ctl(ufpc[0]))
+		if ((fpc[0] & ~FPC_VALID_MASK) != 0 || fpc[1] != 0)
 			return -EINVAL;
-		target->thread.fpu.fpc = ufpc[0];
+		target->thread.fp_regs.fpc = fpc[0];
 	}
 
 	if (rc == 0 && count > 0)
 		rc = user_regset_copyin(&pos, &count, &kbuf, &ubuf,
-					fprs, offsetof(s390_fp_regs, fprs), -1);
-	if (rc)
-		return rc;
+					target->thread.fp_regs.fprs,
+					offsetof(s390_fp_regs, fprs), -1);
 
-	if (MACHINE_HAS_VX)
-		convert_fp_to_vx(target->thread.fpu.vxrs, fprs);
-	else
-		memcpy(target->thread.fpu.fprs, &fprs, sizeof(fprs));
+	if (rc == 0 && target == current)
+		restore_fp_regs(&target->thread.fp_regs);
 
 	return rc;
 }
+
+#ifdef CONFIG_64BIT
 
 static int s390_last_break_get(struct task_struct *target,
 			       const struct user_regset *regset,
@@ -1019,10 +883,10 @@ static int s390_last_break_get(struct task_struct *target,
 	if (count > 0) {
 		if (kbuf) {
 			unsigned long *k = kbuf;
-			*k = target->thread.last_break;
+			*k = task_thread_info(target)->last_break;
 		} else {
 			unsigned long  __user *u = ubuf;
-			if (__put_user(target->thread.last_break, u))
+			if (__put_user(task_thread_info(target)->last_break, u))
 				return -EFAULT;
 		}
 	}
@@ -1037,108 +901,14 @@ static int s390_last_break_set(struct task_struct *target,
 	return 0;
 }
 
-static int s390_tdb_get(struct task_struct *target,
-			const struct user_regset *regset,
-			unsigned int pos, unsigned int count,
-			void *kbuf, void __user *ubuf)
-{
-	struct pt_regs *regs = task_pt_regs(target);
-	unsigned char *data;
-
-	if (!(regs->int_code & 0x200))
-		return -ENODATA;
-	data = target->thread.trap_tdb;
-	return user_regset_copyout(&pos, &count, &kbuf, &ubuf, data, 0, 256);
-}
-
-static int s390_tdb_set(struct task_struct *target,
-			const struct user_regset *regset,
-			unsigned int pos, unsigned int count,
-			const void *kbuf, const void __user *ubuf)
-{
-	return 0;
-}
-
-static int s390_vxrs_low_get(struct task_struct *target,
-			     const struct user_regset *regset,
-			     unsigned int pos, unsigned int count,
-			     void *kbuf, void __user *ubuf)
-{
-	__u64 vxrs[__NUM_VXRS_LOW];
-	int i;
-
-	if (!MACHINE_HAS_VX)
-		return -ENODEV;
-	if (target == current)
-		save_fpu_regs();
-	for (i = 0; i < __NUM_VXRS_LOW; i++)
-		vxrs[i] = *((__u64 *)(target->thread.fpu.vxrs + i) + 1);
-	return user_regset_copyout(&pos, &count, &kbuf, &ubuf, vxrs, 0, -1);
-}
-
-static int s390_vxrs_low_set(struct task_struct *target,
-			     const struct user_regset *regset,
-			     unsigned int pos, unsigned int count,
-			     const void *kbuf, const void __user *ubuf)
-{
-	__u64 vxrs[__NUM_VXRS_LOW];
-	int i, rc;
-
-	if (!MACHINE_HAS_VX)
-		return -ENODEV;
-	if (target == current)
-		save_fpu_regs();
-
-	for (i = 0; i < __NUM_VXRS_LOW; i++)
-		vxrs[i] = *((__u64 *)(target->thread.fpu.vxrs + i) + 1);
-
-	rc = user_regset_copyin(&pos, &count, &kbuf, &ubuf, vxrs, 0, -1);
-	if (rc == 0)
-		for (i = 0; i < __NUM_VXRS_LOW; i++)
-			*((__u64 *)(target->thread.fpu.vxrs + i) + 1) = vxrs[i];
-
-	return rc;
-}
-
-static int s390_vxrs_high_get(struct task_struct *target,
-			      const struct user_regset *regset,
-			      unsigned int pos, unsigned int count,
-			      void *kbuf, void __user *ubuf)
-{
-	__vector128 vxrs[__NUM_VXRS_HIGH];
-
-	if (!MACHINE_HAS_VX)
-		return -ENODEV;
-	if (target == current)
-		save_fpu_regs();
-	memcpy(vxrs, target->thread.fpu.vxrs + __NUM_VXRS_LOW, sizeof(vxrs));
-
-	return user_regset_copyout(&pos, &count, &kbuf, &ubuf, vxrs, 0, -1);
-}
-
-static int s390_vxrs_high_set(struct task_struct *target,
-			      const struct user_regset *regset,
-			      unsigned int pos, unsigned int count,
-			      const void *kbuf, const void __user *ubuf)
-{
-	int rc;
-
-	if (!MACHINE_HAS_VX)
-		return -ENODEV;
-	if (target == current)
-		save_fpu_regs();
-
-	rc = user_regset_copyin(&pos, &count, &kbuf, &ubuf,
-				target->thread.fpu.vxrs + __NUM_VXRS_LOW, 0, -1);
-	return rc;
-}
+#endif
 
 static int s390_system_call_get(struct task_struct *target,
 				const struct user_regset *regset,
 				unsigned int pos, unsigned int count,
 				void *kbuf, void __user *ubuf)
 {
-	unsigned int *data = &target->thread.system_call;
+	unsigned int *data = &task_thread_info(target)->system_call;
 	return user_regset_copyout(&pos, &count, &kbuf, &ubuf,
 				   data, 0, sizeof(unsigned int));
 }
@@ -1148,193 +918,13 @@ static int s390_system_call_set(struct task_struct *target,
 				unsigned int pos, unsigned int count,
 				const void *kbuf, const void __user *ubuf)
 {
-	unsigned int *data = &target->thread.system_call;
+	unsigned int *data = &task_thread_info(target)->system_call;
 	return user_regset_copyin(&pos, &count, &kbuf, &ubuf,
 				  data, 0, sizeof(unsigned int));
 }
 
-static int s390_gs_cb_get(struct task_struct *target,
-			  const struct user_regset *regset,
-			  unsigned int pos, unsigned int count,
-			  void *kbuf, void __user *ubuf)
-{
-	struct gs_cb *data = target->thread.gs_cb;
-
-	if (!MACHINE_HAS_GS)
-		return -ENODEV;
-	if (!data)
-		return -ENODATA;
-	if (target == current)
-		save_gs_cb(data);
-	return user_regset_copyout(&pos, &count, &kbuf, &ubuf,
-				   data, 0, sizeof(struct gs_cb));
-}
-
-static int s390_gs_cb_set(struct task_struct *target,
-			  const struct user_regset *regset,
-			  unsigned int pos, unsigned int count,
-			  const void *kbuf, const void __user *ubuf)
-{
-	struct gs_cb gs_cb = { }, *data = NULL;
-	int rc;
-
-	if (!MACHINE_HAS_GS)
-		return -ENODEV;
-	if (!target->thread.gs_cb) {
-		data = kzalloc(sizeof(*data), GFP_KERNEL);
-		if (!data)
-			return -ENOMEM;
-	}
-	if (!target->thread.gs_cb)
-		gs_cb.gsd = 25;
-	else if (target == current)
-		save_gs_cb(&gs_cb);
-	else
-		gs_cb = *target->thread.gs_cb;
-	rc = user_regset_copyin(&pos, &count, &kbuf, &ubuf,
-				&gs_cb, 0, sizeof(gs_cb));
-	if (rc) {
-		kfree(data);
-		return -EFAULT;
-	}
-	preempt_disable();
-	if (!target->thread.gs_cb)
-		target->thread.gs_cb = data;
-	*target->thread.gs_cb = gs_cb;
-	if (target == current) {
-		__ctl_set_bit(2, 4);
-		restore_gs_cb(target->thread.gs_cb);
-	}
-	preempt_enable();
-	return rc;
-}
-
-static int s390_gs_bc_get(struct task_struct *target,
-			  const struct user_regset *regset,
-			  unsigned int pos, unsigned int count,
-			  void *kbuf, void __user *ubuf)
-{
-	struct gs_cb *data = target->thread.gs_bc_cb;
-
-	if (!MACHINE_HAS_GS)
-		return -ENODEV;
-	if (!data)
-		return -ENODATA;
-	return user_regset_copyout(&pos, &count, &kbuf, &ubuf,
-				   data, 0, sizeof(struct gs_cb));
-}
-
-static int s390_gs_bc_set(struct task_struct *target,
-			  const struct user_regset *regset,
-			  unsigned int pos, unsigned int count,
-			  const void *kbuf, const void __user *ubuf)
-{
-	struct gs_cb *data = target->thread.gs_bc_cb;
-
-	if (!MACHINE_HAS_GS)
-		return -ENODEV;
-	if (!data) {
-		data = kzalloc(sizeof(*data), GFP_KERNEL);
-		if (!data)
-			return -ENOMEM;
-		target->thread.gs_bc_cb = data;
-	}
-	return user_regset_copyin(&pos, &count, &kbuf, &ubuf,
-				  data, 0, sizeof(struct gs_cb));
-}
-
-static bool is_ri_cb_valid(struct runtime_instr_cb *cb)
-{
-	return (cb->rca & 0x1f) == 0 &&
-		(cb->roa & 0xfff) == 0 &&
-		(cb->rla & 0xfff) == 0xfff &&
-		cb->s == 1 &&
-		cb->k == 1 &&
-		cb->h == 0 &&
-		cb->reserved1 == 0 &&
-		cb->ps == 1 &&
-		cb->qs == 0 &&
-		cb->pc == 1 &&
-		cb->qc == 0 &&
-		cb->reserved2 == 0 &&
-		cb->key == PAGE_DEFAULT_KEY &&
-		cb->reserved3 == 0 &&
-		cb->reserved4 == 0 &&
-		cb->reserved5 == 0 &&
-		cb->reserved6 == 0 &&
-		cb->reserved7 == 0 &&
-		cb->reserved8 == 0 &&
-		cb->rla >= cb->roa &&
-		cb->rca >= cb->roa &&
-		cb->rca <= cb->rla+1 &&
-		cb->m < 3;
-}
-
-static int s390_runtime_instr_get(struct task_struct *target,
-				const struct user_regset *regset,
-				unsigned int pos, unsigned int count,
-				void *kbuf, void __user *ubuf)
-{
-	struct runtime_instr_cb *data = target->thread.ri_cb;
-
-	if (!test_facility(64))
-		return -ENODEV;
-	if (!data)
-		return -ENODATA;
-
-	return user_regset_copyout(&pos, &count, &kbuf, &ubuf,
-				   data, 0, sizeof(struct runtime_instr_cb));
-}
-
-static int s390_runtime_instr_set(struct task_struct *target,
-				  const struct user_regset *regset,
-				  unsigned int pos, unsigned int count,
-				  const void *kbuf, const void __user *ubuf)
-{
-	struct runtime_instr_cb ri_cb = { }, *data = NULL;
-	int rc;
-
-	if (!test_facility(64))
-		return -ENODEV;
-
-	if (!target->thread.ri_cb) {
-		data = kzalloc(sizeof(*data), GFP_KERNEL);
-		if (!data)
-			return -ENOMEM;
-	}
-
-	if (target->thread.ri_cb) {
-		if (target == current)
-			store_runtime_instr_cb(&ri_cb);
-		else
-			ri_cb = *target->thread.ri_cb;
-	}
-
-	rc = user_regset_copyin(&pos, &count, &kbuf, &ubuf,
-				&ri_cb, 0, sizeof(struct runtime_instr_cb));
-	if (rc) {
-		kfree(data);
-		return -EFAULT;
-	}
-
-	if (!is_ri_cb_valid(&ri_cb)) {
-		kfree(data);
-		return -EINVAL;
-	}
-
-	preempt_disable();
-	if (!target->thread.ri_cb)
-		target->thread.ri_cb = data;
-	*target->thread.ri_cb = ri_cb;
-	if (target == current)
-		load_runtime_instr_cb(target->thread.ri_cb);
-	preempt_enable();
-
-	return 0;
-}
-
 static const struct user_regset s390_regsets[] = {
-	{
+	[REGSET_GENERAL] = {
 		.core_note_type = NT_PRSTATUS,
 		.n = sizeof(s390_regs) / sizeof(long),
 		.size = sizeof(long),
@@ -1342,7 +932,7 @@ static const struct user_regset s390_regsets[] = {
 		.get = s390_regs_get,
 		.set = s390_regs_set,
 	},
-	{
+	[REGSET_FP] = {
 		.core_note_type = NT_PRFPREG,
 		.n = sizeof(s390_fp_regs) / sizeof(long),
 		.size = sizeof(long),
@@ -1350,15 +940,8 @@ static const struct user_regset s390_regsets[] = {
 		.get = s390_fpregs_get,
 		.set = s390_fpregs_set,
 	},
-	{
-		.core_note_type = NT_S390_SYSTEM_CALL,
-		.n = 1,
-		.size = sizeof(unsigned int),
-		.align = sizeof(unsigned int),
-		.get = s390_system_call_get,
-		.set = s390_system_call_set,
-	},
-	{
+#ifdef CONFIG_64BIT
+	[REGSET_LAST_BREAK] = {
 		.core_note_type = NT_S390_LAST_BREAK,
 		.n = 1,
 		.size = sizeof(long),
@@ -1366,53 +949,14 @@ static const struct user_regset s390_regsets[] = {
 		.get = s390_last_break_get,
 		.set = s390_last_break_set,
 	},
-	{
-		.core_note_type = NT_S390_TDB,
+#endif
+	[REGSET_SYSTEM_CALL] = {
+		.core_note_type = NT_S390_SYSTEM_CALL,
 		.n = 1,
-		.size = 256,
-		.align = 1,
-		.get = s390_tdb_get,
-		.set = s390_tdb_set,
-	},
-	{
-		.core_note_type = NT_S390_VXRS_LOW,
-		.n = __NUM_VXRS_LOW,
-		.size = sizeof(__u64),
-		.align = sizeof(__u64),
-		.get = s390_vxrs_low_get,
-		.set = s390_vxrs_low_set,
-	},
-	{
-		.core_note_type = NT_S390_VXRS_HIGH,
-		.n = __NUM_VXRS_HIGH,
-		.size = sizeof(__vector128),
-		.align = sizeof(__vector128),
-		.get = s390_vxrs_high_get,
-		.set = s390_vxrs_high_set,
-	},
-	{
-		.core_note_type = NT_S390_GS_CB,
-		.n = sizeof(struct gs_cb) / sizeof(__u64),
-		.size = sizeof(__u64),
-		.align = sizeof(__u64),
-		.get = s390_gs_cb_get,
-		.set = s390_gs_cb_set,
-	},
-	{
-		.core_note_type = NT_S390_GS_BC,
-		.n = sizeof(struct gs_cb) / sizeof(__u64),
-		.size = sizeof(__u64),
-		.align = sizeof(__u64),
-		.get = s390_gs_bc_get,
-		.set = s390_gs_bc_set,
-	},
-	{
-		.core_note_type = NT_S390_RI_CB,
-		.n = sizeof(struct runtime_instr_cb) / sizeof(__u64),
-		.size = sizeof(__u64),
-		.align = sizeof(__u64),
-		.get = s390_runtime_instr_get,
-		.set = s390_runtime_instr_set,
+		.size = sizeof(unsigned int),
+		.align = sizeof(unsigned int),
+		.get = s390_system_call_get,
+		.set = s390_system_call_set,
 	},
 };
 
@@ -1556,7 +1100,7 @@ static int s390_compat_last_break_get(struct task_struct *target,
 	compat_ulong_t last_break;
 
 	if (count > 0) {
-		last_break = target->thread.last_break;
+		last_break = task_thread_info(target)->last_break;
 		if (kbuf) {
 			unsigned long *k = kbuf;
 			*k = last_break;
@@ -1578,7 +1122,7 @@ static int s390_compat_last_break_set(struct task_struct *target,
 }
 
 static const struct user_regset s390_compat_regsets[] = {
-	{
+	[REGSET_GENERAL] = {
 		.core_note_type = NT_PRSTATUS,
 		.n = sizeof(s390_compat_regs) / sizeof(compat_long_t),
 		.size = sizeof(compat_long_t),
@@ -1586,7 +1130,7 @@ static const struct user_regset s390_compat_regsets[] = {
 		.get = s390_compat_regs_get,
 		.set = s390_compat_regs_set,
 	},
-	{
+	[REGSET_FP] = {
 		.core_note_type = NT_PRFPREG,
 		.n = sizeof(s390_fp_regs) / sizeof(compat_long_t),
 		.size = sizeof(compat_long_t),
@@ -1594,15 +1138,7 @@ static const struct user_regset s390_compat_regsets[] = {
 		.get = s390_fpregs_get,
 		.set = s390_fpregs_set,
 	},
-	{
-		.core_note_type = NT_S390_SYSTEM_CALL,
-		.n = 1,
-		.size = sizeof(compat_uint_t),
-		.align = sizeof(compat_uint_t),
-		.get = s390_system_call_get,
-		.set = s390_system_call_set,
-	},
-	{
+	[REGSET_LAST_BREAK] = {
 		.core_note_type = NT_S390_LAST_BREAK,
 		.n = 1,
 		.size = sizeof(long),
@@ -1610,61 +1146,21 @@ static const struct user_regset s390_compat_regsets[] = {
 		.get = s390_compat_last_break_get,
 		.set = s390_compat_last_break_set,
 	},
-	{
-		.core_note_type = NT_S390_TDB,
+	[REGSET_SYSTEM_CALL] = {
+		.core_note_type = NT_S390_SYSTEM_CALL,
 		.n = 1,
-		.size = 256,
-		.align = 1,
-		.get = s390_tdb_get,
-		.set = s390_tdb_set,
+		.size = sizeof(compat_uint_t),
+		.align = sizeof(compat_uint_t),
+		.get = s390_system_call_get,
+		.set = s390_system_call_set,
 	},
-	{
-		.core_note_type = NT_S390_VXRS_LOW,
-		.n = __NUM_VXRS_LOW,
-		.size = sizeof(__u64),
-		.align = sizeof(__u64),
-		.get = s390_vxrs_low_get,
-		.set = s390_vxrs_low_set,
-	},
-	{
-		.core_note_type = NT_S390_VXRS_HIGH,
-		.n = __NUM_VXRS_HIGH,
-		.size = sizeof(__vector128),
-		.align = sizeof(__vector128),
-		.get = s390_vxrs_high_get,
-		.set = s390_vxrs_high_set,
-	},
-	{
+	[REGSET_GENERAL_EXTENDED] = {
 		.core_note_type = NT_S390_HIGH_GPRS,
 		.n = sizeof(s390_compat_regs_high) / sizeof(compat_long_t),
 		.size = sizeof(compat_long_t),
 		.align = sizeof(compat_long_t),
 		.get = s390_compat_regs_high_get,
 		.set = s390_compat_regs_high_set,
-	},
-	{
-		.core_note_type = NT_S390_GS_CB,
-		.n = sizeof(struct gs_cb) / sizeof(__u64),
-		.size = sizeof(__u64),
-		.align = sizeof(__u64),
-		.get = s390_gs_cb_get,
-		.set = s390_gs_cb_set,
-	},
-	{
-		.core_note_type = NT_S390_GS_BC,
-		.n = sizeof(struct gs_cb) / sizeof(__u64),
-		.size = sizeof(__u64),
-		.align = sizeof(__u64),
-		.get = s390_gs_bc_get,
-		.set = s390_gs_bc_set,
-	},
-	{
-		.core_note_type = NT_S390_RI_CB,
-		.n = sizeof(struct runtime_instr_cb) / sizeof(__u64),
-		.size = sizeof(__u64),
-		.align = sizeof(__u64),
-		.get = s390_runtime_instr_get,
-		.set = s390_runtime_instr_set,
 	},
 };
 
@@ -1703,7 +1199,7 @@ int regs_query_register_offset(const char *name)
 
 	if (!name || *name != 'r')
 		return -EINVAL;
-	if (kstrtoul(name + 1, 10, &offset))
+	if (strict_strtoul(name + 1, 10, &offset))
 		return -EINVAL;
 	if (offset >= NUM_GPRS)
 		return -EINVAL;

@@ -15,8 +15,6 @@
  * or implied.
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -60,8 +58,8 @@ static unsigned int bus_clk;
 static char expect_close;
 static DEFINE_SPINLOCK(mv64x60_wdt_spinlock);
 
-static bool nowayout = WATCHDOG_NOWAYOUT;
-module_param(nowayout, bool, 0);
+static int nowayout = WATCHDOG_NOWAYOUT;
+module_param(nowayout, int, 0);
 MODULE_PARM_DESC(nowayout,
 		"Watchdog cannot be stopped once started (default="
 				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
@@ -102,7 +100,7 @@ static void mv64x60_wdt_handler_enable(void)
 	if (mv64x60_wdt_toggle_wdc(MV64x60_WDC_ENABLED_FALSE,
 				   MV64x60_WDC_ENABLE_SHIFT)) {
 		mv64x60_wdt_service();
-		pr_notice("watchdog activated\n");
+		printk(KERN_NOTICE "mv64x60_wdt: watchdog activated\n");
 	}
 }
 
@@ -110,7 +108,7 @@ static void mv64x60_wdt_handler_disable(void)
 {
 	if (mv64x60_wdt_toggle_wdc(MV64x60_WDC_ENABLED_TRUE,
 				   MV64x60_WDC_ENABLE_SHIFT))
-		pr_notice("watchdog deactivated\n");
+		printk(KERN_NOTICE "mv64x60_wdt: watchdog deactivated\n");
 }
 
 static void mv64x60_wdt_set_timeout(unsigned int timeout)
@@ -141,7 +139,8 @@ static int mv64x60_wdt_release(struct inode *inode, struct file *file)
 	if (expect_close == 42)
 		mv64x60_wdt_handler_disable();
 	else {
-		pr_crit("unexpected close, not stopping timer!\n");
+		printk(KERN_CRIT
+		       "mv64x60_wdt: unexpected close, not stopping timer!\n");
 		mv64x60_wdt_service();
 	}
 	expect_close = 0;
@@ -253,9 +252,9 @@ static struct miscdevice mv64x60_wdt_miscdev = {
 	.fops = &mv64x60_wdt_fops,
 };
 
-static int mv64x60_wdt_probe(struct platform_device *dev)
+static int __devinit mv64x60_wdt_probe(struct platform_device *dev)
 {
-	struct mv64x60_wdt_pdata *pdata = dev_get_platdata(&dev->dev);
+	struct mv64x60_wdt_pdata *pdata = dev->dev.platform_data;
 	struct resource *r;
 	int timeout = 10;
 
@@ -276,7 +275,7 @@ static int mv64x60_wdt_probe(struct platform_device *dev)
 	if (!r)
 		return -ENODEV;
 
-	mv64x60_wdt_regs = devm_ioremap(&dev->dev, r->start, resource_size(r));
+	mv64x60_wdt_regs = ioremap(r->start, resource_size(r));
 	if (mv64x60_wdt_regs == NULL)
 		return -ENOMEM;
 
@@ -287,26 +286,29 @@ static int mv64x60_wdt_probe(struct platform_device *dev)
 	return misc_register(&mv64x60_wdt_miscdev);
 }
 
-static int mv64x60_wdt_remove(struct platform_device *dev)
+static int __devexit mv64x60_wdt_remove(struct platform_device *dev)
 {
 	misc_deregister(&mv64x60_wdt_miscdev);
 
 	mv64x60_wdt_handler_disable();
+
+	iounmap(mv64x60_wdt_regs);
 
 	return 0;
 }
 
 static struct platform_driver mv64x60_wdt_driver = {
 	.probe = mv64x60_wdt_probe,
-	.remove = mv64x60_wdt_remove,
+	.remove = __devexit_p(mv64x60_wdt_remove),
 	.driver = {
+		.owner = THIS_MODULE,
 		.name = MV64x60_WDT_NAME,
 	},
 };
 
 static int __init mv64x60_wdt_init(void)
 {
-	pr_info("MV64x60 watchdog driver\n");
+	printk(KERN_INFO "MV64x60 watchdog driver\n");
 
 	return platform_driver_register(&mv64x60_wdt_driver);
 }
@@ -322,4 +324,5 @@ module_exit(mv64x60_wdt_exit);
 MODULE_AUTHOR("James Chapman <jchapman@katalix.com>");
 MODULE_DESCRIPTION("MV64x60 watchdog driver");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS_MISCDEV(WATCHDOG_MINOR);
 MODULE_ALIAS("platform:" MV64x60_WDT_NAME);

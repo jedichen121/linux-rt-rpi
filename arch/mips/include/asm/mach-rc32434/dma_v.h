@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright 2002 Integrated Device Technology, Inc.
  *		All rights reserved.
@@ -6,7 +5,7 @@
  * DMA register definition.
  *
  * Author : ryan.holmQVist@idt.com
- * Date	  : 20011005
+ * Date   : 20011005
  */
 
 #ifndef _ASM_RC32434_DMA_V_H_
@@ -50,4 +49,4 @@ static inline void rc32434_chain_dma(struct dma_reg *ch, u32 dma_addr)
 	__raw_writel(dma_addr, &ch->dmandptr);
 }
 
-#endif	/* _ASM_RC32434_DMA_V_H_ */
+#endif  /* _ASM_RC32434_DMA_V_H_ */

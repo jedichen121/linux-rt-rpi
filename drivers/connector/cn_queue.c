@@ -1,5 +1,5 @@
 /*
- *	cn_queue.c
+ * 	cn_queue.c
  *
  * 2004+ Copyright (c) Evgeniy Polyakov <zbr@ioremap.net>
  * All rights reserved.
@@ -34,18 +34,17 @@
 static struct cn_callback_entry *
 cn_queue_alloc_callback_entry(struct cn_queue_dev *dev, const char *name,
 			      struct cb_id *id,
-			      void (*callback)(struct cn_msg *,
-					       struct netlink_skb_parms *))
+			      void (*callback)(struct cn_msg *, struct netlink_skb_parms *))
 {
 	struct cn_callback_entry *cbq;
 
 	cbq = kzalloc(sizeof(*cbq), GFP_KERNEL);
 	if (!cbq) {
-		pr_err("Failed to create new callback queue.\n");
+		printk(KERN_ERR "Failed to create new callback queue.\n");
 		return NULL;
 	}
 
-	refcount_set(&cbq->refcnt, 1);
+	atomic_set(&cbq->refcnt, 1);
 
 	atomic_inc(&dev->refcnt);
 	cbq->pdev = dev;
@@ -58,7 +57,7 @@ cn_queue_alloc_callback_entry(struct cn_queue_dev *dev, const char *name,
 
 void cn_queue_release_callback(struct cn_callback_entry *cbq)
 {
-	if (!refcount_dec_and_test(&cbq->refcnt))
+	if (!atomic_dec_and_test(&cbq->refcnt))
 		return;
 
 	atomic_dec(&cbq->pdev->refcnt);
@@ -72,8 +71,7 @@ int cn_cb_equal(struct cb_id *i1, struct cb_id *i2)
 
 int cn_queue_add_callback(struct cn_queue_dev *dev, const char *name,
 			  struct cb_id *id,
-			  void (*callback)(struct cn_msg *,
-					   struct netlink_skb_parms *))
+			  void (*callback)(struct cn_msg *, struct netlink_skb_parms *))
 {
 	struct cn_callback_entry *cbq, *__cbq;
 	int found = 0;
@@ -151,7 +149,7 @@ void cn_queue_free_dev(struct cn_queue_dev *dev)
 	spin_unlock_bh(&dev->queue_lock);
 
 	while (atomic_read(&dev->refcnt)) {
-		pr_info("Waiting for %s to become free: refcnt=%d.\n",
+		printk(KERN_INFO "Waiting for %s to become free: refcnt=%d.\n",
 		       dev->name, atomic_read(&dev->refcnt));
 		msleep(1000);
 	}

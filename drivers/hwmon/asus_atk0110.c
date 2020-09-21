@@ -14,9 +14,12 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/dmi.h>
-#include <linux/jiffies.h>
-#include <linux/err.h>
-#include <linux/acpi.h>
+
+#include <acpi/acpi.h>
+#include <acpi/acpixf.h>
+#include <acpi/acpi_drivers.h>
+#include <acpi/acpi_bus.h>
+
 
 #define ATK_HID "ATK0110"
 
@@ -31,18 +34,11 @@ static const struct dmi_system_id __initconst atk_force_new_if[] = {
 		.matches = {
 			DMI_MATCH(DMI_BOARD_NAME, "SABERTOOTH X58")
 		}
-	}, {
-		/* Old interface reads the same sensor for fan0 and fan1 */
-		.ident = "Asus M5A78L",
-		.matches = {
-			DMI_MATCH(DMI_BOARD_NAME, "M5A78L")
-		}
 	},
 	{ }
 };
 
-/*
- * Minimum time between readings, enforced in order to avoid
+/* Minimum time between readings, enforced in order to avoid
  * hogging the CPU.
  */
 #define CACHE_TIME		HZ
@@ -114,7 +110,7 @@ struct atk_data {
 	acpi_handle rtmp_handle;
 	acpi_handle rvlt_handle;
 	acpi_handle rfan_handle;
-	/* new interface */
+	/* new inteface */
 	acpi_handle enumerate_handle;
 	acpi_handle read_handle;
 	acpi_handle write_handle;
@@ -125,8 +121,6 @@ struct atk_data {
 	int temperature_count;
 	int fan_count;
 	struct list_head sensor_list;
-	struct attribute_group attr_group;
-	const struct attribute_group *attr_groups[2];
 
 	struct {
 		struct dentry *root;
@@ -167,8 +161,7 @@ struct atk_sensor_data {
 	char const *acpi_name;
 };
 
-/*
- * Return buffer format:
+/* Return buffer format:
  * [0-3] "value" is valid flag
  * [4-7] value
  * [8- ] unknown stuff on newer mobos
@@ -187,9 +180,10 @@ struct atk_acpi_input_buf {
 };
 
 static int atk_add(struct acpi_device *device);
-static int atk_remove(struct acpi_device *device);
+static int atk_remove(struct acpi_device *device, int type);
 static void atk_print_sensor(struct atk_data *data, union acpi_object *obj);
 static int atk_read_value(struct atk_sensor_data *sensor, u64 *value);
+static void atk_free_sensors(struct atk_data *data);
 
 static struct acpi_driver atk_driver = {
 	.name	= ATK_HID,
@@ -263,6 +257,14 @@ static ssize_t atk_limit2_show(struct device *dev,
 	return sprintf(buf, "%lld\n", value);
 }
 
+static ssize_t atk_name_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "atk0110\n");
+}
+static struct device_attribute atk_name_attr =
+		__ATTR(name, 0444, atk_name_show, NULL);
+
 static void atk_init_attribute(struct device_attribute *attr, char *name,
 		sysfs_show_func show)
 {
@@ -308,8 +310,7 @@ static union acpi_object *atk_get_pack_member(struct atk_data *data,
 }
 
 
-/*
- * New package format is:
+/* New package format is:
  * - flag (int)
  *	class - used for de-muxing the request to the correct GITn
  *	type (volt, temp, fan)
@@ -612,8 +613,7 @@ static int atk_read_value_new(struct atk_sensor_data *sensor, u64 *value)
 
 	buf = (struct atk_acpi_ret_buffer *)obj->buffer.pointer;
 	if (buf->flags == 0) {
-		/*
-		 * The reading is not valid, possible causes:
+		/* The reading is not valid, possible causes:
 		 * - sensor failure
 		 * - enumeration was FUBAR (and we didn't notice)
 		 */
@@ -638,9 +638,6 @@ static int atk_read_value(struct atk_sensor_data *sensor, u64 *value)
 			err = atk_read_value_old(sensor, value);
 		else
 			err = atk_read_value_new(sensor, value);
-
-		if (err)
-			return err;
 
 		sensor->is_valid = true;
 		sensor->last_updated = jiffies;
@@ -684,7 +681,7 @@ static int atk_debugfs_gitm_get(void *p, u64 *val)
 DEFINE_SIMPLE_ATTRIBUTE(atk_debugfs_gitm,
 			atk_debugfs_gitm_get,
 			NULL,
-			"0x%08llx\n");
+			"0x%08llx\n")
 
 static int atk_acpi_print(char *buf, size_t sz, union acpi_object *obj)
 {
@@ -905,13 +902,15 @@ static int atk_add_sensor(struct atk_data *data, union acpi_object *obj)
 	limit1 = atk_get_pack_member(data, obj, HWMON_PACK_LIMIT1);
 	limit2 = atk_get_pack_member(data, obj, HWMON_PACK_LIMIT2);
 
-	sensor = devm_kzalloc(dev, sizeof(*sensor), GFP_KERNEL);
+	sensor = kzalloc(sizeof(*sensor), GFP_KERNEL);
 	if (!sensor)
 		return -ENOMEM;
 
-	sensor->acpi_name = devm_kstrdup(dev, name->string.pointer, GFP_KERNEL);
-	if (!sensor->acpi_name)
-		return -ENOMEM;
+	sensor->acpi_name = kstrdup(name->string.pointer, GFP_KERNEL);
+	if (!sensor->acpi_name) {
+		err = -ENOMEM;
+		goto out;
+	}
 
 	INIT_LIST_HEAD(&sensor->list);
 	sensor->type = type;
@@ -952,6 +951,10 @@ static int atk_add_sensor(struct atk_data *data, union acpi_object *obj)
 	(*num)++;
 
 	return 1;
+out:
+	kfree(sensor->acpi_name);
+	kfree(sensor);
+	return err;
 }
 
 static int atk_enumerate_old_hwmon(struct atk_data *data)
@@ -992,7 +995,8 @@ static int atk_enumerate_old_hwmon(struct atk_data *data)
 		dev_warn(dev, METHOD_OLD_ENUM_TMP ": ACPI exception: %s\n",
 				acpi_format_exception(status));
 
-		return -ENODEV;
+		ret = -ENODEV;
+		goto cleanup;
 	}
 
 	pack = buf.pointer;
@@ -1013,7 +1017,8 @@ static int atk_enumerate_old_hwmon(struct atk_data *data)
 		dev_warn(dev, METHOD_OLD_ENUM_FAN ": ACPI exception: %s\n",
 				acpi_format_exception(status));
 
-		return -ENODEV;
+		ret = -ENODEV;
+		goto cleanup;
 	}
 
 	pack = buf.pointer;
@@ -1027,6 +1032,9 @@ static int atk_enumerate_old_hwmon(struct atk_data *data)
 	ACPI_FREE(buf.pointer);
 
 	return count;
+cleanup:
+	atk_free_sensors(data);
+	return ret;
 }
 
 static int atk_ec_present(struct atk_data *data)
@@ -1176,44 +1184,76 @@ static int atk_enumerate_new_hwmon(struct atk_data *data)
 	return err;
 }
 
-static int atk_init_attribute_groups(struct atk_data *data)
+static int atk_create_files(struct atk_data *data)
 {
-	struct device *dev = &data->acpi_dev->dev;
 	struct atk_sensor_data *s;
-	struct attribute **attrs;
-	int i = 0;
-	int len = (data->voltage_count + data->temperature_count
-			+ data->fan_count) * 4 + 1;
-
-	attrs = devm_kcalloc(dev, len, sizeof(struct attribute *), GFP_KERNEL);
-	if (!attrs)
-		return -ENOMEM;
+	int err;
 
 	list_for_each_entry(s, &data->sensor_list, list) {
-		attrs[i++] = &s->input_attr.attr;
-		attrs[i++] = &s->label_attr.attr;
-		attrs[i++] = &s->limit1_attr.attr;
-		attrs[i++] = &s->limit2_attr.attr;
+		err = device_create_file(data->hwmon_dev, &s->input_attr);
+		if (err)
+			return err;
+		err = device_create_file(data->hwmon_dev, &s->label_attr);
+		if (err)
+			return err;
+		err = device_create_file(data->hwmon_dev, &s->limit1_attr);
+		if (err)
+			return err;
+		err = device_create_file(data->hwmon_dev, &s->limit2_attr);
+		if (err)
+			return err;
 	}
 
-	data->attr_group.attrs = attrs;
-	data->attr_groups[0] = &data->attr_group;
+	err = device_create_file(data->hwmon_dev, &atk_name_attr);
 
-	return 0;
+	return err;
+}
+
+static void atk_remove_files(struct atk_data *data)
+{
+	struct atk_sensor_data *s;
+
+	list_for_each_entry(s, &data->sensor_list, list) {
+		device_remove_file(data->hwmon_dev, &s->input_attr);
+		device_remove_file(data->hwmon_dev, &s->label_attr);
+		device_remove_file(data->hwmon_dev, &s->limit1_attr);
+		device_remove_file(data->hwmon_dev, &s->limit2_attr);
+	}
+	device_remove_file(data->hwmon_dev, &atk_name_attr);
+}
+
+static void atk_free_sensors(struct atk_data *data)
+{
+	struct list_head *head = &data->sensor_list;
+	struct atk_sensor_data *s, *tmp;
+
+	list_for_each_entry_safe(s, tmp, head, list) {
+		kfree(s->acpi_name);
+		kfree(s);
+	}
 }
 
 static int atk_register_hwmon(struct atk_data *data)
 {
 	struct device *dev = &data->acpi_dev->dev;
+	int err;
 
 	dev_dbg(dev, "registering hwmon device\n");
-	data->hwmon_dev = hwmon_device_register_with_groups(dev, "atk0110",
-							    data,
-							    data->attr_groups);
+	data->hwmon_dev = hwmon_device_register(dev);
 	if (IS_ERR(data->hwmon_dev))
 		return PTR_ERR(data->hwmon_dev);
 
+	dev_dbg(dev, "populating sysfs directory\n");
+	err = atk_create_files(data);
+	if (err)
+		goto remove;
+
 	return 0;
+remove:
+	/* Cleanup the registered files */
+	atk_remove_files(data);
+	hwmon_device_unregister(data->hwmon_dev);
+	return err;
 }
 
 static int atk_probe_if(struct atk_data *data)
@@ -1271,16 +1311,14 @@ static int atk_probe_if(struct atk_data *data)
 		dev_dbg(dev, "method " METHOD_WRITE " not found: %s\n",
 				 acpi_format_exception(status));
 
-	/*
-	 * Check for hwmon methods: first check "old" style methods; note that
+	/* Check for hwmon methods: first check "old" style methods; note that
 	 * both may be present: in this case we stick to the old interface;
 	 * analysis of multiple DSDTs indicates that when both interfaces
 	 * are present the new one (GGRP/GITM) is not functional.
 	 */
 	if (new_if)
 		dev_info(dev, "Overriding interface detection\n");
-	if (data->rtmp_handle &&
-			data->rvlt_handle && data->rfan_handle && !new_if)
+	if (data->rtmp_handle && data->rvlt_handle && data->rfan_handle && !new_if)
 		data->old_interface = true;
 	else if (data->enumerate_handle && data->read_handle &&
 			data->write_handle)
@@ -1301,7 +1339,7 @@ static int atk_add(struct acpi_device *device)
 
 	dev_dbg(&device->dev, "adding...\n");
 
-	data = devm_kzalloc(&device->dev, sizeof(*data), GFP_KERNEL);
+	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
@@ -1348,24 +1386,24 @@ static int atk_add(struct acpi_device *device)
 		goto out;
 	}
 
-	err = atk_init_attribute_groups(data);
-	if (err)
-		goto out;
 	err = atk_register_hwmon(data);
 	if (err)
-		goto out;
+		goto cleanup;
 
 	atk_debugfs_init(data);
 
 	device->driver_data = data;
 	return 0;
+cleanup:
+	atk_free_sensors(data);
 out:
 	if (data->disable_ec)
 		atk_ec_ctl(data, 0);
+	kfree(data);
 	return err;
 }
 
-static int atk_remove(struct acpi_device *device)
+static int atk_remove(struct acpi_device *device, int type)
 {
 	struct atk_data *data = device->driver_data;
 	dev_dbg(&device->dev, "removing...\n");
@@ -1374,12 +1412,16 @@ static int atk_remove(struct acpi_device *device)
 
 	atk_debugfs_cleanup(data);
 
+	atk_remove_files(data);
+	atk_free_sensors(data);
 	hwmon_device_unregister(data->hwmon_dev);
 
 	if (data->disable_ec) {
 		if (atk_ec_ctl(data, 0))
 			dev_err(&device->dev, "Failed to disable EC\n");
 	}
+
+	kfree(data);
 
 	return 0;
 }

@@ -21,13 +21,12 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/of_platform.h>
-#include <linux/atomic.h>
 
 #include <asm/errno.h>
 #include <asm/topology.h>
 #include <asm/pci-bridge.h>
 #include <asm/ppc-pci.h>
-#include <asm/eeh.h>
+#include <linux/atomic.h>
 
 #ifdef CONFIG_PPC_OF_PLATFORM_PCI
 
@@ -37,7 +36,7 @@
  * lacking some bits needed here.
  */
 
-static int of_pci_phb_probe(struct platform_device *dev)
+static int __devinit of_pci_phb_probe(struct platform_device *dev)
 {
 	struct pci_controller *phb;
 
@@ -45,7 +44,7 @@ static int of_pci_phb_probe(struct platform_device *dev)
 	if (ppc_md.pci_setup_phb == NULL)
 		return -ENODEV;
 
-	pr_info("Setting up PCI bus %pOF\n", dev->dev.of_node);
+	pr_info("Setting up PCI bus %s\n", dev->dev.of_node->full_name);
 
 	/* Alloc and setup PHB data structure */
 	phb = pcibios_alloc_controller(dev->dev.of_node);
@@ -67,12 +66,11 @@ static int of_pci_phb_probe(struct platform_device *dev)
 	/* Init pci_dn data structures */
 	pci_devs_phb_init_dynamic(phb);
 
-	/* Create EEH devices for the PHB */
-	eeh_dev_phb_init_dynamic(phb);
-
 	/* Register devices with EEH */
+#ifdef CONFIG_EEH
 	if (dev->dev.of_node->child)
-		eeh_add_device_tree_early(PCI_DN(dev->dev.of_node));
+		eeh_add_device_tree_early(dev->dev.of_node);
+#endif /* CONFIG_EEH */
 
 	/* Scan the bus */
 	pcibios_scan_phb(phb);
@@ -80,24 +78,23 @@ static int of_pci_phb_probe(struct platform_device *dev)
 		return -ENXIO;
 
 	/* Claim resources. This might need some rework as well depending
-	 * whether we are doing probe-only or not, like assigning unassigned
+	 * wether we are doing probe-only or not, like assigning unassigned
 	 * resources etc...
 	 */
 	pcibios_claim_one_bus(phb->bus);
 
 	/* Finish EEH setup */
+#ifdef CONFIG_EEH
 	eeh_add_device_tree_late(phb->bus);
+#endif
 
 	/* Add probed PCI devices to the device model */
 	pci_bus_add_devices(phb->bus);
 
-	/* sysfs files should only be added after devices are added */
-	eeh_add_sysfs_files(phb->bus);
-
 	return 0;
 }
 
-static const struct of_device_id of_pci_phb_ids[] = {
+static struct of_device_id of_pci_phb_ids[] = {
 	{ .type = "pci", },
 	{ .type = "pcix", },
 	{ .type = "pcie", },
@@ -110,10 +107,16 @@ static struct platform_driver of_pci_phb_driver = {
 	.probe = of_pci_phb_probe,
 	.driver = {
 		.name = "of-pci",
+		.owner = THIS_MODULE,
 		.of_match_table = of_pci_phb_ids,
 	},
 };
 
-builtin_platform_driver(of_pci_phb_driver);
+static __init int of_pci_phb_init(void)
+{
+	return platform_driver_register(&of_pci_phb_driver);
+}
+
+device_initcall(of_pci_phb_init);
 
 #endif /* CONFIG_PPC_OF_PLATFORM_PCI */

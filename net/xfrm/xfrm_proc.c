@@ -43,37 +43,43 @@ static const struct snmp_mib xfrm_mib_list[] = {
 	SNMP_MIB_ITEM("XfrmOutPolDead", LINUX_MIB_XFRMOUTPOLDEAD),
 	SNMP_MIB_ITEM("XfrmOutPolError", LINUX_MIB_XFRMOUTPOLERROR),
 	SNMP_MIB_ITEM("XfrmFwdHdrError", LINUX_MIB_XFRMFWDHDRERROR),
-	SNMP_MIB_ITEM("XfrmOutStateInvalid", LINUX_MIB_XFRMOUTSTATEINVALID),
-	SNMP_MIB_ITEM("XfrmAcquireError", LINUX_MIB_XFRMACQUIREERROR),
 	SNMP_MIB_SENTINEL
 };
 
 static int xfrm_statistics_seq_show(struct seq_file *seq, void *v)
 {
-	unsigned long buff[LINUX_MIB_XFRMMAX];
 	struct net *net = seq->private;
 	int i;
-
-	memset(buff, 0, sizeof(unsigned long) * LINUX_MIB_XFRMMAX);
-
-	snmp_get_cpu_field_batch(buff, xfrm_mib_list,
-				 net->mib.xfrm_statistics);
-	for (i = 0; xfrm_mib_list[i].name; i++)
+	for (i=0; xfrm_mib_list[i].name; i++)
 		seq_printf(seq, "%-24s\t%lu\n", xfrm_mib_list[i].name,
-						buff[i]);
-
+			   snmp_fold_field((void __percpu **)
+					   net->mib.xfrm_statistics,
+					   xfrm_mib_list[i].entry));
 	return 0;
 }
 
+static int xfrm_statistics_seq_open(struct inode *inode, struct file *file)
+{
+	return single_open_net(inode, file, xfrm_statistics_seq_show);
+}
+
+static const struct file_operations xfrm_statistics_seq_fops = {
+	.owner	 = THIS_MODULE,
+	.open	 = xfrm_statistics_seq_open,
+	.read	 = seq_read,
+	.llseek	 = seq_lseek,
+	.release = single_release_net,
+};
+
 int __net_init xfrm_proc_init(struct net *net)
 {
-	if (!proc_create_net_single("xfrm_stat", 0444, net->proc_net,
-			 xfrm_statistics_seq_show, NULL))
+	if (!proc_net_fops_create(net, "xfrm_stat", S_IRUGO,
+				  &xfrm_statistics_seq_fops))
 		return -ENOMEM;
 	return 0;
 }
 
 void xfrm_proc_fini(struct net *net)
 {
-	remove_proc_entry("xfrm_stat", net->proc_net);
+	proc_net_remove(net, "xfrm_stat");
 }

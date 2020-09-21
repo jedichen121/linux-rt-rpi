@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * File:	mca_asm.h
  * Purpose:	Machine check handling specific defines
@@ -15,8 +14,6 @@
  */
 #ifndef _ASM_IA64_MCA_ASM_H
 #define _ASM_IA64_MCA_ASM_H
-
-#include <asm/percpu.h>
 
 #define PSR_IC		13
 #define PSR_I		14

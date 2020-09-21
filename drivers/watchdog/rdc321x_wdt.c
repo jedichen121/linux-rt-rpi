@@ -27,6 +27,7 @@
 #include <linux/errno.h>
 #include <linux/miscdevice.h>
 #include <linux/fs.h>
+#include <linux/init.h>
 #include <linux/ioport.h>
 #include <linux/timer.h>
 #include <linux/completion.h>
@@ -67,7 +68,7 @@ static struct {
 
 /* generic helper functions */
 
-static void rdc321x_wdt_trigger(struct timer_list *unused)
+static void rdc321x_wdt_trigger(unsigned long unused)
 {
 	unsigned long flags;
 	u32 val;
@@ -224,13 +225,13 @@ static struct miscdevice rdc321x_wdt_misc = {
 	.fops	= &rdc321x_wdt_fops,
 };
 
-static int rdc321x_wdt_probe(struct platform_device *pdev)
+static int __devinit rdc321x_wdt_probe(struct platform_device *pdev)
 {
 	int err;
 	struct resource *r;
 	struct rdc321x_wdt_pdata *pdata;
 
-	pdata = dev_get_platdata(&pdev->dev);
+	pdata = pdev->dev.platform_data;
 	if (!pdata) {
 		dev_err(&pdev->dev, "no platform data supplied\n");
 		return -ENODEV;
@@ -262,7 +263,7 @@ static int rdc321x_wdt_probe(struct platform_device *pdev)
 
 	clear_bit(0, &rdc321x_wdt_device.inuse);
 
-	timer_setup(&rdc321x_wdt_device.timer, rdc321x_wdt_trigger, 0);
+	setup_timer(&rdc321x_wdt_device.timer, rdc321x_wdt_trigger, 0);
 
 	rdc321x_wdt_device.default_ticks = ticks;
 
@@ -271,7 +272,7 @@ static int rdc321x_wdt_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int rdc321x_wdt_remove(struct platform_device *pdev)
+static int __devexit rdc321x_wdt_remove(struct platform_device *pdev)
 {
 	if (rdc321x_wdt_device.queue) {
 		rdc321x_wdt_device.queue = 0;
@@ -285,14 +286,27 @@ static int rdc321x_wdt_remove(struct platform_device *pdev)
 
 static struct platform_driver rdc321x_wdt_driver = {
 	.probe = rdc321x_wdt_probe,
-	.remove = rdc321x_wdt_remove,
+	.remove = __devexit_p(rdc321x_wdt_remove),
 	.driver = {
+		.owner = THIS_MODULE,
 		.name = "rdc321x-wdt",
 	},
 };
 
-module_platform_driver(rdc321x_wdt_driver);
+static int __init rdc321x_wdt_init(void)
+{
+	return platform_driver_register(&rdc321x_wdt_driver);
+}
+
+static void __exit rdc321x_wdt_exit(void)
+{
+	platform_driver_unregister(&rdc321x_wdt_driver);
+}
+
+module_init(rdc321x_wdt_init);
+module_exit(rdc321x_wdt_exit);
 
 MODULE_AUTHOR("Florian Fainelli <florian@openwrt.org>");
 MODULE_DESCRIPTION("RDC321x watchdog driver");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS_MISCDEV(WATCHDOG_MINOR);

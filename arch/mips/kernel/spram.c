@@ -8,12 +8,14 @@
  *
  * Copyright (C) 2007, 2008 MIPS Technologies, Inc.
  */
+#include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/ptrace.h>
 #include <linux/stddef.h>
 
 #include <asm/fpu.h>
 #include <asm/mipsregs.h>
+#include <asm/system.h>
 #include <asm/r4kcache.h>
 #include <asm/hazards.h>
 
@@ -36,7 +38,7 @@
 /*
  * Different semantics to the set_c0_* function built by __BUILD_SET_C0
  */
-static unsigned int bis_c0_errctl(unsigned int set)
+static __cpuinit unsigned int bis_c0_errctl(unsigned int set)
 {
 	unsigned int res;
 	res = read_c0_errctl();
@@ -44,7 +46,7 @@ static unsigned int bis_c0_errctl(unsigned int set)
 	return res;
 }
 
-static void ispram_store_tag(unsigned int offset, unsigned int data)
+static __cpuinit void ispram_store_tag(unsigned int offset, unsigned int data)
 {
 	unsigned int errctl;
 
@@ -63,7 +65,7 @@ static void ispram_store_tag(unsigned int offset, unsigned int data)
 }
 
 
-static unsigned int ispram_load_tag(unsigned int offset)
+static __cpuinit unsigned int ispram_load_tag(unsigned int offset)
 {
 	unsigned int data;
 	unsigned int errctl;
@@ -81,7 +83,7 @@ static unsigned int ispram_load_tag(unsigned int offset)
 	return data;
 }
 
-static void dspram_store_tag(unsigned int offset, unsigned int data)
+static __cpuinit void dspram_store_tag(unsigned int offset, unsigned int data)
 {
 	unsigned int errctl;
 
@@ -97,7 +99,7 @@ static void dspram_store_tag(unsigned int offset, unsigned int data)
 }
 
 
-static unsigned int dspram_load_tag(unsigned int offset)
+static __cpuinit unsigned int dspram_load_tag(unsigned int offset)
 {
 	unsigned int data;
 	unsigned int errctl;
@@ -114,7 +116,7 @@ static unsigned int dspram_load_tag(unsigned int offset)
 	return data;
 }
 
-static void probe_spram(char *type,
+static __cpuinit void probe_spram(char *type,
 	    unsigned int base,
 	    unsigned int (*read)(unsigned int),
 	    void (*write)(unsigned int, unsigned int))
@@ -195,22 +197,16 @@ static void probe_spram(char *type,
 		offset += 2 * SPRAM_TAG_STRIDE;
 	}
 }
-void spram_config(void)
+void __cpuinit spram_config(void)
 {
+	struct cpuinfo_mips *c = &current_cpu_data;
 	unsigned int config0;
 
-	switch (current_cpu_type()) {
+	switch (c->cputype) {
 	case CPU_24K:
 	case CPU_34K:
 	case CPU_74K:
 	case CPU_1004K:
-	case CPU_1074K:
-	case CPU_INTERAPTIV:
-	case CPU_PROAPTIV:
-	case CPU_P5600:
-	case CPU_QEMU_GENERIC:
-	case CPU_I6400:
-	case CPU_P6600:
 		config0 = read_c0_config();
 		/* FIXME: addresses are Malta specific */
 		if (config0 & (1<<24)) {

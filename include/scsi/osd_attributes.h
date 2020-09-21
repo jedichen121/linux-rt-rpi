@@ -1,8 +1,7 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __OSD_ATTRIBUTES_H__
 #define __OSD_ATTRIBUTES_H__
 
-#include <scsi/osd_protocol.h>
+#include "osd_protocol.h"
 
 /*
  * Contains types and constants that define attribute pages and attribute

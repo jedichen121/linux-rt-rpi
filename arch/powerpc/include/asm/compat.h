@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_POWERPC_COMPAT_H
 #define _ASM_POWERPC_COMPAT_H
 #ifdef __KERNEL__
@@ -9,14 +8,11 @@
 #include <linux/sched.h>
 
 #define COMPAT_USER_HZ		100
-#ifdef __BIG_ENDIAN__
 #define COMPAT_UTS_MACHINE	"ppc\0\0"
-#else
-#define COMPAT_UTS_MACHINE	"ppcle\0\0"
-#endif
 
 typedef u32		compat_size_t;
 typedef s32		compat_ssize_t;
+typedef s32		compat_time_t;
 typedef s32		compat_clock_t;
 typedef s32		compat_pid_t;
 typedef u32		__compat_uid_t;
@@ -42,7 +38,16 @@ typedef s64		compat_s64;
 typedef u32		compat_uint_t;
 typedef u32		compat_ulong_t;
 typedef u64		compat_u64;
-typedef u32		compat_uptr_t;
+
+struct compat_timespec {
+	compat_time_t	tv_sec;
+	s32		tv_nsec;
+};
+
+struct compat_timeval {
+	compat_time_t	tv_sec;
+	s32		tv_usec;
+};
 
 struct compat_stat {
 	compat_dev_t	st_dev;
@@ -99,6 +104,7 @@ struct compat_statfs {
 	int		f_spare[4];
 };
 
+#define COMPAT_RLIM_OLD_INFINITY	0x7fffffff
 #define COMPAT_RLIM_INFINITY		0xffffffff
 
 typedef u32		compat_old_sigset_t;
@@ -109,6 +115,7 @@ typedef u32		compat_old_sigset_t;
 typedef u32		compat_sigset_word;
 
 #define COMPAT_OFF_T_MAX	0x7fffffff
+#define COMPAT_LOFF_T_MAX	0x7fffffffffffffffL
 
 /*
  * A pointer passed in from user mode. This should not
@@ -116,6 +123,7 @@ typedef u32		compat_sigset_word;
  * as pointers because the syscall entry code will have
  * appropriately converted them already.
  */
+typedef	u32		compat_uptr_t;
 
 static inline void __user *compat_ptr(compat_uptr_t uptr)
 {
@@ -134,11 +142,10 @@ static inline void __user *arch_compat_alloc_user_space(long len)
 
 	/*
 	 * We can't access below the stack pointer in the 32bit ABI and
-	 * can access 288 bytes in the 64bit big-endian ABI,
-	 * or 512 bytes with the new ELFv2 little-endian ABI.
+	 * can access 288 bytes in the 64bit ABI
 	 */
 	if (!is_32bit_task())
-		usp -= USER_REDZONE_SIZE;
+		usp -= 288;
 
 	return (void __user *) (usp - len);
 }
@@ -162,10 +169,10 @@ struct compat_ipc64_perm {
 
 struct compat_semid64_ds {
 	struct compat_ipc64_perm sem_perm;
-	unsigned int sem_otime_high;
-	unsigned int sem_otime;
-	unsigned int sem_ctime_high;
-	unsigned int sem_ctime;
+	unsigned int __unused1;
+	compat_time_t sem_otime;
+	unsigned int __unused2;
+	compat_time_t sem_ctime;
 	compat_ulong_t sem_nsems;
 	compat_ulong_t __unused3;
 	compat_ulong_t __unused4;
@@ -173,12 +180,12 @@ struct compat_semid64_ds {
 
 struct compat_msqid64_ds {
 	struct compat_ipc64_perm msg_perm;
-	unsigned int msg_stime_high;
-	unsigned int msg_stime;
-	unsigned int msg_rtime_high;
-	unsigned int msg_rtime;
-	unsigned int msg_ctime_high;
-	unsigned int msg_ctime;
+	unsigned int __unused1;
+	compat_time_t msg_stime;
+	unsigned int __unused2;
+	compat_time_t msg_rtime;
+	unsigned int __unused3;
+	compat_time_t msg_ctime;
 	compat_ulong_t msg_cbytes;
 	compat_ulong_t msg_qnum;
 	compat_ulong_t msg_qbytes;
@@ -190,12 +197,12 @@ struct compat_msqid64_ds {
 
 struct compat_shmid64_ds {
 	struct compat_ipc64_perm shm_perm;
-	unsigned int shm_atime_high;
-	unsigned int shm_atime;
-	unsigned int shm_dtime_high;
-	unsigned int shm_dtime;
-	unsigned int shm_ctime_high;
-	unsigned int shm_ctime;
+	unsigned int __unused1;
+	compat_time_t shm_atime;
+	unsigned int __unused2;
+	compat_time_t shm_dtime;
+	unsigned int __unused3;
+	compat_time_t shm_ctime;
 	unsigned int __unused4;
 	compat_size_t shm_segsz;
 	compat_pid_t shm_cpid;

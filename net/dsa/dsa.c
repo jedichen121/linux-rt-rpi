@@ -1,7 +1,6 @@
 /*
  * net/dsa/dsa.c - Hardware switch handling
  * Copyright (c) 2008-2009 Marvell Semiconductor
- * Copyright (c) 2013 Florian Fainelli <florian@openwrt.org>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -9,81 +8,226 @@
  * (at your option) any later version.
  */
 
-#include <linux/device.h>
 #include <linux/list.h>
+#include <linux/netdevice.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/module.h>
-#include <linux/notifier.h>
-#include <linux/of.h>
-#include <linux/of_mdio.h>
-#include <linux/of_platform.h>
-#include <linux/of_net.h>
-#include <linux/netdevice.h>
-#include <linux/sysfs.h>
-#include <linux/phy_fixed.h>
-#include <linux/ptp_classify.h>
-#include <linux/etherdevice.h>
-
+#include <net/dsa.h>
 #include "dsa_priv.h"
 
-static struct sk_buff *dsa_slave_notag_xmit(struct sk_buff *skb,
-					    struct net_device *dev)
+char dsa_driver_version[] = "0.1";
+
+
+/* switch driver registration ***********************************************/
+static DEFINE_MUTEX(dsa_switch_drivers_mutex);
+static LIST_HEAD(dsa_switch_drivers);
+
+void register_switch_driver(struct dsa_switch_driver *drv)
 {
-	/* Just return the original SKB */
-	return skb;
+	mutex_lock(&dsa_switch_drivers_mutex);
+	list_add_tail(&drv->list, &dsa_switch_drivers);
+	mutex_unlock(&dsa_switch_drivers_mutex);
+}
+EXPORT_SYMBOL_GPL(register_switch_driver);
+
+void unregister_switch_driver(struct dsa_switch_driver *drv)
+{
+	mutex_lock(&dsa_switch_drivers_mutex);
+	list_del_init(&drv->list);
+	mutex_unlock(&dsa_switch_drivers_mutex);
+}
+EXPORT_SYMBOL_GPL(unregister_switch_driver);
+
+static struct dsa_switch_driver *
+dsa_switch_probe(struct mii_bus *bus, int sw_addr, char **_name)
+{
+	struct dsa_switch_driver *ret;
+	struct list_head *list;
+	char *name;
+
+	ret = NULL;
+	name = NULL;
+
+	mutex_lock(&dsa_switch_drivers_mutex);
+	list_for_each(list, &dsa_switch_drivers) {
+		struct dsa_switch_driver *drv;
+
+		drv = list_entry(list, struct dsa_switch_driver, list);
+
+		name = drv->probe(bus, sw_addr);
+		if (name != NULL) {
+			ret = drv;
+			break;
+		}
+	}
+	mutex_unlock(&dsa_switch_drivers_mutex);
+
+	*_name = name;
+
+	return ret;
 }
 
-static const struct dsa_device_ops none_ops = {
-	.xmit	= dsa_slave_notag_xmit,
-	.rcv	= NULL,
-};
 
-const struct dsa_device_ops *dsa_device_ops[DSA_TAG_LAST] = {
-#ifdef CONFIG_NET_DSA_TAG_BRCM
-	[DSA_TAG_PROTO_BRCM] = &brcm_netdev_ops,
-#endif
-#ifdef CONFIG_NET_DSA_TAG_BRCM_PREPEND
-	[DSA_TAG_PROTO_BRCM_PREPEND] = &brcm_prepend_netdev_ops,
-#endif
-#ifdef CONFIG_NET_DSA_TAG_DSA
-	[DSA_TAG_PROTO_DSA] = &dsa_netdev_ops,
-#endif
-#ifdef CONFIG_NET_DSA_TAG_EDSA
-	[DSA_TAG_PROTO_EDSA] = &edsa_netdev_ops,
-#endif
-#ifdef CONFIG_NET_DSA_TAG_KSZ
-	[DSA_TAG_PROTO_KSZ] = &ksz_netdev_ops,
-#endif
-#ifdef CONFIG_NET_DSA_TAG_LAN9303
-	[DSA_TAG_PROTO_LAN9303] = &lan9303_netdev_ops,
-#endif
-#ifdef CONFIG_NET_DSA_TAG_MTK
-	[DSA_TAG_PROTO_MTK] = &mtk_netdev_ops,
-#endif
-#ifdef CONFIG_NET_DSA_TAG_QCA
-	[DSA_TAG_PROTO_QCA] = &qca_netdev_ops,
-#endif
-#ifdef CONFIG_NET_DSA_TAG_TRAILER
-	[DSA_TAG_PROTO_TRAILER] = &trailer_netdev_ops,
-#endif
-	[DSA_TAG_PROTO_NONE] = &none_ops,
-};
-
-const struct dsa_device_ops *dsa_resolve_tag_protocol(int tag_protocol)
+/* basic switch operations **************************************************/
+static struct dsa_switch *
+dsa_switch_setup(struct dsa_switch_tree *dst, int index,
+		 struct device *parent, struct mii_bus *bus)
 {
-	const struct dsa_device_ops *ops;
+	struct dsa_chip_data *pd = dst->pd->chip + index;
+	struct dsa_switch_driver *drv;
+	struct dsa_switch *ds;
+	int ret;
+	char *name;
+	int i;
 
-	if (tag_protocol >= DSA_TAG_LAST)
+	/*
+	 * Probe for switch model.
+	 */
+	drv = dsa_switch_probe(bus, pd->sw_addr, &name);
+	if (drv == NULL) {
+		printk(KERN_ERR "%s[%d]: could not detect attached switch\n",
+		       dst->master_netdev->name, index);
 		return ERR_PTR(-EINVAL);
-	ops = dsa_device_ops[tag_protocol];
+	}
+	printk(KERN_INFO "%s[%d]: detected a %s switch\n",
+		dst->master_netdev->name, index, name);
 
-	if (!ops)
-		return ERR_PTR(-ENOPROTOOPT);
 
-	return ops;
+	/*
+	 * Allocate and initialise switch state.
+	 */
+	ds = kzalloc(sizeof(*ds) + drv->priv_size, GFP_KERNEL);
+	if (ds == NULL)
+		return ERR_PTR(-ENOMEM);
+
+	ds->dst = dst;
+	ds->index = index;
+	ds->pd = dst->pd->chip + index;
+	ds->drv = drv;
+	ds->master_mii_bus = bus;
+
+
+	/*
+	 * Validate supplied switch configuration.
+	 */
+	for (i = 0; i < DSA_MAX_PORTS; i++) {
+		char *name;
+
+		name = pd->port_names[i];
+		if (name == NULL)
+			continue;
+
+		if (!strcmp(name, "cpu")) {
+			if (dst->cpu_switch != -1) {
+				printk(KERN_ERR "multiple cpu ports?!\n");
+				ret = -EINVAL;
+				goto out;
+			}
+			dst->cpu_switch = index;
+			dst->cpu_port = i;
+		} else if (!strcmp(name, "dsa")) {
+			ds->dsa_port_mask |= 1 << i;
+		} else {
+			ds->phys_port_mask |= 1 << i;
+		}
+	}
+
+
+	/*
+	 * If the CPU connects to this switch, set the switch tree
+	 * tagging protocol to the preferred tagging format of this
+	 * switch.
+	 */
+	if (ds->dst->cpu_switch == index)
+		ds->dst->tag_protocol = drv->tag_protocol;
+
+
+	/*
+	 * Do basic register setup.
+	 */
+	ret = drv->setup(ds);
+	if (ret < 0)
+		goto out;
+
+	ret = drv->set_addr(ds, dst->master_netdev->dev_addr);
+	if (ret < 0)
+		goto out;
+
+	ds->slave_mii_bus = mdiobus_alloc();
+	if (ds->slave_mii_bus == NULL) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	dsa_slave_mii_bus_init(ds);
+
+	ret = mdiobus_register(ds->slave_mii_bus);
+	if (ret < 0)
+		goto out_free;
+
+
+	/*
+	 * Create network devices for physical switch ports.
+	 */
+	for (i = 0; i < DSA_MAX_PORTS; i++) {
+		struct net_device *slave_dev;
+
+		if (!(ds->phys_port_mask & (1 << i)))
+			continue;
+
+		slave_dev = dsa_slave_create(ds, parent, i, pd->port_names[i]);
+		if (slave_dev == NULL) {
+			printk(KERN_ERR "%s[%d]: can't create dsa "
+			       "slave device for port %d(%s)\n",
+			       dst->master_netdev->name,
+			       index, i, pd->port_names[i]);
+			continue;
+		}
+
+		ds->ports[i] = slave_dev;
+	}
+
+	return ds;
+
+out_free:
+	mdiobus_free(ds->slave_mii_bus);
+out:
+	kfree(ds);
+	return ERR_PTR(ret);
 }
 
+static void dsa_switch_destroy(struct dsa_switch *ds)
+{
+}
+
+
+/* link polling *************************************************************/
+static void dsa_link_poll_work(struct work_struct *ugly)
+{
+	struct dsa_switch_tree *dst;
+	int i;
+
+	dst = container_of(ugly, struct dsa_switch_tree, link_poll_work);
+
+	for (i = 0; i < dst->pd->nr_chips; i++) {
+		struct dsa_switch *ds = dst->ds[i];
+
+		if (ds != NULL && ds->drv->poll_link != NULL)
+			ds->drv->poll_link(ds);
+	}
+
+	mod_timer(&dst->link_poll_timer, round_jiffies(jiffies + HZ));
+}
+
+static void dsa_link_poll_timer(unsigned long _dst)
+{
+	struct dsa_switch_tree *dst = (void *)_dst;
+
+	schedule_work(&dst->link_poll_work);
+}
+
+
+/* platform driver init and cleanup *****************************************/
 static int dev_is_class(struct device *dev, void *class)
 {
 	if (dev->class != NULL && !strcmp(dev->class->name, class))
@@ -102,7 +246,24 @@ static struct device *dev_find_class(struct device *parent, char *class)
 	return device_find_child(parent, class, dev_is_class);
 }
 
-struct net_device *dsa_dev_to_net_device(struct device *dev)
+static struct mii_bus *dev_to_mii_bus(struct device *dev)
+{
+	struct device *d;
+
+	d = dev_find_class(dev, "mdio_bus");
+	if (d != NULL) {
+		struct mii_bus *bus;
+
+		bus = to_mii_bus(d);
+		put_device(d);
+
+		return bus;
+	}
+
+	return NULL;
+}
+
+static struct net_device *dev_to_net_device(struct device *dev)
 {
 	struct device *d;
 
@@ -119,205 +280,155 @@ struct net_device *dsa_dev_to_net_device(struct device *dev)
 
 	return NULL;
 }
-EXPORT_SYMBOL_GPL(dsa_dev_to_net_device);
 
-/* Determine if we should defer delivery of skb until we have a rx timestamp.
- *
- * Called from dsa_switch_rcv. For now, this will only work if tagging is
- * enabled on the switch. Normally the MAC driver would retrieve the hardware
- * timestamp when it reads the packet out of the hardware. However in a DSA
- * switch, the DSA driver owning the interface to which the packet is
- * delivered is never notified unless we do so here.
- */
-static bool dsa_skb_defer_rx_timestamp(struct dsa_slave_priv *p,
-				       struct sk_buff *skb)
+static int dsa_probe(struct platform_device *pdev)
 {
-	struct dsa_switch *ds = p->dp->ds;
-	unsigned int type;
+	static int dsa_version_printed;
+	struct dsa_platform_data *pd = pdev->dev.platform_data;
+	struct net_device *dev;
+	struct dsa_switch_tree *dst;
+	int i;
 
-	if (skb_headroom(skb) < ETH_HLEN)
-		return false;
+	if (!dsa_version_printed++)
+		printk(KERN_NOTICE "Distributed Switch Architecture "
+			"driver version %s\n", dsa_driver_version);
 
-	__skb_push(skb, ETH_HLEN);
+	if (pd == NULL || pd->netdev == NULL)
+		return -EINVAL;
 
-	type = ptp_classify_raw(skb);
+	dev = dev_to_net_device(pd->netdev);
+	if (dev == NULL)
+		return -EINVAL;
 
-	__skb_pull(skb, ETH_HLEN);
-
-	if (type == PTP_CLASS_NONE)
-		return false;
-
-	if (likely(ds->ops->port_rxtstamp))
-		return ds->ops->port_rxtstamp(ds, p->dp->index, skb, type);
-
-	return false;
-}
-
-static int dsa_switch_rcv(struct sk_buff *skb, struct net_device *dev,
-			  struct packet_type *pt, struct net_device *unused)
-{
-	struct dsa_port *cpu_dp = dev->dsa_ptr;
-	struct sk_buff *nskb = NULL;
-	struct pcpu_sw_netstats *s;
-	struct dsa_slave_priv *p;
-
-	if (unlikely(!cpu_dp)) {
-		kfree_skb(skb);
-		return 0;
+	if (dev->dsa_ptr != NULL) {
+		dev_put(dev);
+		return -EEXIST;
 	}
 
-	skb = skb_unshare(skb, GFP_ATOMIC);
-	if (!skb)
-		return 0;
-
-	nskb = cpu_dp->rcv(skb, dev, pt);
-	if (!nskb) {
-		kfree_skb(skb);
-		return 0;
+	dst = kzalloc(sizeof(*dst), GFP_KERNEL);
+	if (dst == NULL) {
+		dev_put(dev);
+		return -ENOMEM;
 	}
 
-	skb = nskb;
-	p = netdev_priv(skb->dev);
-	skb_push(skb, ETH_HLEN);
-	skb->pkt_type = PACKET_HOST;
-	skb->protocol = eth_type_trans(skb, skb->dev);
+	platform_set_drvdata(pdev, dst);
 
-	s = this_cpu_ptr(p->stats64);
-	u64_stats_update_begin(&s->syncp);
-	s->rx_packets++;
-	s->rx_bytes += skb->len;
-	u64_stats_update_end(&s->syncp);
+	dst->pd = pd;
+	dst->master_netdev = dev;
+	dst->cpu_switch = -1;
+	dst->cpu_port = -1;
 
-	if (dsa_skb_defer_rx_timestamp(p, skb))
-		return 0;
+	for (i = 0; i < pd->nr_chips; i++) {
+		struct mii_bus *bus;
+		struct dsa_switch *ds;
 
-	netif_receive_skb(skb);
+		bus = dev_to_mii_bus(pd->chip[i].mii_bus);
+		if (bus == NULL) {
+			printk(KERN_ERR "%s[%d]: no mii bus found for "
+				"dsa switch\n", dev->name, i);
+			continue;
+		}
+
+		ds = dsa_switch_setup(dst, i, &pdev->dev, bus);
+		if (IS_ERR(ds)) {
+			printk(KERN_ERR "%s[%d]: couldn't create dsa switch "
+				"instance (error %ld)\n", dev->name, i,
+				PTR_ERR(ds));
+			continue;
+		}
+
+		dst->ds[i] = ds;
+		if (ds->drv->poll_link != NULL)
+			dst->link_poll_needed = 1;
+	}
+
+	/*
+	 * If we use a tagging format that doesn't have an ethertype
+	 * field, make sure that all packets from this point on get
+	 * sent to the tag format's receive function.
+	 */
+	wmb();
+	dev->dsa_ptr = (void *)dst;
+
+	if (dst->link_poll_needed) {
+		INIT_WORK(&dst->link_poll_work, dsa_link_poll_work);
+		init_timer(&dst->link_poll_timer);
+		dst->link_poll_timer.data = (unsigned long)dst;
+		dst->link_poll_timer.function = dsa_link_poll_timer;
+		dst->link_poll_timer.expires = round_jiffies(jiffies + HZ);
+		add_timer(&dst->link_poll_timer);
+	}
 
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
-static bool dsa_is_port_initialized(struct dsa_switch *ds, int p)
+static int dsa_remove(struct platform_device *pdev)
 {
-	return dsa_is_user_port(ds, p) && ds->ports[p].slave;
-}
+	struct dsa_switch_tree *dst = platform_get_drvdata(pdev);
+	int i;
 
-int dsa_switch_suspend(struct dsa_switch *ds)
-{
-	int i, ret = 0;
+	if (dst->link_poll_needed)
+		del_timer_sync(&dst->link_poll_timer);
 
-	/* Suspend slave network devices */
-	for (i = 0; i < ds->num_ports; i++) {
-		if (!dsa_is_port_initialized(ds, i))
-			continue;
+	flush_work_sync(&dst->link_poll_work);
 
-		ret = dsa_slave_suspend(ds->ports[i].slave);
-		if (ret)
-			return ret;
-	}
+	for (i = 0; i < dst->pd->nr_chips; i++) {
+		struct dsa_switch *ds = dst->ds[i];
 
-	if (ds->ops->suspend)
-		ret = ds->ops->suspend(ds);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(dsa_switch_suspend);
-
-int dsa_switch_resume(struct dsa_switch *ds)
-{
-	int i, ret = 0;
-
-	if (ds->ops->resume)
-		ret = ds->ops->resume(ds);
-
-	if (ret)
-		return ret;
-
-	/* Resume slave network devices */
-	for (i = 0; i < ds->num_ports; i++) {
-		if (!dsa_is_port_initialized(ds, i))
-			continue;
-
-		ret = dsa_slave_resume(ds->ports[i].slave);
-		if (ret)
-			return ret;
+		if (ds != NULL)
+			dsa_switch_destroy(ds);
 	}
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(dsa_switch_resume);
-#endif
 
-static struct packet_type dsa_pack_type __read_mostly = {
-	.type	= cpu_to_be16(ETH_P_XDSA),
-	.func	= dsa_switch_rcv,
+static void dsa_shutdown(struct platform_device *pdev)
+{
+}
+
+static struct platform_driver dsa_driver = {
+	.probe		= dsa_probe,
+	.remove		= dsa_remove,
+	.shutdown	= dsa_shutdown,
+	.driver = {
+		.name	= "dsa",
+		.owner	= THIS_MODULE,
+	},
 };
-
-static struct workqueue_struct *dsa_owq;
-
-bool dsa_schedule_work(struct work_struct *work)
-{
-	return queue_work(dsa_owq, work);
-}
-
-static ATOMIC_NOTIFIER_HEAD(dsa_notif_chain);
-
-int register_dsa_notifier(struct notifier_block *nb)
-{
-	return atomic_notifier_chain_register(&dsa_notif_chain, nb);
-}
-EXPORT_SYMBOL_GPL(register_dsa_notifier);
-
-int unregister_dsa_notifier(struct notifier_block *nb)
-{
-	return atomic_notifier_chain_unregister(&dsa_notif_chain, nb);
-}
-EXPORT_SYMBOL_GPL(unregister_dsa_notifier);
-
-int call_dsa_notifiers(unsigned long val, struct net_device *dev,
-		       struct dsa_notifier_info *info)
-{
-	info->dev = dev;
-	return atomic_notifier_call_chain(&dsa_notif_chain, val, info);
-}
-EXPORT_SYMBOL_GPL(call_dsa_notifiers);
 
 static int __init dsa_init_module(void)
 {
 	int rc;
 
-	dsa_owq = alloc_ordered_workqueue("dsa_ordered",
-					  WQ_MEM_RECLAIM);
-	if (!dsa_owq)
-		return -ENOMEM;
-
-	rc = dsa_slave_register_notifier();
+	rc = platform_driver_register(&dsa_driver);
 	if (rc)
-		goto register_notifier_fail;
+		return rc;
 
-	rc = dsa_legacy_register();
-	if (rc)
-		goto legacy_register_fail;
-
-	dev_add_pack(&dsa_pack_type);
-
+#ifdef CONFIG_NET_DSA_TAG_DSA
+	dev_add_pack(&dsa_packet_type);
+#endif
+#ifdef CONFIG_NET_DSA_TAG_EDSA
+	dev_add_pack(&edsa_packet_type);
+#endif
+#ifdef CONFIG_NET_DSA_TAG_TRAILER
+	dev_add_pack(&trailer_packet_type);
+#endif
 	return 0;
-
-legacy_register_fail:
-	dsa_slave_unregister_notifier();
-register_notifier_fail:
-	destroy_workqueue(dsa_owq);
-
-	return rc;
 }
 module_init(dsa_init_module);
 
 static void __exit dsa_cleanup_module(void)
 {
-	dsa_slave_unregister_notifier();
-	dev_remove_pack(&dsa_pack_type);
-	dsa_legacy_unregister();
-	destroy_workqueue(dsa_owq);
+#ifdef CONFIG_NET_DSA_TAG_TRAILER
+	dev_remove_pack(&trailer_packet_type);
+#endif
+#ifdef CONFIG_NET_DSA_TAG_EDSA
+	dev_remove_pack(&edsa_packet_type);
+#endif
+#ifdef CONFIG_NET_DSA_TAG_DSA
+	dev_remove_pack(&dsa_packet_type);
+#endif
+	platform_driver_unregister(&dsa_driver);
 }
 module_exit(dsa_cleanup_module);
 

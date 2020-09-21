@@ -16,6 +16,7 @@
 #include <linux/initrd.h>
 #include <linux/of_platform.h>
 
+#include <asm/system.h>
 #include <asm/time.h>
 #include <asm/prom.h>
 #include <asm/mpic.h>
@@ -24,7 +25,7 @@
 #include "mpc10x.h"
 
 
-static const struct of_device_id storcenter_of_bus[] __initconst = {
+static __initdata struct of_device_id storcenter_of_bus[] = {
 	{ .name = "soc", },
 	{},
 };
@@ -44,7 +45,7 @@ static int __init storcenter_add_bridge(struct device_node *dev)
 	struct pci_controller *hose;
 	const int *bus_range;
 
-	printk("Adding PCI host bridge %pOF\n", dev);
+	printk("Adding PCI host bridge %s\n", dev->full_name);
 
 	hose = pcibios_alloc_controller(dev);
 	if (hose == NULL)
@@ -83,7 +84,8 @@ static void __init storcenter_init_IRQ(void)
 {
 	struct mpic *mpic;
 
-	mpic = mpic_alloc(NULL, 0, 0, 16, 0, " OpenPIC  ");
+	mpic = mpic_alloc(NULL, 0, MPIC_WANTS_RESET,
+			16, 32, " OpenPIC  ");
 	BUG_ON(mpic == NULL);
 
 	/*
@@ -96,7 +98,7 @@ static void __init storcenter_init_IRQ(void)
 	mpic_init(mpic);
 }
 
-static void __noreturn storcenter_restart(char *cmd)
+static void storcenter_restart(char *cmd)
 {
 	local_irq_disable();
 
@@ -109,7 +111,9 @@ static void __noreturn storcenter_restart(char *cmd)
 
 static int __init storcenter_probe(void)
 {
-	return of_machine_is_compatible("iomega,storcenter");
+	unsigned long root = of_get_flat_dt_root();
+
+	return of_flat_dt_is_compatible(root, "iomega,storcenter");
 }
 
 define_machine(storcenter){

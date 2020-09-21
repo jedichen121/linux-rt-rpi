@@ -23,9 +23,7 @@
 #undef DEBUG
 
 #include <linux/errno.h>
-#include <linux/sched/signal.h>
-#include <linux/sched/loadavg.h>
-#include <linux/sched/rt.h>
+#include <linux/sched.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
@@ -84,6 +82,7 @@ static struct timer_list spuloadavg_timer;
 #define MIN_SPU_TIMESLICE	max(5 * HZ / (1000 * SPUSCHED_TICK), 1)
 #define DEF_SPU_TIMESLICE	(100 * HZ / (1000 * SPUSCHED_TICK))
 
+#define MAX_USER_PRIO		(MAX_PRIO - MAX_RT_PRIO)
 #define SCALE_PRIO(x, prio) \
 	max(x * (MAX_PRIO - prio) / (MAX_USER_PRIO / 2), MIN_SPU_TIMESLICE)
 
@@ -141,7 +140,7 @@ void __spu_update_sched_info(struct spu_context *ctx)
 	 * runqueue. The context will be rescheduled on the proper node
 	 * if it is timesliced or preempted.
 	 */
-	cpumask_copy(&ctx->cpus_allowed, &current->cpus_allowed);
+	cpumask_copy(&ctx->cpus_allowed, tsk_cpus_allowed(current));
 
 	/* Save the current cpu id for spu interrupt routing. */
 	ctx->last_ran = raw_smp_processor_id();
@@ -623,7 +622,7 @@ static struct spu *spu_get_idle(struct spu_context *ctx)
 
 /**
  * find_victim - find a lower priority context to preempt
- * @ctx:	candidate context for running
+ * @ctx:	canidate context for running
  *
  * Returns the freed physical spu to run the new context on.
  */
@@ -992,13 +991,13 @@ static void spu_calc_load(void)
 	CALC_LOAD(spu_avenrun[2], EXP_15, active_tasks);
 }
 
-static void spusched_wake(struct timer_list *unused)
+static void spusched_wake(unsigned long data)
 {
 	mod_timer(&spusched_timer, jiffies + SPUSCHED_TICK);
 	wake_up_process(spusched_task);
 }
 
-static void spuloadavg_wake(struct timer_list *unused)
+static void spuloadavg_wake(unsigned long data)
 {
 	mod_timer(&spuloadavg_timer, jiffies + LOAD_FREQ);
 	spu_calc_load();
@@ -1040,11 +1039,13 @@ void spuctx_switch_state(struct spu_context *ctx,
 {
 	unsigned long long curtime;
 	signed long long delta;
+	struct timespec ts;
 	struct spu *spu;
 	enum spu_utilization_state old_state;
 	int node;
 
-	curtime = ktime_get_ns();
+	ktime_get_ts(&ts);
+	curtime = timespec_to_ns(&ts);
 	delta = curtime - ctx->stats.tstamp;
 
 	WARN_ON(!mutex_is_locked(&ctx->state_mutex));
@@ -1093,8 +1094,20 @@ static int show_spu_loadavg(struct seq_file *s, void *private)
 		LOAD_INT(c), LOAD_FRAC(c),
 		count_active_contexts(),
 		atomic_read(&nr_spu_contexts),
-		idr_get_cursor(&task_active_pid_ns(current)->idr) - 1);
+		current->nsproxy->pid_ns->last_pid);
 	return 0;
+}
+
+static int spu_loadavg_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, show_spu_loadavg, NULL);
+}
+
+static const struct file_operations spu_loadavg_fops = {
+	.open		= spu_loadavg_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
 };
 
 int __init spu_sched_init(void)
@@ -1112,8 +1125,8 @@ int __init spu_sched_init(void)
 	}
 	spin_lock_init(&spu_prio->runq_lock);
 
-	timer_setup(&spusched_timer, spusched_wake, 0);
-	timer_setup(&spuloadavg_timer, spuloadavg_wake, 0);
+	setup_timer(&spusched_timer, spusched_wake, 0);
+	setup_timer(&spuloadavg_timer, spuloadavg_wake, 0);
 
 	spusched_task = kthread_run(spusched_thread, NULL, "spusched");
 	if (IS_ERR(spusched_task)) {
@@ -1123,7 +1136,7 @@ int __init spu_sched_init(void)
 
 	mod_timer(&spuloadavg_timer, 0);
 
-	entry = proc_create_single("spu_loadavg", 0, NULL, show_spu_loadavg);
+	entry = proc_create("spu_loadavg", 0, NULL, &spu_loadavg_fops);
 	if (!entry)
 		goto out_stop_kthread;
 

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *	fs/bfs/bfs.h
  *	Copyright (C) 1999 Tigran Aivazian <tigran@veritas.com>
@@ -47,7 +46,6 @@ static inline struct bfs_inode_info *BFS_I(struct inode *inode)
 
 /* inode.c */
 extern struct inode *bfs_iget(struct super_block *sb, unsigned long ino);
-extern void bfs_dump_imap(const char *, struct super_block *);
 
 /* file.c */
 extern const struct inode_operations bfs_file_inops;

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * class.c - basic device class management
  *
@@ -6,6 +5,9 @@
  * Copyright (c) 2002-3 Open Source Development Labs
  * Copyright (c) 2003-2004 Greg Kroah-Hartman
  * Copyright (c) 2003-2004 IBM Corp.
+ *
+ * This file is released under the GPLv2
+ *
  */
 
 #include <linux/device.h>
@@ -45,6 +47,18 @@ static ssize_t class_attr_store(struct kobject *kobj, struct attribute *attr,
 	return ret;
 }
 
+static const void *class_attr_namespace(struct kobject *kobj,
+					const struct attribute *attr)
+{
+	struct class_attribute *class_attr = to_class_attr(attr);
+	struct subsys_private *cp = to_subsys_private(kobj);
+	const void *ns = NULL;
+
+	if (class_attr->namespace)
+		ns = class_attr->namespace(cp->class, class_attr);
+	return ns;
+}
+
 static void class_release(struct kobject *kobj)
 {
 	struct subsys_private *cp = to_subsys_private(kobj);
@@ -72,6 +86,7 @@ static const struct kobj_ns_type_operations *class_child_ns_type(struct kobject 
 static const struct sysfs_ops class_sysfs_ops = {
 	.show	   = class_attr_show,
 	.store	   = class_attr_store,
+	.namespace = class_attr_namespace,
 };
 
 static struct kobj_type class_ktype = {
@@ -84,24 +99,21 @@ static struct kobj_type class_ktype = {
 static struct kset *class_kset;
 
 
-int class_create_file_ns(struct class *cls, const struct class_attribute *attr,
-			 const void *ns)
+int class_create_file(struct class *cls, const struct class_attribute *attr)
 {
 	int error;
-
 	if (cls)
-		error = sysfs_create_file_ns(&cls->p->subsys.kobj,
-					     &attr->attr, ns);
+		error = sysfs_create_file(&cls->p->subsys.kobj,
+					  &attr->attr);
 	else
 		error = -EINVAL;
 	return error;
 }
 
-void class_remove_file_ns(struct class *cls, const struct class_attribute *attr,
-			  const void *ns)
+void class_remove_file(struct class *cls, const struct class_attribute *attr)
 {
 	if (cls)
-		sysfs_remove_file_ns(&cls->p->subsys.kobj, &attr->attr, ns);
+		sysfs_remove_file(&cls->p->subsys.kobj, &attr->attr);
 }
 
 static struct class *class_get(struct class *cls)
@@ -117,6 +129,36 @@ static void class_put(struct class *cls)
 		kset_put(&cls->p->subsys);
 }
 
+static int add_class_attrs(struct class *cls)
+{
+	int i;
+	int error = 0;
+
+	if (cls->class_attrs) {
+		for (i = 0; attr_name(cls->class_attrs[i]); i++) {
+			error = class_create_file(cls, &cls->class_attrs[i]);
+			if (error)
+				goto error;
+		}
+	}
+done:
+	return error;
+error:
+	while (--i >= 0)
+		class_remove_file(cls, &cls->class_attrs[i]);
+	goto done;
+}
+
+static void remove_class_attrs(struct class *cls)
+{
+	int i;
+
+	if (cls->class_attrs) {
+		for (i = 0; attr_name(cls->class_attrs[i]); i++)
+			class_remove_file(cls, &cls->class_attrs[i]);
+	}
+}
+
 static void klist_class_dev_get(struct klist_node *n)
 {
 	struct device *dev = container_of(n, struct device, knode_class);
@@ -129,18 +171,6 @@ static void klist_class_dev_put(struct klist_node *n)
 	struct device *dev = container_of(n, struct device, knode_class);
 
 	put_device(dev);
-}
-
-static int class_add_groups(struct class *cls,
-			    const struct attribute_group **groups)
-{
-	return sysfs_create_groups(&cls->p->subsys.kobj, groups);
-}
-
-static void class_remove_groups(struct class *cls,
-				const struct attribute_group **groups)
-{
-	return sysfs_remove_groups(&cls->p->subsys.kobj, groups);
 }
 
 int __class_register(struct class *cls, struct lock_class_key *key)
@@ -183,7 +213,7 @@ int __class_register(struct class *cls, struct lock_class_key *key)
 		kfree(cp);
 		return error;
 	}
-	error = class_add_groups(class_get(cls), cls->class_groups);
+	error = add_class_attrs(class_get(cls));
 	class_put(cls);
 	return error;
 }
@@ -192,7 +222,7 @@ EXPORT_SYMBOL_GPL(__class_register);
 void class_unregister(struct class *cls)
 {
 	pr_debug("device class '%s': unregistering\n", cls->name);
-	class_remove_groups(cls, cls->class_groups);
+	remove_class_attrs(cls);
 	kset_unregister(&cls->p->subsys);
 }
 
@@ -386,12 +416,12 @@ EXPORT_SYMBOL_GPL(class_for_each_device);
  *
  * Note, you will need to drop the reference with put_device() after use.
  *
- * @match is allowed to do anything including calling back into class
+ * @fn is allowed to do anything including calling back into class
  * code.  There's no locking restriction.
  */
 struct device *class_find_device(struct class *class, struct device *start,
-				 const void *data,
-				 int (*match)(struct device *, const void *))
+				 void *data,
+				 int (*match)(struct device *, void *))
 {
 	struct class_dev_iter iter;
 	struct device *dev;
@@ -469,7 +499,6 @@ ssize_t show_class_attr_string(struct class *class,
 			       struct class_attribute *attr, char *buf)
 {
 	struct class_attribute_string *cs;
-
 	cs = container_of(attr, struct class_attribute_string, attr);
 	return snprintf(buf, PAGE_SIZE, "%s\n", cs->str);
 }
@@ -571,8 +600,8 @@ int __init classes_init(void)
 	return 0;
 }
 
-EXPORT_SYMBOL_GPL(class_create_file_ns);
-EXPORT_SYMBOL_GPL(class_remove_file_ns);
+EXPORT_SYMBOL_GPL(class_create_file);
+EXPORT_SYMBOL_GPL(class_remove_file);
 EXPORT_SYMBOL_GPL(class_unregister);
 EXPORT_SYMBOL_GPL(class_destroy);
 
