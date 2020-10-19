@@ -3354,25 +3354,27 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	 * higher scheduling class, because otherwise those loose the
 	 * opportunity to pull in more work from other CPUs.
 	 */
-	if (likely((prev->sched_class == &idle_sched_class ||
-		    prev->sched_class == &fair_sched_class) &&
-		   rq->nr_running == rq->cfs.h_nr_running)) {
+	// if (likely((prev->sched_class == &idle_sched_class ||
+	// 	    prev->sched_class == &fair_sched_class) &&
+	// 	   rq->nr_running == rq->cfs.h_nr_running)) {
 
-		p = fair_sched_class.pick_next_task(rq, prev, rf);
-		if (unlikely(p == RETRY_TASK))
-			goto again;
+	// 	p = fair_sched_class.pick_next_task(rq, prev, rf);
+	// 	if (unlikely(p == RETRY_TASK))
+	// 		goto again;
 
-		/* Assumes fair_sched_class->next == idle_sched_class */
-		if (unlikely(!p))
-			p = idle_sched_class.pick_next_task(rq, prev, rf);
+	// 	/* Assumes fair_sched_class->next == idle_sched_class */
+	// 	if (unlikely(!p))
+	// 		p = idle_sched_class.pick_next_task(rq, prev, rf);
 
-		return p;
-	}
+	// 	return p;
+	// }
 
 again:
 	for_each_class(class) {
 		p = class->pick_next_task(rq, prev, rf);
 		if (p) {
+			if (p == BLOCK_TASK) 
+				continue;
 			if (unlikely(p == RETRY_TASK))
 				goto again;
 			return p;
@@ -6831,6 +6833,30 @@ static u64 cpu_rt_period_read_uint(struct cgroup_subsys_state *css,
 {
 	return sched_group_rt_period(css_tg(css));
 }
+
+static int cpu_protect_write(struct cgroup_subsys_state *css,
+				struct cftype *cft, u64 val)
+{
+	return sched_group_set_protect(css_tg(css), val);
+}
+
+static u64 cpu_protect_read(struct cgroup_subsys_state *css,
+			       struct cftype *cft)
+{
+	return sched_group_protect(css_tg(css));
+}
+
+static int cpu_window_write(struct cgroup_subsys_state *css,
+				struct cftype *cft, u64 val)
+{
+	return sched_group_set_window(css_tg(css), val);
+}
+
+static u64 cpu_window_read(struct cgroup_subsys_state *css,
+			       struct cftype *cft)
+{
+	return sched_group_window(css_tg(css));
+}
 #endif /* CONFIG_RT_GROUP_SCHED */
 
 static struct cftype cpu_legacy_files[] = {
@@ -6867,6 +6893,16 @@ static struct cftype cpu_legacy_files[] = {
 		.name = "rt_period_us",
 		.read_u64 = cpu_rt_period_read_uint,
 		.write_u64 = cpu_rt_period_write_uint,
+	},
+	{
+		.name = "window_us",
+		.read_u64 = cpu_window_read,
+		.write_u64 = cpu_window_write,
+	},
+		{
+		.name = "protect",
+		.read_u64 = cpu_protect_read,
+		.write_u64 = cpu_protect_write,
 	},
 #endif
 	{ }	/* Terminate */
