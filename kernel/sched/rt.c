@@ -9,9 +9,7 @@
 
 int sched_rr_timeslice = RR_TIMESLICE;
 int sysctl_sched_rr_timeslice = (MSEC_PER_SEC / HZ) * RR_TIMESLICE;
-extern int protect;
-int p_count = 0;
-int timer_waiting = 1;
+struct task_struct *monitor_task;
 
 static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun);
 
@@ -43,9 +41,9 @@ static enum hrtimer_restart sched_rt_period_timer(struct hrtimer *timer)
 
 static enum hrtimer_restart sched_rt_window_timer(struct hrtimer *timer)
 {
-	protect = 0;
-	timer_waiting = 1;
-	printk("protect over, count is %d\n", p_count);
+	unblock_cpu();
+	atomic_set(&protect, 0);
+	printk("protect is over");
 	return HRTIMER_NORESTART;
 }
 
@@ -121,6 +119,10 @@ void init_rt_rq(struct rt_rq *rt_rq)
 	rt_rq->rt_time = 0;
 	rt_rq->rt_throttled = 0;
 	rt_rq->rt_runtime = 0;
+#ifdef CONFIG_RT_GROUP_SCHED
+	rt_rq->rt_blocked = 0;
+	INIT_LIST_HEAD(&rt_rq->b_list);
+#endif /* CONFIG_RT_GROUP_SCHED */	
 	raw_spin_lock_init(&rt_rq->rt_runtime_lock);
 }
 
@@ -220,7 +222,6 @@ int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent)
 	// init the window time to be 0
 	init_rt_window(&tg->win_bandwidth,
 			ktime_to_ns(0), 0);
-	sched_group_set_protect(tg, 0);
 
 	for_each_possible_cpu(i) {
 		rt_rq = kzalloc_node(sizeof(struct rt_rq),
@@ -548,6 +549,10 @@ static void sched_rt_rq_dequeue(struct rt_rq *rt_rq)
 
 static inline int rt_rq_throttled(struct rt_rq *rt_rq)
 {
+#ifdef CONFIG_RT_GROUP_SCHED
+	return (rt_rq->rt_throttled && !rt_rq->rt_nr_boosted) || rt_rq->rt_blocked;
+#endif /* CONFIG_RT_GROUP_SCHED */
+	
 	return rt_rq->rt_throttled && !rt_rq->rt_nr_boosted;
 }
 
@@ -955,8 +960,7 @@ static int sched_rt_runtime_exceeded(struct rt_rq *rt_rq)
 		 */
 		if (likely(rt_b->rt_runtime)) {
 			rt_rq->rt_throttled = 1;
-			// printk_deferred_once("sched: RT throttling activated\n");
-			printk("sched: RT throttling activated\n");
+			printk_deferred_once("sched: RT throttling activated\n");
 		} else {
 			/*
 			 * In case we did anyway, make it go away,
@@ -1167,6 +1171,49 @@ dec_rt_group(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
 	WARN_ON(!rt_rq->rt_nr_running && rt_rq->rt_nr_boosted);
 }
 
+
+void block_cpu(struct task_struct *p)
+{	
+	struct rt_rq *rt_rq = rt_rq_of_se(&p->rt);
+	struct rt_bandwidth *win_b = &rt_rq->tg->win_bandwidth;
+
+	monitor_task = p;
+
+	hrtimer_start(&win_b->rt_period_timer, win_b->rt_period, HRTIMER_MODE_REL);
+
+	atomic_set(&protect, 1);
+	printk("cpu_block success\n");
+}
+
+void unblock_cpu()
+{
+	struct rt_rq *rt_rq;
+	struct rq *rq;
+	
+	while (!list_empty(&blocked_rt_rq_list)) {
+		rt_rq = list_entry(blocked_rt_rq_list.next, struct rt_rq, b_list);
+		rq = rq_of_rt_rq(rt_rq);
+
+		local_irq_disable();
+		raw_spin_lock(&rq->lock);
+		update_rq_clock(rq);
+
+		raw_spin_lock(&rt_rq->rt_runtime_lock);
+		//  add 1 so that it won't be queued again in do_sched_rt_period_timer()
+		rt_rq->rt_time += 1;
+		rt_rq->rt_blocked = 0;
+		list_del_init(&rt_rq->b_list);
+		raw_spin_unlock(&rt_rq->rt_runtime_lock);
+
+		sched_rt_rq_enqueue(rt_rq);
+
+		atomic_set(&protect, 0);
+		printk("unblock_cpu success\n");
+		raw_spin_unlock(&rq->lock);
+		local_irq_enable();
+	}
+}
+
 #else /* CONFIG_RT_GROUP_SCHED */
 
 static void
@@ -1294,22 +1341,6 @@ static void __dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flag
 	struct rt_rq *rt_rq = rt_rq_of_se(rt_se);
 	struct rt_prio_array *array = &rt_rq->active;
 
-#ifdef CONFIG_RT_GROUP_SCHED
-	struct rt_rq *tg_rt_rq;
-	struct rt_bandwidth *win_b;
-
-	if (rt_entity_is_task(rt_se) && monitor_task && rt_task_of(rt_se) == monitor_task) {
-		if (protect && timer_waiting) {
-			tg_rt_rq = rt_rq_of_se(rt_se);
-			win_b = &tg_rt_rq->tg->win_bandwidth;
-			
-			hrtimer_start(&win_b->rt_period_timer, win_b->rt_period, HRTIMER_MODE_REL);
-			printk("protect enabled\n");
-			p_count = 0;
-			timer_waiting = 0;
-		}
-	}
-#endif /* CONFIG_RT_GROUP_SCHED */
 	if (move_entity(flags)) {
 		WARN_ON_ONCE(!rt_se->on_list);
 		__delist_rt_entity(rt_se, array);
@@ -1582,6 +1613,7 @@ pick_next_task_rt(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 {
 	struct task_struct *p;
 	struct rt_rq *rt_rq = &rq->rt;
+	struct rt_rq *block_rt_rq;
 
 	if (need_pull_rt_task(rq, prev)) {
 		/*
@@ -1618,16 +1650,16 @@ pick_next_task_rt(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 
 #ifdef CONFIG_RT_GROUP_SCHED
 	// Do not block high-priority kernel threads
-	if (protect && p->mm && (p->prio > RT_SYS_PRIO_THRESHOLD)) {
-		// p_count += 1;
-		// if (p_count < 60000) {
-		// 	// printk("in protect\n");
-		// 	// printk("pid: %d, %s\n", p->pid, p->comm);
-		// 	return BLOCK_TASK;
-		// }
-		// printk("passed protection\n");
-		return BLOCK_TASK;
-			
+	if (atomic_read(&protect) == 1 && p->mm && (p->prio > RT_SYS_PRIO_THRESHOLD)
+		&& p != monitor_task) {
+		block_rt_rq = rt_rq_of_se(&p->rt);
+		raw_spin_lock(&block_rt_rq->rt_runtime_lock);
+		block_rt_rq->rt_blocked = 1;
+		list_add(&block_rt_rq->b_list, &blocked_rt_rq_list);
+		raw_spin_unlock(&block_rt_rq->rt_runtime_lock);
+		sched_rt_rq_dequeue(block_rt_rq);
+
+		return NULL;	
 	}
 #endif /* CONFIG_RT_GROUP_SCHED */
 	
@@ -2612,21 +2644,6 @@ unlock:
 	return err;
 }
 
-static int tg_set_tg_protect(struct task_group *tg, u64 p)
-{
-	int err = 0;
-
-	mutex_lock(&rt_constraints_mutex);
-	read_lock(&tasklist_lock);
-
-	tg->protect = p;
-// unlock:
-	read_unlock(&tasklist_lock);
-	mutex_unlock(&rt_constraints_mutex);
-
-	return err;
-}
-
 static int tg_set_tg_window(struct task_group *tg, u64 window)
 {
 	int err = 0;
@@ -2693,16 +2710,6 @@ long sched_group_rt_period(struct task_group *tg)
 	rt_period_us = ktime_to_ns(tg->rt_bandwidth.rt_period);
 	do_div(rt_period_us, NSEC_PER_USEC);
 	return rt_period_us;
-}
-
-int sched_group_set_protect(struct task_group *tg, u64 p)
-{
-	return tg_set_tg_protect(tg, p);
-}
-
-long sched_group_protect(struct task_group *tg)
-{
-	return tg->protect;
 }
 
 int sched_group_set_window(struct task_group *tg, u64 window_us)

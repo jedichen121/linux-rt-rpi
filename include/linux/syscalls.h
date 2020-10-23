@@ -864,6 +864,8 @@ asmlinkage long sys_process_vm_writev(pid_t pid,
 				      const struct iovec __user *rvec,
 				      unsigned long riovcnt,
 				      unsigned long flags);
+asmlinkage long sys_cpu_block(void);
+asmlinkage long sys_cpu_unblock(void);
 asmlinkage long sys_kcmp(pid_t pid1, pid_t pid2, int type,
 			 unsigned long idx1, unsigned long idx2);
 asmlinkage long sys_finit_module(int fd, const char __user *uargs, int flags);

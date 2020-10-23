@@ -327,6 +327,15 @@ struct rt_rq;
 
 extern struct list_head task_groups;
 
+#ifdef CONFIG_RT_GROUP_SCHED
+#define RT_SYS_PRIO_THRESHOLD		(50)
+extern atomic_t protect;
+extern struct list_head blocked_rt_rq_list;
+
+extern void block_cpu(struct task_struct *p);
+extern void unblock_cpu(void);
+#endif /* CONFIG_RT_GROUP_SCHED */
+
 struct cfs_bandwidth {
 #ifdef CONFIG_CFS_BANDWIDTH
 	raw_spinlock_t		lock;
@@ -379,7 +388,6 @@ struct task_group {
 
 	struct rt_bandwidth	rt_bandwidth;
 	struct rt_bandwidth win_bandwidth;
-	int protect;
 #endif
 
 	struct rcu_head		rcu;
@@ -449,11 +457,9 @@ extern void init_tg_rt_entry(struct task_group *tg, struct rt_rq *rt_rq,
 		struct sched_rt_entity *parent);
 extern int sched_group_set_rt_runtime(struct task_group *tg, long rt_runtime_us);
 extern int sched_group_set_rt_period(struct task_group *tg, u64 rt_period_us);
-extern int sched_group_set_protect(struct task_group *tg, u64 p);
 extern int sched_group_set_window(struct task_group *tg, u64 window_us);
 extern long sched_group_rt_runtime(struct task_group *tg);
 extern long sched_group_rt_period(struct task_group *tg);
-extern long sched_group_protect(struct task_group *tg);
 extern long sched_group_window(struct task_group *tg);
 extern int sched_rt_can_attach(struct task_group *tg, struct task_struct *tsk);
 
@@ -618,6 +624,8 @@ struct rt_rq {
 
 	struct rq		*rq;
 	struct task_group	*tg;
+	int			rt_blocked;
+	struct list_head b_list;
 #endif
 };
 
@@ -1503,8 +1511,6 @@ extern const u32		sched_prio_to_wmult[40];
 #endif
 
 #define RETRY_TASK		((void *)-1UL)
-#define BLOCK_TASK		((void *)-2UL)
-#define RT_SYS_PRIO_THRESHOLD		(50)
 
 struct sched_class {
 	const struct sched_class *next;

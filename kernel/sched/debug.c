@@ -174,60 +174,6 @@ static const struct file_operations sched_feat_fops = {
 
 __read_mostly bool sched_debug_enabled;
 
-
-struct task_struct *monitor_task;
-int monitor_pid;
-int protect;
-EXPORT_SYMBOL(protect);
-
-static ssize_t 
-write_pid(struct file *file, const char __user *ubuf,
-                size_t cnt, loff_t *ppos)
-{
-	char buf[10];
-	monitor_pid = 0;
-
-	/* read the value from user space */
-	if(cnt > 10)
-		return -EINVAL;
-	if (copy_from_user(&buf, ubuf, cnt))
-		return -EFAULT;
-	sscanf(buf, "%d", &monitor_pid);
-	pr_info("scanned pid = %d\n", monitor_pid);
-
-	rcu_read_lock();
-
-	/* find the task with that pid */
-	monitor_task = pid_task(find_pid_ns(monitor_pid, &init_pid_ns), PIDTYPE_PID);
-
-	if(monitor_task == NULL){
-		pr_err("no such pid\n");
-		rcu_read_unlock();
-		return -ENODEV;
-	}
-	rcu_read_unlock();
-
-	return cnt;
-}
-
-static ssize_t 
-cancel_pid(struct file *file, const char __user *ubuf,
-                size_t cnt, loff_t *ppos)
-{
-	monitor_task = NULL;
-	printk("cancelled monitor_task\n");
-
-	return cnt;
-}
-
-static const struct file_operations start_monitor_fops = {
-	.write = write_pid,
-};
-
-static const struct file_operations cancel_monitor_fops = {
-	.write = cancel_pid,
-};
-
 static __init int sched_init_debug(void)
 {
 	debugfs_create_file("sched_features", 0644, NULL, NULL,
@@ -236,13 +182,6 @@ static __init int sched_init_debug(void)
 	debugfs_create_bool("sched_debug", 0644, NULL,
 			&sched_debug_enabled);
 
-	debugfs_create_file("protect", 0200, NULL, NULL, 
-			&start_monitor_fops);
-	debugfs_create_file("stop_monitor", 0200, NULL, NULL, 
-			&cancel_monitor_fops);
-	
-	monitor_task = NULL;
-	protect = 0;
 	return 0;
 }
 late_initcall(sched_init_debug);

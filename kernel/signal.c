@@ -41,7 +41,6 @@
 #include <linux/compiler.h>
 #include <linux/posix-timers.h>
 #include <linux/livepatch.h>
-#include <linux/sched/autogroup.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/signal.h>
@@ -3950,12 +3949,6 @@ SYSCALL_DEFINE2(signal, int, sig, __sighandler_t, handler)
 
 SYSCALL_DEFINE0(pause)
 {
-#ifdef CONFIG_RT_GROUP_SCHED
-	if (monitor_task && current == monitor_task) {
-		// set the protect bit
-		protect = 1;
-	}
-#endif /* CONFIG_RT_GROUP_SCHED */
 	while (!signal_pending(current)) {
 		__set_current_state(TASK_INTERRUPTIBLE);
 		schedule();
