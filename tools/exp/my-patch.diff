@@ -1,0 +1,541 @@
+diff --git a/arch/arm/configs/bcm2711_defconfig b/arch/arm/configs/bcm2711_defconfig
+index b2f12db203b6..a38baa4fffff 100644
+--- a/arch/arm/configs/bcm2711_defconfig
++++ b/arch/arm/configs/bcm2711_defconfig
+@@ -22,6 +22,8 @@ CONFIG_CPUSETS=y
+ CONFIG_CGROUP_DEVICE=y
+ CONFIG_CGROUP_CPUACCT=y
+ CONFIG_CGROUP_BPF=y
++CONFIG_CGROUP_SCHED=y
++CONFIG_RT_GROUP_SCHED=y
+ CONFIG_NAMESPACES=y
+ CONFIG_USER_NS=y
+ CONFIG_SCHED_AUTOGROUP=y
+diff --git a/arch/arm/configs/bcm2711_navio2_defconfig b/arch/arm/configs/bcm2711_navio2_defconfig
+index dd3657bc74fe..954f161343ed 100644
+--- a/arch/arm/configs/bcm2711_navio2_defconfig
++++ b/arch/arm/configs/bcm2711_navio2_defconfig
+@@ -31,6 +31,8 @@ CONFIG_CPUSETS=y
+ CONFIG_CGROUP_DEVICE=y
+ CONFIG_CGROUP_CPUACCT=y
+ CONFIG_CGROUP_BPF=y
++CONFIG_CGROUP_SCHED=y
++CONFIG_RT_GROUP_SCHED=y
+ CONFIG_NAMESPACES=y
+ CONFIG_USER_NS=y
+ CONFIG_SCHED_AUTOGROUP=y
+diff --git a/arch/arm/configs/versatile_defconfig b/arch/arm/configs/versatile_defconfig
+index 5282324c7cef..21e56fbc7bad 100644
+--- a/arch/arm/configs/versatile_defconfig
++++ b/arch/arm/configs/versatile_defconfig
+@@ -97,3 +97,75 @@ CONFIG_MAGIC_SYSRQ=y
+ CONFIG_DEBUG_KERNEL=y
+ CONFIG_DEBUG_USER=y
+ CONFIG_DEBUG_LL=y
++# For QEMU
++CONFIG_CPU_V6=y
++CONFIG_ARM_ERRATA_411920=y
++CONFIG_ARM_ERRATA_364296=y
++CONFIG_AEABI=y
++CONFIG_OABI_COMPAT=y
++CONFIG_PCI=y
++CONFIG_PCI_VERSATILE=y
++CONFIG_SCSI=y
++CONFIG_SCSI_SYM53C8XX_2=y
++CONFIG_BLK_DEV_SD=y
++CONFIG_BLK_DEV_SR=y
++CONFIG_DEVTMPFS=y
++CONFIG_DEVTMPFS_MOUNT=y
++CONFIG_TMPFS=y
++CONFIG_INPUT_EVDEV=y
++CONFIG_EXT3_FS=y
++CONFIG_EXT4_FS=y
++CONFIG_VFAT_FS=y
++CONFIG_NLS_CODEPAGE_437=y
++CONFIG_NLS_ISO8859_1=y
++CONFIG_FONT_8x16=y
++CONFIG_LOGO=y
++CONFIG_VFP=y
++CONFIG_CGROUPS=y
++CONFIG_BLK_CGROUP=y
++CONFIG_CGROUP_SCHED=y
++CONFIG_RT_GROUP_SCHED=y
++
++CONFIG_MMC_BCM2835=y
++CONFIG_MMC_BCM2835_DMA=y
++CONFIG_DMADEVICES=y
++CONFIG_DMA_BCM2708=y
++
++CONFIG_FHANDLE=y
++
++CONFIG_OVERLAY_FS=y
++
++CONFIG_EXT4_FS_POSIX_ACL=y
++CONFIG_EXT4_FS_SECURITY=y
++CONFIG_FS_POSIX_ACL=y
++
++CONFIG_IKCONFIG=y
++CONFIG_IKCONFIG_PROC=y
++
++CONFIG_MODVERSIONS=y
++
++CONFIG_NET_9P=y
++CONFIG_NET_9P_VIRTIO=y
++CONFIG_9P_FS=y
++CONFIG_9P_FS_POSIX_ACL=y
++
++CONFIG_VIRTIO=y
++CONFIG_VIRTIO_BLK=y
++CONFIG_SCSI_VIRTIO=y
++CONFIG_VIRTIO_NET=y
++CONFIG_VIRTIO_CONSOLE=y
++CONFIG_VIRTIO_BALLOON=y
++CONFIG_VIRTIO_INPUT=y
++CONFIG_VIRTIO_PCI=y
++
++# for VIRTIO graphics
++CONFIG_DRM=y
++CONFIG_DRM_VIRTIO_GPU=y
++
++CONFIG_HW_RANDOM=y
++CONFIG_HW_RANDOM_VIRTIO=y
++
++CONFIG_DEBUG_INFO=y
++CONFIG_DEBUG_KERNEL=y
++CONFIG_GDB_SCRIPTS=y
++
+diff --git a/arch/arm/tools/syscall.tbl b/arch/arm/tools/syscall.tbl
+index 8edf93b4490f..bf49a4bf97c9 100644
+--- a/arch/arm/tools/syscall.tbl
++++ b/arch/arm/tools/syscall.tbl
+@@ -414,3 +414,5 @@
+ 397	common	statx			sys_statx
+ 398	common	rseq			sys_rseq
+ 399	common	io_pgetevents		sys_io_pgetevents
++400	common	cpu_block			sys_cpu_block
++401	common	cpu_unblock			sys_cpu_unblock
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index 2ff814c92f7f..33d15ff683d0 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -864,6 +864,8 @@ asmlinkage long sys_process_vm_writev(pid_t pid,
+ 				      const struct iovec __user *rvec,
+ 				      unsigned long riovcnt,
+ 				      unsigned long flags);
++asmlinkage long sys_cpu_block(void);
++asmlinkage long sys_cpu_unblock(void);
+ asmlinkage long sys_kcmp(pid_t pid1, pid_t pid2, int type,
+ 			 unsigned long idx1, unsigned long idx2);
+ asmlinkage long sys_finit_module(int fd, const char __user *uargs, int flags);
+diff --git a/kernel/sched/Makefile b/kernel/sched/Makefile
+index 7fe183404c38..6389cba44ac7 100644
+--- a/kernel/sched/Makefile
++++ b/kernel/sched/Makefile
+@@ -29,3 +29,5 @@ obj-$(CONFIG_CPU_FREQ) += cpufreq.o
+ obj-$(CONFIG_CPU_FREQ_GOV_SCHEDUTIL) += cpufreq_schedutil.o
+ obj-$(CONFIG_MEMBARRIER) += membarrier.o
+ obj-$(CONFIG_CPU_ISOLATION) += isolation.o
++# CFLAGS_REMOVE_rt.o := -O2
++# CFLAGS_rt.o := -O0
+\ No newline at end of file
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 78ecdfae25b6..c8f1f4905ad9 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -4687,6 +4687,35 @@ SYSCALL_DEFINE2(sched_getparam, pid_t, pid, struct sched_param __user *, param)
+ 	return retval;
+ }
+ 
++/**
++ * sys_cpu_block - block RT task from executing. Except the calling task and 
++ * any RT task whose priority is lower than RT_SYS_PRIO_THRESHOLD.
++ *
++ * Return: On success, 0.
++ */
++SYSCALL_DEFINE0(cpu_block)
++{
++	struct task_struct *p;
++
++	p = current;
++	block_cpu(current);
++
++	return 0;
++}
++
++/**
++ * sys_cpu_unblock - unblock RT task so they can resume execution.
++ *
++ * Return: On success, 0.
++ */
++SYSCALL_DEFINE0(cpu_unblock)
++{
++	unblock_cpu();
++
++	return 0;
++}
++
++
+ static int sched_read_attr(struct sched_attr __user *uattr,
+ 			   struct sched_attr *attr,
+ 			   unsigned int usize)
+@@ -5948,6 +5977,9 @@ int in_sched_functions(unsigned long addr)
+ struct task_group root_task_group;
+ LIST_HEAD(task_groups);
+ 
++atomic_t protect;
++LIST_HEAD(blocked_rt_rq_list);
++
+ /* Cacheline aligned slab cache for task_group */
+ static struct kmem_cache *task_group_cache __read_mostly;
+ #endif
+@@ -5985,7 +6017,7 @@ void __init sched_init(void)
+ 
+ 		root_task_group.rt_rq = (struct rt_rq **)ptr;
+ 		ptr += nr_cpu_ids * sizeof(void **);
+-
++		atomic_set(&protect, 0);
+ #endif /* CONFIG_RT_GROUP_SCHED */
+ 	}
+ #ifdef CONFIG_CPUMASK_OFFSTACK
+@@ -6831,6 +6863,18 @@ static u64 cpu_rt_period_read_uint(struct cgroup_subsys_state *css,
+ {
+ 	return sched_group_rt_period(css_tg(css));
+ }
++
++static int cpu_window_write(struct cgroup_subsys_state *css,
++				struct cftype *cft, u64 val)
++{
++	return sched_group_set_window(css_tg(css), val);
++}
++
++static u64 cpu_window_read(struct cgroup_subsys_state *css,
++			       struct cftype *cft)
++{
++	return sched_group_window(css_tg(css));
++}
+ #endif /* CONFIG_RT_GROUP_SCHED */
+ 
+ static struct cftype cpu_legacy_files[] = {
+@@ -6868,6 +6912,11 @@ static struct cftype cpu_legacy_files[] = {
+ 		.read_u64 = cpu_rt_period_read_uint,
+ 		.write_u64 = cpu_rt_period_write_uint,
+ 	},
++	{
++		.name = "window_us",
++		.read_u64 = cpu_window_read,
++		.write_u64 = cpu_window_write,
++	},
+ #endif
+ 	{ }	/* Terminate */
+ };
+diff --git a/kernel/sched/rt.c b/kernel/sched/rt.c
+index b980cc96604f..828fd9ca4747 100644
+--- a/kernel/sched/rt.c
++++ b/kernel/sched/rt.c
+@@ -9,6 +9,7 @@
+ 
+ int sched_rr_timeslice = RR_TIMESLICE;
+ int sysctl_sched_rr_timeslice = (MSEC_PER_SEC / HZ) * RR_TIMESLICE;
++struct task_struct *monitor_task;
+ 
+ static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun);
+ 
+@@ -38,6 +39,14 @@ static enum hrtimer_restart sched_rt_period_timer(struct hrtimer *timer)
+ 	return idle ? HRTIMER_NORESTART : HRTIMER_RESTART;
+ }
+ 
++static enum hrtimer_restart sched_rt_window_timer(struct hrtimer *timer)
++{
++	unblock_cpu();
++	atomic_set(&protect, 0);
++	printk("protect is over");
++	return HRTIMER_NORESTART;
++}
++
+ void init_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime)
+ {
+ 	rt_b->rt_period = ns_to_ktime(period);
+@@ -50,6 +59,18 @@ void init_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime)
+ 	rt_b->rt_period_timer.function = sched_rt_period_timer;
+ }
+ 
++void init_rt_window(struct rt_bandwidth *win_b, u64 period, u64 runtime)
++{
++	win_b->rt_period = ns_to_ktime(period);
++	win_b->rt_runtime = runtime;
++
++	raw_spin_lock_init(&win_b->rt_runtime_lock);
++
++	hrtimer_init(&win_b->rt_period_timer,
++			CLOCK_MONOTONIC, HRTIMER_MODE_REL);
++	win_b->rt_period_timer.function = sched_rt_window_timer;
++}
++
+ static void start_rt_bandwidth(struct rt_bandwidth *rt_b)
+ {
+ 	if (!rt_bandwidth_enabled() || rt_b->rt_runtime == RUNTIME_INF)
+@@ -98,6 +119,10 @@ void init_rt_rq(struct rt_rq *rt_rq)
+ 	rt_rq->rt_time = 0;
+ 	rt_rq->rt_throttled = 0;
+ 	rt_rq->rt_runtime = 0;
++#ifdef CONFIG_RT_GROUP_SCHED
++	rt_rq->rt_blocked = 0;
++	INIT_LIST_HEAD(&rt_rq->b_list);
++#endif /* CONFIG_RT_GROUP_SCHED */	
+ 	raw_spin_lock_init(&rt_rq->rt_runtime_lock);
+ }
+ 
+@@ -194,6 +219,9 @@ int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent)
+ 
+ 	init_rt_bandwidth(&tg->rt_bandwidth,
+ 			ktime_to_ns(def_rt_bandwidth.rt_period), 0);
++	// init the window time to be 0
++	init_rt_window(&tg->win_bandwidth,
++			ktime_to_ns(0), 0);
+ 
+ 	for_each_possible_cpu(i) {
+ 		rt_rq = kzalloc_node(sizeof(struct rt_rq),
+@@ -521,6 +549,10 @@ static void sched_rt_rq_dequeue(struct rt_rq *rt_rq)
+ 
+ static inline int rt_rq_throttled(struct rt_rq *rt_rq)
+ {
++#ifdef CONFIG_RT_GROUP_SCHED
++	return (rt_rq->rt_throttled && !rt_rq->rt_nr_boosted) || rt_rq->rt_blocked;
++#endif /* CONFIG_RT_GROUP_SCHED */
++	
+ 	return rt_rq->rt_throttled && !rt_rq->rt_nr_boosted;
+ }
+ 
+@@ -928,7 +960,7 @@ static int sched_rt_runtime_exceeded(struct rt_rq *rt_rq)
+ 		 */
+ 		if (likely(rt_b->rt_runtime)) {
+ 			rt_rq->rt_throttled = 1;
+-			printk_deferred_once("sched: RT throttling activated\n");
++			printk("sched: RT throttling activated\n");
+ 		} else {
+ 			/*
+ 			 * In case we did anyway, make it go away,
+@@ -1139,6 +1171,49 @@ dec_rt_group(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
+ 	WARN_ON(!rt_rq->rt_nr_running && rt_rq->rt_nr_boosted);
+ }
+ 
++
++void block_cpu(struct task_struct *p)
++{	
++	struct rt_rq *rt_rq = rt_rq_of_se(&p->rt);
++	struct rt_bandwidth *win_b = &rt_rq->tg->win_bandwidth;
++
++	monitor_task = p;
++
++	hrtimer_start(&win_b->rt_period_timer, win_b->rt_period, HRTIMER_MODE_REL);
++
++	atomic_set(&protect, 1);
++	printk("cpu_block success\n");
++}
++
++void unblock_cpu()
++{
++	struct rt_rq *rt_rq;
++	struct rq *rq;
++	
++	while (!list_empty(&blocked_rt_rq_list)) {
++		rt_rq = list_entry(blocked_rt_rq_list.next, struct rt_rq, b_list);
++		rq = rq_of_rt_rq(rt_rq);
++
++		local_irq_disable();
++		raw_spin_lock(&rq->lock);
++		update_rq_clock(rq);
++
++		raw_spin_lock(&rt_rq->rt_runtime_lock);
++		//  add 1 so that it won't be queued again in do_sched_rt_period_timer()
++		rt_rq->rt_time += 1;
++		rt_rq->rt_blocked = 0;
++		list_del_init(&rt_rq->b_list);
++		raw_spin_unlock(&rt_rq->rt_runtime_lock);
++
++		sched_rt_rq_enqueue(rt_rq);
++
++		atomic_set(&protect, 0);
++		printk("unblock_cpu success\n");
++		raw_spin_unlock(&rq->lock);
++		local_irq_enable();
++	}
++}
++
+ #else /* CONFIG_RT_GROUP_SCHED */
+ 
+ static void
+@@ -1515,7 +1590,7 @@ static struct sched_rt_entity *pick_next_rt_entity(struct rq *rq,
+ 	return next;
+ }
+ 
+-static struct task_struct *_pick_next_task_rt(struct rq *rq)
++static struct task_struct *_peek_next_task_rt(struct rq *rq)
+ {
+ 	struct sched_rt_entity *rt_se;
+ 	struct task_struct *p;
+@@ -1528,7 +1603,7 @@ static struct task_struct *_pick_next_task_rt(struct rq *rq)
+ 	} while (rt_rq);
+ 
+ 	p = rt_task_of(rt_se);
+-	p->se.exec_start = rq_clock_task(rq);
++	// p->se.exec_start = rq_clock_task(rq);
+ 
+ 	return p;
+ }
+@@ -1538,6 +1613,7 @@ pick_next_task_rt(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ {
+ 	struct task_struct *p;
+ 	struct rt_rq *rt_rq = &rq->rt;
++	struct rt_rq *block_rt_rq;
+ 
+ 	if (need_pull_rt_task(rq, prev)) {
+ 		/*
+@@ -1569,9 +1645,26 @@ pick_next_task_rt(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+ 	if (!rt_rq->rt_queued)
+ 		return NULL;
+ 
+-	put_prev_task(rq, prev);
++	// put_prev_task(rq, prev);
++	p = _peek_next_task_rt(rq);
+ 
+-	p = _pick_next_task_rt(rq);
++#ifdef CONFIG_RT_GROUP_SCHED
++	// Do not block high-priority kernel threads
++	if (atomic_read(&protect) == 1 && p->mm && (p->prio > RT_SYS_PRIO_THRESHOLD)
++		&& p != monitor_task) {
++		block_rt_rq = rt_rq_of_se(&p->rt);
++		raw_spin_lock(&block_rt_rq->rt_runtime_lock);
++		block_rt_rq->rt_blocked = 1;
++		list_add(&block_rt_rq->b_list, &blocked_rt_rq_list);
++		raw_spin_unlock(&block_rt_rq->rt_runtime_lock);
++		sched_rt_rq_dequeue(block_rt_rq);
++
++		return NULL;	
++	}
++#endif /* CONFIG_RT_GROUP_SCHED */
++	
++	put_prev_task(rq, prev);
++	p->se.exec_start = rq_clock_task(rq);
+ 
+ 	/* The running task is never eligible for pushing */
+ 	dequeue_pushable_task(rq, p);
+@@ -2551,6 +2644,26 @@ static int tg_set_rt_bandwidth(struct task_group *tg,
+ 	return err;
+ }
+ 
++static int tg_set_tg_window(struct task_group *tg, u64 window)
++{
++	int err = 0;
++
++	// these locks are used following existing code, not sure if necessary
++	mutex_lock(&rt_constraints_mutex);
++	read_lock(&tasklist_lock);
++
++	raw_spin_lock_irq(&tg->win_bandwidth.rt_runtime_lock);
++	tg->win_bandwidth.rt_period = ns_to_ktime(window);;
++	raw_spin_unlock_irq(&tg->win_bandwidth.rt_runtime_lock);
++	printk("window is %lld ns\n", window);
++
++// unlock:
++	read_unlock(&tasklist_lock);
++	mutex_unlock(&rt_constraints_mutex);
++
++	return err;
++}
++
+ int sched_group_set_rt_runtime(struct task_group *tg, long rt_runtime_us)
+ {
+ 	u64 rt_runtime, rt_period;
+@@ -2599,6 +2712,23 @@ long sched_group_rt_period(struct task_group *tg)
+ 	return rt_period_us;
+ }
+ 
++int sched_group_set_window(struct task_group *tg, u64 window_us)
++{
++	u64 window;
++
++	window = window_us * NSEC_PER_USEC;
++	return tg_set_tg_window(tg, window);
++}
++
++long sched_group_window(struct task_group *tg)
++{
++	u64 win_us;
++
++	win_us = ktime_to_ns(tg->win_bandwidth.rt_period);
++	do_div(win_us, NSEC_PER_USEC);
++	return win_us;
++}
++
+ static int sched_rt_global_constraints(void)
+ {
+ 	int ret = 0;
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index 9a7c3d08b39f..411bf3c2503c 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -327,6 +327,15 @@ struct rt_rq;
+ 
+ extern struct list_head task_groups;
+ 
++#ifdef CONFIG_RT_GROUP_SCHED
++#define RT_SYS_PRIO_THRESHOLD		(50)
++extern atomic_t protect;
++extern struct list_head blocked_rt_rq_list;
++
++extern void block_cpu(struct task_struct *p);
++extern void unblock_cpu(void);
++#endif /* CONFIG_RT_GROUP_SCHED */
++
+ struct cfs_bandwidth {
+ #ifdef CONFIG_CFS_BANDWIDTH
+ 	raw_spinlock_t		lock;
+@@ -378,6 +387,7 @@ struct task_group {
+ 	struct rt_rq		**rt_rq;
+ 
+ 	struct rt_bandwidth	rt_bandwidth;
++	struct rt_bandwidth win_bandwidth;
+ #endif
+ 
+ 	struct rcu_head		rcu;
+@@ -447,8 +457,10 @@ extern void init_tg_rt_entry(struct task_group *tg, struct rt_rq *rt_rq,
+ 		struct sched_rt_entity *parent);
+ extern int sched_group_set_rt_runtime(struct task_group *tg, long rt_runtime_us);
+ extern int sched_group_set_rt_period(struct task_group *tg, u64 rt_period_us);
++extern int sched_group_set_window(struct task_group *tg, u64 window_us);
+ extern long sched_group_rt_runtime(struct task_group *tg);
+ extern long sched_group_rt_period(struct task_group *tg);
++extern long sched_group_window(struct task_group *tg);
+ extern int sched_rt_can_attach(struct task_group *tg, struct task_struct *tsk);
+ 
+ extern struct task_group *sched_create_group(struct task_group *parent);
+@@ -612,6 +624,8 @@ struct rt_rq {
+ 
+ 	struct rq		*rq;
+ 	struct task_group	*tg;
++	int			rt_blocked;
++	struct list_head b_list;
+ #endif
+ };
+ 
+@@ -1497,6 +1511,7 @@ extern const u32		sched_prio_to_wmult[40];
+ #endif
+ 
+ #define RETRY_TASK		((void *)-1UL)
++#define BLOCK_TASK		((void *)-2UL)
+ 
+ struct sched_class {
+ 	const struct sched_class *next;
+diff --git a/kernel/signal.c b/kernel/signal.c
+index 0e6bc3049427..b74664bf3ad6 100644
+--- a/kernel/signal.c
++++ b/kernel/signal.c
+@@ -41,6 +41,7 @@
+ #include <linux/compiler.h>
+ #include <linux/posix-timers.h>
+ #include <linux/livepatch.h>
++#include <linux/sched/autogroup.h>
+ 
+ #define CREATE_TRACE_POINTS
+ #include <trace/events/signal.h>

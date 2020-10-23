@@ -1,0 +1,21 @@
+# Experiments folder for rt blocking
+
+This folder contains the test programs code and cgroup setup scripts.
+
+## Cgroup setup scripts
+
+The three `.sh` files setup three sibing cgroups with the same parent. The cgroups is two level depth to simulate docker container structure.  
+
+* cg1.sh: Setup the first cgroup, assign a window time for this group. This is the group to run the protected task.
+* cg2.sh & cg3.sh: Set up the second and third cgroup. Does not assign window time. Background programs should run in these cgroups.
+
+
+## Test program codes
+
+* test_syscall.cpp: a simple task to test if the new syscall is setup correctly.
+* pause_syscall.cpp: a periodic fifo task that calls the blocking syscall periodically. Compile with -lrt.
+* fifo_task.c: a non-stoping fifo task. 
+
+## Diff file
+
+This file shows the changes with the original 4.19 Linux kernel. 
