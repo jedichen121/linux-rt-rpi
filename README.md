@@ -1,8 +1,8 @@
-#Linux kernel for blocking RT task from execution for certain periods.
+# Linux kernel for blocking RT task from execution for certain periods.
 
 ## Major design
 
-Implemented a new system call `cpu_block()` to block all rt task from running for specified length except itself and tasks with priority high than 50. It is implemented using a hrtimer that has the period specified in the calling process's cgroup `cpu.window_us`. The syscall has a syscall number of 400 and no input parameters. You can invoke it using `syscall(400)`.
+Implemented a new system call `cpu_block()` to block all task from running for specified length except itself and tasks with rt priority high than 50 (kernel threads). It is implemented using a hrtimer that has the period specified in the calling process's cgroup `cpu.window_us`. The syscall has a syscall number of 400 and no input parameters. You can invoke it using `syscall(400)`.
 
 
 Add a parameter `window_us` for cgroup to specify the blocking time in microseconds. To set the parameter
@@ -14,6 +14,8 @@ echo time_in_us > /sys/fs/cgroup/cpu/cg/cg1/cpu.window_us
 * _note_: The blocking function will not work unless this parameter is set. 
 
 Some cgroup setup scripts and test programs are in the folder `tools/exp/`.
+
+__Important__: If the window is too long compared with the period of the invoking task, the whole system might become unresponsive. 
 
 
 Linux kernel
