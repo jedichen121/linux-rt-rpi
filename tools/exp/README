@@ -2,6 +2,20 @@
 
 This folder contains the test programs code and cgroup setup scripts.
 
+## Kernel setup
+
+
+
+## System setup
+
+Make sure using only one core. 
+
+```
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- bcm2711_navio2_defconfig
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- zImage modules dtbs -j8
+
+```
+
 ## Cgroup setup scripts
 
 The three `.sh` files setup three sibing cgroups with the same parent. The cgroups is two level depth to simulate docker container structure.  
@@ -13,8 +27,56 @@ The three `.sh` files setup three sibing cgroups with the same parent. The cgrou
 ## Test program codes
 
 * test_syscall.cpp: a simple task to test if the new syscall is setup correctly.
-* pause_syscall.cpp: a periodic fifo task that calls the blocking syscall periodically. Compile with -lrt.
+* pause_syscall.cpp: a periodic fifo task that calls the blocking syscall periodically. Compile with -lrt. `g++ pause_syscall.cpp -o pause -lrt`.
 * fifo_task.c: a non-stoping fifo task. 
+
+## Test within docker
+
+The image `jedichen121/rpi_rtps:2.0` is based on debian:buster-slim (60% confidence).
+```
+sudo sh -c "mkdir /sys/fs/cgroup/cpu/docker"
+sudo sh -c "echo 950000 > /sys/fs/cgroup/cpu/docker/cpu.rt_runtime_us"
+
+docker run -it --rm --privileged --cpu-rt-runtime=550000 -v /home/pi/:/test -w /test jedichen121/rpi_rtps:2.0 bash
+docker run -it --rm --privileged --cpu-rt-runtime=350000 -v /home/pi/:/test -w /test python bash
+
+docker run -it --rm --privileged --cpu-rt-runtime=450000 -v /home/pi/:/test -w /test jedichen121/rpi_rtps:2.0 bash
+docker run -it --rm --privileged --cpu-rt-runtime=350000 -v /home/pi/:/test -w /test jedichen121/rpi_rtps:2.0 bash
+echo 10000 > /sys/fs/cgroup/cpu/docker//cpu.window_us
+
+sudo trace-cmd record -e sched_wakeup -e sched_switch
+
+./scheduleak -d 1000000 -v 100000 -p 330000 -c 100000
+./non-rt-scheduleak -d 1000000 -p 100000
+
+```
+
+## ScheduLeak 
+
+Use dyms branch. 
+
+For non-rt-scheduleak, 
+
+-d exp_duration_us
+-p victim_task_period_us
+
+For rt-scheduleak, 
+
+-d exp_duration_us
+-v victim_period
+-p observer_period
+-c observer_wcet
+
+## SchedGuard simulator
+
+```
+sudo apt-get install python3-venv
+python3 -m venv ./venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r ./requirements.txt
+```
+
 
 ## Diff file
 
