@@ -1174,12 +1174,12 @@ dec_rt_group(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
 
 void block_cpu(struct task_struct *p)
 {	
-	struct rt_rq *rt_rq = rt_rq_of_se(&p->rt);
-	struct rt_bandwidth *win_b = &rt_rq->tg->win_bandwidth;
+	// struct rt_rq *rt_rq = rt_rq_of_se(&p->rt);
+	// struct rt_bandwidth *win_b = &rt_rq->tg->win_bandwidth;
 
 	monitor_task = p;
 
-	hrtimer_start(&win_b->rt_period_timer, win_b->rt_period, HRTIMER_MODE_REL);
+	// hrtimer_start(&win_b->rt_period_timer, win_b->rt_period, HRTIMER_MODE_REL);
 
 	atomic_set(&protect, 1);
 	printk("cpu_block success\n");
