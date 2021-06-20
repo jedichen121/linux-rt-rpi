@@ -90,3 +90,10 @@ SCHED_FEAT(WA_BIAS, true)
  * UtilEstimation. Use estimated CPU utilization.
  */
 SCHED_FEAT(UTIL_EST, true)
+
+
+/*
+ * Enable real-time partition scheduling framework. 
+ * NOTE: This feature is disabled by default.
+ */
+SCHED_FEAT(RT_CPU_LOCK, false)

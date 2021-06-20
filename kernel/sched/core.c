@@ -486,6 +486,35 @@ void resched_cpu(int cpu)
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
 }
 
+/*
+ * The purpose of this function is to force rescheduling of a target cpu under
+ * all circumstances. For this reason, this function does not acquire the
+ * target CPU's rq lock and sends a rescheduling interrupt without protection
+ * if need be. It is used exclusively in RT-Gang related code.
+ */
+void resched_cpu_force (int cpu)
+{
+	struct rq *rq = cpu_rq(cpu);
+	struct task_struct *curr = rq->curr;
+
+	printk("force resched cpu %d\n", cpu);
+	if (test_tsk_need_resched(curr))
+		return;
+
+	cpu = cpu_of(rq);
+
+	if (cpu == smp_processor_id()) {
+		set_tsk_need_resched(curr);
+		set_preempt_need_resched();
+		return;
+	}
+
+	if (set_nr_and_not_polling(curr))
+		smp_send_reschedule(cpu);
+	else
+		trace_sched_wake_idle_without_ipi(cpu);
+}
+
 #ifdef CONFIG_SMP
 #ifdef CONFIG_NO_HZ_COMMON
 /*
@@ -5992,7 +6021,8 @@ struct task_group root_task_group;
 LIST_HEAD(task_groups);
 
 atomic_t protect;
-LIST_HEAD(blocked_rt_rq_list);
+struct list_head blocked_rt_rq_list[NR_CPUS];
+// LIST_HEAD(blocked_rt_rq_list);
 
 /* Cacheline aligned slab cache for task_group */
 static struct kmem_cache *task_group_cache __read_mostly;
@@ -6032,6 +6062,8 @@ void __init sched_init(void)
 		root_task_group.rt_rq = (struct rt_rq **)ptr;
 		ptr += nr_cpu_ids * sizeof(void **);
 		atomic_set(&protect, 0);
+		raw_spin_lock_init(&rt_glock->lock);
+		atomic_set(&rt_glock->lock_held, 0);
 #endif /* CONFIG_RT_GROUP_SCHED */
 	}
 #ifdef CONFIG_CPUMASK_OFFSTACK
@@ -6105,6 +6137,8 @@ void __init sched_init(void)
 		rq->rt.rt_runtime = def_rt_bandwidth.rt_runtime;
 #ifdef CONFIG_RT_GROUP_SCHED
 		init_tg_rt_entry(&root_task_group, &rq->rt, NULL, i, NULL);
+		// LIST_HEAD((struct list_head)&blocked_rt_rq_list+i);
+		INIT_LIST_HEAD(&blocked_rt_rq_list[i]);
 #endif
 
 		for (j = 0; j < CPU_LOAD_IDX_MAX; j++)

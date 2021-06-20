@@ -330,7 +330,8 @@ extern struct list_head task_groups;
 #ifdef CONFIG_RT_GROUP_SCHED
 #define RT_SYS_PRIO_THRESHOLD		(50)
 extern atomic_t protect;
-extern struct list_head blocked_rt_rq_list;
+extern struct list_head blocked_rt_rq_list[NR_CPUS];
+// struct list_head queue[MAX_RT_PRIO];
 
 extern void block_cpu(struct task_struct *p);
 extern void unblock_cpu(void);
@@ -1650,6 +1651,7 @@ extern void reweight_task(struct task_struct *p, int prio);
 
 extern void resched_curr(struct rq *rq);
 extern void resched_cpu(int cpu);
+extern void resched_cpu_force(int cpu);
 
 extern struct rt_bandwidth def_rt_bandwidth;
 extern void init_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime);
@@ -2255,3 +2257,32 @@ unsigned long scale_irq_capacity(unsigned long util, unsigned long irq, unsigned
 	return util;
 }
 #endif
+
+/*
+ * GANG SCHEDULING RELATED DECLARATIONS
+ */
+typedef struct rt_cpu_lock {
+	raw_spinlock_t		lock;
+	// bool			lock_held;
+	atomic_t lock_held;
+	// cpumask_var_t		locked_cores;
+	// cpumask_var_t		blocked_cores;
+	// int			prio;
+	// struct task_struct*	gthreads [NR_CPUS];
+} rt_cpu_lock_t;
+
+extern rt_cpu_lock_t	*rt_glock;
+
+static inline void resched_cpus(void)
+{
+	int cpu;
+	int this_cpu = smp_processor_id();
+
+	for_each_online_cpu(cpu) {
+		if (cpu == this_cpu)
+			continue;
+
+		resched_cpu(cpu);
+	}
+	return;
+}
