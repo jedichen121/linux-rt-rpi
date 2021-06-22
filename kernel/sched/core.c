@@ -486,35 +486,6 @@ void resched_cpu(int cpu)
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
 }
 
-/*
- * The purpose of this function is to force rescheduling of a target cpu under
- * all circumstances. For this reason, this function does not acquire the
- * target CPU's rq lock and sends a rescheduling interrupt without protection
- * if need be. It is used exclusively in RT-Gang related code.
- */
-void resched_cpu_force (int cpu)
-{
-	struct rq *rq = cpu_rq(cpu);
-	struct task_struct *curr = rq->curr;
-
-	printk("force resched cpu %d\n", cpu);
-	if (test_tsk_need_resched(curr))
-		return;
-
-	cpu = cpu_of(rq);
-
-	if (cpu == smp_processor_id()) {
-		set_tsk_need_resched(curr);
-		set_preempt_need_resched();
-		return;
-	}
-
-	if (set_nr_and_not_polling(curr))
-		smp_send_reschedule(cpu);
-	else
-		trace_sched_wake_idle_without_ipi(cpu);
-}
-
 #ifdef CONFIG_SMP
 #ifdef CONFIG_NO_HZ_COMMON
 /*

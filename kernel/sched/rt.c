@@ -525,8 +525,6 @@ static void sched_rt_rq_enqueue(struct rt_rq *rt_rq)
 	int cpu = cpu_of(rq);
 
 	rt_se = rt_rq->tg->rt_se[cpu];
-	if (rt_se)
-		printk("in sched_rt_rq_enqueue %d\n", rt_task_of(rt_se)->pid);
 
 	if (rt_rq->rt_nr_running) {
 		if (!rt_se)
@@ -972,7 +970,6 @@ static int sched_rt_runtime_exceeded(struct rt_rq *rt_rq)
 		if (likely(rt_b->rt_runtime)) {
 			rt_rq->rt_throttled = 1;
 			printk_deferred_once("sched: RT throttling activated\n");
-			printk("sched: RT throttling activated %d\n", rt_rq);
 		} else {
 			/*
 			 * In case we did anyway, make it go away,
@@ -1189,28 +1186,40 @@ void block_cpu(struct task_struct *p)
 	struct rt_rq *rt_rq = rt_rq_of_se(&p->rt);
 	struct rt_bandwidth *win_b = &rt_rq->tg->win_bandwidth;
 
+	// int atomic_add_unless(atomic_t *v, int a, int u);
+
+	// If the atomic value v is not equal to u, this function adds a to v, and
+	// returns non zero. If v is equal to u then it returns zero. This is done as
+	// an atomic operation.
 	raw_spin_lock(&rt_glock->lock);
-	monitor_task = p;
-	atomic_set(&rt_glock->lock_held, 1);
-	raw_spin_unlock(&rt_glock->lock);
-
-	hrtimer_start(&win_b->rt_period_timer, win_b->rt_period, HRTIMER_MODE_REL);
-
-	atomic_set(&protect, 1);
+	if (atomic_read(&protect) == 0) {
+		atomic_set(&rt_glock->lock_held, 1);
+		atomic_set(&protect, 1);
+		monitor_task = p;
+		raw_spin_unlock(&rt_glock->lock);
+		hrtimer_start(&win_b->rt_period_timer, win_b->rt_period, HRTIMER_MODE_REL);
 	
-	// force resched all other cpus
-	resched_cpus();
-	printk("cpu_block success\n");
+		// force resched all other cpus
+		resched_cpus();
+		printk("cpu_block success\n");
+		return;
+	}
+
+	raw_spin_unlock(&rt_glock->lock);
+	printk("cpu_block failed\n");
+
 }
 
 void unblock_cpu()
 {
 	struct rt_rq *rt_rq;
 	struct rq *rq;
-	int cpu = smp_processor_id();
+	int cpu;
 	// printk("cpu 0 list empty %d\n", list_empty(&blocked_rt_rq_list[0]));
 	// printk("cpu 1 list empty %d\n", list_empty(&blocked_rt_rq_list[1]));
 
+	// this is not the best approach, but seems to be working well
+	// ideally this should execute on each cpu respectively
 	for_each_online_cpu(cpu) {
 		while (!list_empty(&blocked_rt_rq_list[cpu])) {
 			rt_rq = list_entry(blocked_rt_rq_list[cpu].next, struct rt_rq, b_list);
@@ -1226,7 +1235,6 @@ void unblock_cpu()
 			rt_rq->rt_blocked = 0;
 			list_del_init(&rt_rq->b_list);
 			raw_spin_unlock(&rt_rq->rt_runtime_lock);
-			// printk("in unblock_cpu re_enqueue\n");
 			sched_rt_rq_enqueue(rt_rq);
 
 			atomic_set(&protect, 0);
@@ -1679,14 +1687,13 @@ pick_next_task_rt(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 
 #ifdef CONFIG_RT_GROUP_SCHED
 	cpu = task_cpu(p);
-	// int this_cpu = smp_processor_id();
-	if (p->prio > RT_SYS_PRIO_THRESHOLD) {
-		// printk("cpu is %d\n", cpu);
-		printk("process %d\n", p->pid);
-	}
+
+	// if (p->prio > RT_SYS_PRIO_THRESHOLD) {
+	// 	// printk("cpu is %d\n", cpu);
+	// 	printk("process %d\n", p->pid);
+	// }
 	// Do not block high-priority kernel threads
 	if (atomic_read(&protect) == 1 && p->mm && (p->prio > RT_SYS_PRIO_THRESHOLD)) {
-		printk("in protection cpu %d\n", cpu);
 		raw_spin_lock(&rt_glock->lock);
 		if (p != monitor_task) {
 			printk("in lock cpu %d\n", cpu);
@@ -1699,8 +1706,6 @@ pick_next_task_rt(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 			raw_spin_unlock(&block_rt_rq->rt_runtime_lock);
 			sched_rt_rq_dequeue(block_rt_rq);
 
-			printk("in lock list empty %d\n", list_empty(&blocked_rt_rq_list[cpu]));
-
 			raw_spin_unlock(&rt_glock->lock);
 
 			return NULL;
@@ -1708,10 +1713,7 @@ pick_next_task_rt(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 		raw_spin_unlock(&rt_glock->lock);
 	}
 #endif /* CONFIG_RT_GROUP_SCHED */
-	// if (p->prio > RT_SYS_PRIO_THRESHOLD) {
-	// 	printk("normal operation\n");
-	// 	printk("process %d\n", p->pid);
-	// }
+
 	put_prev_task(rq, prev);
 	p->se.exec_start = rq_clock_task(rq);
 
