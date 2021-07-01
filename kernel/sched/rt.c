@@ -1244,6 +1244,8 @@ void unblock_cpu()
 			local_irq_enable();
 		}
 	}
+	// force resched all other cpus
+	resched_cpus();
 }
 
 #else /* CONFIG_RT_GROUP_SCHED */

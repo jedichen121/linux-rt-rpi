@@ -4713,6 +4713,12 @@ SYSCALL_DEFINE0(cpu_block)
 	struct task_struct *p;
 
 	p = current;
+
+	// TODO: add return -1
+	// /* Process does not exist or it is not a real-time process */
+	// if (!p || !rt_task (p))
+	// 	return -1;
+
 	block_cpu(current);
 
 	return 0;
